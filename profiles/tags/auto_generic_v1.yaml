@@ -1,0 +1,18 @@
+id: auto_generic_v1
+version: 1
+description: 美化后装修图片自动标签的过渡规则。正式业务标签标准发布后新增版本，不修改历史记录。
+
+max_tags: 8
+confidence_thresholds:
+  confirmed: 0.60
+  uncertain: 0.40
+
+dimensions:
+  - scene
+  - space
+  - stage
+  - view
+  - elements
+  - risks
+
+allow_candidate_tags: true

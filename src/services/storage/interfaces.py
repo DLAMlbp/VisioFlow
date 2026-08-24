@@ -1,0 +1,32 @@
+from abc import ABC, abstractmethod
+
+
+class StorageProvider(ABC):
+    @abstractmethod
+    async def upload(self, object_key: str, data: bytes, content_type: str) -> None:
+        pass
+
+    @abstractmethod
+    async def download(self, object_key: str) -> bytes:
+        pass
+
+    @abstractmethod
+    async def get_size(self, object_key: str) -> int:
+        pass
+
+    @abstractmethod
+    async def delete(self, object_key: str) -> None:
+        pass
+
+    @abstractmethod
+    async def presign_upload(
+        self,
+        object_key: str,
+        content_type: str,
+        expires_seconds: int,
+    ) -> str:
+        pass
+
+    @abstractmethod
+    async def presign_download(self, object_key: str, expires_seconds: int) -> str:
+        pass

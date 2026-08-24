@@ -1,0 +1,31 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="shell" x1="20" y1="12" x2="112" y2="118" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#161A46"/>
+      <stop offset=".47" stop-color="#4935BF"/>
+      <stop offset="1" stop-color="#8E35E5"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="27" y1="24" x2="101" y2="106" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#9EFAFF"/>
+      <stop offset=".45" stop-color="#806BFF"/>
+      <stop offset="1" stop-color="#F064D8"/>
+    </linearGradient>
+    <radialGradient id="core" cx="0" cy="0" r="1" gradientTransform="translate(64 64) rotate(90) scale(30)">
+      <stop stop-color="#252A69"/>
+      <stop offset=".7" stop-color="#11142F"/>
+      <stop offset="1" stop-color="#080A1B"/>
+    </radialGradient>
+    <filter id="glow" x="6" y="6" width="116" height="116" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="7" y="7" width="114" height="114" rx="31" fill="url(#shell)"/>
+  <path d="M31 53.7 43.1 32.6 64 20.5l20.9 12.1L97 53.7v20.6l-12.1 21.1L64 107.5 43.1 95.4 31 74.3V53.7Z" stroke="url(#ring)" stroke-width="3" opacity=".8"/>
+  <circle cx="64" cy="64" r="30" fill="url(#core)" stroke="#A59AFF" stroke-opacity=".5" stroke-width="2"/>
+  <circle cx="64" cy="64" r="19" stroke="url(#ring)" stroke-width="3"/>
+  <circle cx="64" cy="64" r="9" fill="#C9FCFF" filter="url(#glow)"/>
+  <path d="M23 64h20M85 64h20M64 23v20M64 85v20" stroke="#B5F9FF" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="23" cy="64" r="4" fill="#B5F9FF"/><circle cx="105" cy="64" r="4" fill="#E69AFF"/><circle cx="64" cy="23" r="4" fill="#A59AFF"/><circle cx="64" cy="105" r="4" fill="#75F0FF"/>
+  <path d="m80.5 37 3.1 7.4L91 47.5l-7.4 3.1-3.1 7.4-3.1-7.4-7.4-3.1 7.4-3.1 3.1-7.4Z" fill="#F7E8FF" filter="url(#glow)"/>
+</svg>

@@ -1,0 +1,43 @@
+id: renovation_submission_v1
+version: 6
+description: 装修工匠提交照片的基础技术校验、质量提示与批量去重标准。严重模糊、纯色/近纯色、近黑无有效内容和综合评分不足的画面自动淘汰，其余质量指标仅提示。
+
+hard_rules:
+  min_width: 1280
+  min_height: 720
+  max_width: 10000
+  max_height: 10000
+  min_edge_variance: 4.0
+  max_overexposed_ratio: 0.35
+  max_underexposed_ratio: 0.35
+  # 超过 85% 近黑且可见内容不足 3%，通常是黑屏、镜头遮挡或无效画面。
+  reject_underexposed_ratio: 0.85
+  min_visible_content_ratio: 0.03
+  # 以下质量阈值用于提示和美化策略，不作为自动淘汰条件；综合评分、纯色/近纯色除外。
+  min_quality_score: 95
+  max_solid_color_stddev: 3.0
+  min_sharpness_score: 50
+  min_exposure_score: 60
+  min_contrast_score: 25
+  min_noise_score: 75
+  duplicate_hamming_distance: 5
+  no_enhancement_score: 98
+  ideal_brightness_min: 118
+  ideal_brightness_max: 138
+
+# 后续接入图像识别时，按项目启用这些工序和取证规则；当前不会以此直接淘汰图片。
+evidence_rules:
+  require_scene_classification: false
+  stages:
+    - 拆改
+    - 水电隐蔽
+    - 防水
+    - 瓦工贴砖
+    - 木工吊顶
+    - 油工
+    - 安装
+    - 竣工成品
+  required_views:
+    - 全景
+    - 局部
+    - 节点细节
