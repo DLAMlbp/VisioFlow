@@ -1,4 +1,5 @@
 import type {
+  AIModelConfig,
   CreateJobRequest,
   CreateJobResponse,
   JobHistoryResponse,
@@ -12,6 +13,7 @@ import type {
   ProfileOption,
   ResultImage,
   TagReview,
+  UpdateAIModelConfig,
   UploadBatchRegistration
 } from "../types";
 
@@ -37,6 +39,11 @@ let activeJob: {
 } | null = null;
 
 let pendingBatch: UploadBatchRegistration | null = null;
+
+let aiModelConfig: AIModelConfig = {
+  enabled: true,
+  api_key_configured: false
+};
 
 let libraryTagTree: LibraryTagNode[] = [
   {
@@ -249,6 +256,20 @@ export const mockApi = {
   async getSimilarityProfiles(): Promise<ProfileOption[]> {
     await wait(100);
     return similarityProfiles;
+  },
+
+  async getAIModelConfig(): Promise<AIModelConfig> {
+    await wait(120);
+    return { ...aiModelConfig };
+  },
+
+  async updateAIModelConfig(payload: UpdateAIModelConfig): Promise<AIModelConfig> {
+    await wait(180);
+    aiModelConfig = {
+      enabled: payload.enabled,
+      api_key_configured: aiModelConfig.api_key_configured || Boolean(payload.api_key)
+    };
+    return { ...aiModelConfig };
   },
 
   async getLibraryTagTree(): Promise<LibraryTagNode[]> {

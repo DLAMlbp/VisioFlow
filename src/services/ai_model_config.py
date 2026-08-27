@@ -30,14 +30,14 @@ def save_ai_model_settings(
     settings: Settings,
     *,
     enabled: bool,
-    model: str,
+    model: str | None,
     api_key: str | None,
 ) -> Settings:
     current = load_ai_model_settings(settings)
     payload = {
         "ai_tagging_enabled": enabled,
         "ai_tagging_base_url": settings.ai_tagging_base_url,
-        "ai_tagging_model": model,
+        "ai_tagging_model": model if model is not None else current.ai_tagging_model,
         "ai_tagging_api_key": api_key if api_key is not None else current.ai_tagging_api_key,
     }
     _redis(settings).set(_CONFIG_KEY, json.dumps(payload))

@@ -65,3 +65,24 @@ def test_update_request_rejects_base_url_override() -> None:
                 "model": "gpt-5.6-sol",
             }
         )
+
+
+def test_update_request_allows_key_only_configuration() -> None:
+    request = UpdateAIModelConfigRequest.model_validate(
+        {"enabled": True, "api_key": "secret-for-test"}
+    )
+
+    assert request.enabled is True
+    assert request.model is None
+    assert request.api_key == "secret-for-test"
+
+
+def test_saved_runtime_config_preserves_model_when_omitted(monkeypatch: pytest.MonkeyPatch) -> None:
+    redis = FakeRedis({"ai_tagging_model": "configured-model"})
+    monkeypatch.setattr(ai_model_config, "_redis", lambda _settings: redis)
+
+    saved = ai_model_config.save_ai_model_settings(
+        Settings(), enabled=True, model=None, api_key="secret-for-test"
+    )
+
+    assert saved.ai_tagging_model == "configured-model"

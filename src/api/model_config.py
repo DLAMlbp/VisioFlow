@@ -23,12 +23,14 @@ class UpdateAIModelConfigRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
-    model: str = Field(min_length=1, max_length=120)
+    model: str | None = Field(default=None, min_length=1, max_length=120)
     api_key: str | None = Field(default=None, min_length=1, max_length=1024)
 
     @field_validator("model")
     @classmethod
-    def strip_required_value(cls, value: str) -> str:
+    def strip_required_value(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         value = value.strip()
         if not value:
             raise ValueError("不能为空")
