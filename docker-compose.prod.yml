@@ -1,0 +1,136 @@
+x-app: &app
+  image: ${API_IMAGE:?API_IMAGE must be a versioned image reference}
+  env_file:
+    - .env.production
+  restart: unless-stopped
+  networks:
+    - app
+
+services:
+  web:
+    image: ${WEB_IMAGE:?WEB_IMAGE must be a versioned image reference}
+    env_file:
+      - .env.production
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-18081}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - app
+    mem_limit: 96m
+    cpus: 0.25
+
+  api:
+    <<: *app
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5)"]
+      interval: 15s
+      timeout: 8s
+      retries: 8
+    mem_limit: 640m
+    cpus: 0.75
+
+  worker:
+    <<: *app
+    command: >-
+      celery -A src.workers.celery_app worker
+      -Q control,preprocess,enhance,analysis,embedding,library,cleanup
+      --pool=solo --concurrency=1 -l info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    mem_limit: 2048m
+    cpus: 1.5
+
+  celery-beat:
+    <<: *app
+    command: celery -A src.workers.celery_app beat -l info
+    depends_on:
+      redis:
+        condition: service_healthy
+    mem_limit: 256m
+    cpus: 0.25
+
+  postgres:
+    image: pgvector/pgvector:0.8.1-pg16
+    env_file:
+      - .env.production
+    restart: unless-stopped
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+    networks:
+      - app
+    mem_limit: 512m
+    cpus: 0.5
+
+  redis:
+    image: redis:7.4.5-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+    networks:
+      - app
+    mem_limit: 128m
+    cpus: 0.25
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data
+    env_file:
+      - .env.production
+    restart: unless-stopped
+    ports:
+      - "${MINIO_PORT:-19001}:9000"
+    volumes:
+      - minio-data:/data
+    networks:
+      - app
+    mem_limit: 384m
+    cpus: 0.5
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    env_file:
+      - .env.production
+    depends_on:
+      - minio
+    entrypoint: >-
+      /bin/sh -c '
+      until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do sleep 2; done;
+      mc mb -p local/"$$S3_BUCKET" || true;
+      mc anonymous set none local/"$$S3_BUCKET";
+      '
+    restart: "no"
+    networks:
+      - app
+    mem_limit: 64m
+    cpus: 0.25
+
+networks:
+  app:
+
+volumes:
+  postgres-data:
+  minio-data:
