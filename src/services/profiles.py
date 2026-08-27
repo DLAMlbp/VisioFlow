@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from src.core.config import Settings
 
@@ -65,7 +65,20 @@ class BeautifyProfile(BaseModel):
     local_clarity_strength: float = Field(default=0.2, ge=0, le=0.5)
     auto_straighten: bool = True
     max_straighten_degrees: float = Field(default=3, gt=0, le=12)
+    min_output_long_side: int = Field(default=2048, ge=1, le=8192)
     jpeg_quality: int = Field(ge=60, le=100)
+
+
+class SimilarityProfile(BaseModel):
+    id: str
+    version: int = Field(ge=1)
+    description: str
+    similarity_candidate_limit: int = Field(ge=1, le=100)
+    similarity_image_weight: float = Field(ge=0, le=1)
+    similarity_feature_weight: float = Field(ge=0, le=1)
+    similarity_auto_threshold: float = Field(ge=0, le=1)
+    similarity_review_threshold: float = Field(ge=0, le=1)
+    similarity_min_margin: float = Field(ge=0, le=1)
 
 
 class ProfileLoader:
@@ -78,11 +91,26 @@ class ProfileLoader:
     def get_beautify_profile(self, profile_id: str) -> BeautifyProfile:
         return BeautifyProfile.model_validate(self._load("beautify", profile_id))
 
+    def get_similarity_profile(self, profile_id: str) -> SimilarityProfile:
+        try:
+            return SimilarityProfile.model_validate(self._load("tags", profile_id))
+        except ValidationError as exc:
+            raise ProfileNotFoundError(f"Profile 不是有效的相似匹配配置: {profile_id}") from exc
+
     def list_filter_profiles(self) -> list[FilterProfile]:
         return [FilterProfile.model_validate(payload) for payload in self._list("filters")]
 
     def list_beautify_profiles(self) -> list[BeautifyProfile]:
         return [BeautifyProfile.model_validate(payload) for payload in self._list("beautify")]
+
+    def list_similarity_profiles(self) -> list[SimilarityProfile]:
+        profiles: list[SimilarityProfile] = []
+        for payload in self._list("tags"):
+            try:
+                profiles.append(SimilarityProfile.model_validate(payload))
+            except ValidationError:
+                continue
+        return profiles
 
     def _load(self, profile_type: str, profile_id: str) -> dict[str, object]:
         path = self.directory / profile_type / f"{profile_id}.yaml"

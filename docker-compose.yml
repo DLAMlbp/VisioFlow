@@ -1,79 +1,100 @@
+x-worker: &worker
+  build: .
+  env_file:
+    - .env
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    minio:
+      condition: service_started
+
 services:
   api:
     build: .
     command: uvicorn src.main:app --host 0.0.0.0 --port 8000
     env_file:
       - .env
+    restart: unless-stopped
     ports:
       - "18000:8000"
     depends_on:
-      - postgres
-      - redis
-      - minio
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5)"]
+      interval: 15s
+      timeout: 8s
+      retries: 5
+
+  worker-control:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q control -l info --concurrency=1
 
   worker-preprocess:
-    build: .
-    command: celery -A src.workers.celery_app worker -Q preprocess -l info
-    env_file:
-      - .env
-    depends_on:
-      - redis
-
-  worker-analysis:
-    build: .
-    command: celery -A src.workers.celery_app worker -Q analysis -l info
-    env_file:
-      - .env
-    depends_on:
-      - redis
-
-  worker-ranking:
-    build: .
-    command: celery -A src.workers.celery_app worker -Q ranking -l info
-    env_file:
-      - .env
-    depends_on:
-      - redis
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q preprocess -l info --concurrency=4
 
   worker-enhance:
-    build: .
-    command: celery -A src.workers.celery_app worker -Q enhance -l info
-    env_file:
-      - .env
-    depends_on:
-      - redis
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q enhance -l info --concurrency=2
 
-  worker-tagging:
-    build: .
-    command: celery -A src.workers.celery_app worker -Q tagging -l info
-    env_file:
-      - .env
-    depends_on:
-      - redis
+  worker-analysis:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q analysis -l info --concurrency=4
 
-  worker-callback:
-    build: .
-    command: celery -A src.workers.celery_app worker -Q callback -l info
-    env_file:
-      - .env
-    depends_on:
-      - redis
+  worker-embedding:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q embedding -l info --concurrency=1
+    environment:
+      WORKER_ROLE: embedding
+
+  worker-library:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q library -l info --concurrency=1
+
+  worker-cleanup:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q cleanup -l info --concurrency=1
+
+  celery-beat:
+    <<: *worker
+    command: celery -A src.workers.celery_app beat -l info
 
   postgres:
-    image: postgres:16
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
       POSTGRES_DB: image_ai
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d image_ai"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
+    restart: unless-stopped
     environment:
       MINIO_ROOT_USER: minio
       MINIO_ROOT_PASSWORD: minio123

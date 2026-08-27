@@ -6,7 +6,7 @@ from src.services.images.beautify import NaturalBeautifyService, OrientationNorm
 from src.services.profiles import BeautifyProfile, HardRulesProfile
 
 
-def test_natural_beautify_returns_jpeg_with_original_dimensions() -> None:
+def test_natural_beautify_returns_a_2k_jpeg_for_smaller_source_images() -> None:
     source = BytesIO()
     Image.new("RGB", (640, 480), "#606060").save(source, format="PNG")
     profile = BeautifyProfile(
@@ -24,7 +24,7 @@ def test_natural_beautify_returns_jpeg_with_original_dimensions() -> None:
 
     with Image.open(BytesIO(enhanced)) as image:
         assert image.format == "JPEG"
-        assert image.size == (640, 480)
+        assert image.size == (2048, 1536)
 
 
 def test_natural_beautify_reports_only_non_destructive_processing_steps() -> None:
@@ -297,3 +297,22 @@ def test_assessment_skips_enhancement_for_an_ideal_straight_photo() -> None:
 
     assert result.needs_enhancement is False
     assert result.reasons == []
+
+
+def test_delivery_image_is_upscaled_to_the_minimum_long_side() -> None:
+    profile = BeautifyProfile(
+        id="test",
+        version=1,
+        description="test",
+        brightness=1,
+        contrast=1,
+        color=1,
+        sharpness=1,
+        jpeg_quality=95,
+        min_output_long_side=2048,
+    )
+    image = Image.new("RGB", (1280, 720), "white")
+
+    output = NaturalBeautifyService._ensure_minimum_output_size(image, profile)
+
+    assert output.size == (2048, 1152)

@@ -19,3 +19,16 @@ class PresignedDownloadRequest(BaseModel):
 class PresignedDownloadResponse(BaseModel):
     object_key: str
     download_url: str
+
+
+class BatchPresignedDownloadRequest(BaseModel):
+    object_keys: list[str] = Field(min_length=1, max_length=100)
+
+
+class BatchPresignedDownloadItem(BaseModel):
+    object_key: str
+    download_url: str
+
+
+class BatchPresignedDownloadResponse(BaseModel):
+    items: list[BatchPresignedDownloadItem]

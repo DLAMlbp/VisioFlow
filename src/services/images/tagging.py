@@ -15,11 +15,17 @@ from pydantic import BaseModel, Field, ValidationError
 
 from src.core.config import Settings
 
-PROMPT_VERSION = "renovation_auto_generic_v1"
+PROMPT_VERSION = "renovation_auto_generic_v2"
 
 
 class TagPayload(BaseModel):
     summary: str = Field(default="", max_length=80)
+    scene: str = Field(default="", max_length=80)
+    space: str = Field(default="", max_length=80)
+    condition: str = Field(default="", max_length=80)
+    content_type: str = Field(default="", max_length=80)
+    subjects: list[str] = Field(default_factory=list, max_length=12)
+    view: str = Field(default="", max_length=80)
     tags: list[str] = Field(default_factory=list, max_length=8)
     categories: dict[str, list[str]] = Field(default_factory=dict)
     candidate_tags: list[str] = Field(default_factory=list, max_length=8)
@@ -34,6 +40,7 @@ class TaggingOutcome:
     raw_response: dict[str, object] | None = None
     error_message: str | None = None
     duration_ms: int | None = None
+    retryable: bool = False
 
 
 class VisionTagProvider(Protocol):
@@ -64,6 +71,7 @@ class OpenAIChatVisionTagProvider:
                 status="failed",
                 error_message=_safe_error_message(exc),
                 duration_ms=round((time.perf_counter() - started) * 1000),
+                retryable=_is_retryable_error(exc),
             )
 
     def _request(self, image_bytes: bytes) -> dict[str, object]:
@@ -133,6 +141,8 @@ def _safe_error_message(error: Exception) -> str:
             return "AI 服务余额不足，请充值后重试"
         if error.code in {401, 403}:
             return "AI 服务鉴权或模型权限不足，请检查服务配置"
+        if error.code == 429:
+            return "AI 服务请求频率受限，系统将自动稍后重试"
         return f"AI 服务请求失败（HTTP {error.code}）"
     if isinstance(error, URLError):
         return "AI 服务连接失败"
@@ -141,6 +151,12 @@ def _safe_error_message(error: Exception) -> str:
     if isinstance(error, ValidationError):
         return "AI 标签响应格式不合法"
     return "AI 标签生成失败"
+
+
+def _is_retryable_error(error: Exception) -> bool:
+    if isinstance(error, HTTPError):
+        return error.code == 429 or error.code >= 500
+    return isinstance(error, (URLError, TimeoutError))
 
 
 def _http_error_code(error: HTTPError) -> str | None:
@@ -156,17 +172,28 @@ def _chat_completions_url(base_url: str) -> str:
     return f"{base_url.rstrip('/')}/chat/completions"
 
 
-_SYSTEM_PROMPT = """你是装修现场图片标签助手。只输出 JSON，不要 Markdown 或额外说明。
-必须返回 summary、tags、categories、candidate_tags、confidence、risks。
-summary 使用简洁中文，不超过 40 个字。tags 最多 8 个，使用简洁中文。
-categories 可使用 scene、space、stage、view、elements；每个值为字符串数组。
-无法判断时降低 confidence，并把不确定标签放入 candidate_tags。risks 可包含人脸、证件、手机号或地址、二维码、聊天截图、纯文字、严重遮挡。"""
+_SYSTEM_PROMPT = """你是装修图片内容分析助手。只输出 JSON，不要 Markdown 或额外说明。
+必须返回 summary、scene、space、condition、content_type、subjects、view、confidence、risks、tags、categories、candidate_tags。
+只描述图片中能够观察到的内容，不要根据预设业务标签猜测。
+summary 不超过 40 个字；subjects 最多 12 个。
+scene 优先使用：住宅室内、住宅室外、商业空间、施工现场、人物工作。
+space 优先使用：客厅、餐厅、客餐厅、玄关、厨房、卧室、书房、阳台、卫生间、过道；存在多个空间时选择画面主体。
+condition 优先使用：装修前、施工中、装修完成。content_type 优先使用：环境展示、人物工作、材料展示、细节展示、文档截图。
+view 优先使用：空间全景、中景、细节特写。
+tags、candidate_tags 保留为空数组，categories 保留为空对象。无法判断时使用空字符串并降低 confidence。
+risks 可包含人脸、证件、手机号或地址、二维码、聊天截图、纯文字、严重遮挡。"""
 
 _USER_PROMPT = """请分析这张已经自然美化后的装修图片，并按以下 JSON 返回：
 {
-  "summary":"简短中文描述",
-  "tags":["标签"],
-  "categories":{"scene":["施工现场"],"space":["厨房"],"stage":["水电隐蔽"],"view":["节点细节"],"elements":["管线"]},
+  "summary":"老旧住宅装修前的厨房",
+  "scene":"住宅室内",
+  "space":"厨房",
+  "condition":"装修前",
+  "content_type":"环境展示",
+  "subjects":["灶台","墙砖","橱柜"],
+  "view":"空间全景",
+  "tags":[],
+  "categories":{},
   "candidate_tags":[],
   "confidence":0.0,
   "risks":[]

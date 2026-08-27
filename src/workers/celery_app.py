@@ -1,4 +1,8 @@
+import logging
+import os
+
 from celery import Celery
+from celery.signals import worker_process_init
 
 from src.core.config import get_settings
 
@@ -15,5 +19,47 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     task_track_started=True,
     worker_prefetch_multiplier=1,
-    imports=("src.workers.preprocess", "src.workers.enhance", "src.workers.tagging"),
+    imports=(
+        "src.workers.control",
+        "src.workers.preprocess",
+        "src.workers.enhance",
+        "src.workers.analysis",
+        "src.workers.matching",
+        "src.workers.library",
+        "src.workers.cleanup",
+    ),
 )
+
+celery_app.conf.beat_schedule = {
+    "cleanup-expired-images": {
+        "task": "maintenance.cleanup_expired_images",
+        "schedule": settings.cleanup_interval_seconds,
+        "options": {"queue": "cleanup"},
+    },
+    "recover-stalled-images": {
+        "task": "maintenance.recover_stalled_images",
+        "schedule": settings.pipeline_recovery_interval_seconds,
+        "options": {"queue": "cleanup"},
+    },
+}
+
+
+def _prewarm_embedding_model() -> None:
+    if os.getenv("WORKER_ROLE") != "embedding":
+        return
+    try:
+        from src.services.images.embedding import _load_model
+
+        _load_model(
+            settings.image_embedding_model,
+            settings.image_embedding_pretrained,
+            settings.inference_device,
+            settings.inference_cpu_threads,
+        )
+    except Exception:
+        logging.getLogger(__name__).exception("Unable to prewarm OpenCLIP")
+
+
+@worker_process_init.connect
+def prewarm_embedding_process(**_kwargs) -> None:
+    _prewarm_embedding_model()

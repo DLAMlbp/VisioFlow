@@ -65,6 +65,7 @@ class NaturalBeautifyService:
         enhanced = ImageEnhance.Color(enhanced).enhance(effective_profile.color)
         enhanced, local_clarity_applied = self._enhance_local_clarity(enhanced, effective_profile)
 
+        enhanced = self._ensure_minimum_output_size(enhanced, effective_profile)
         output = BytesIO()
         enhanced.save(output, format="JPEG", quality=effective_profile.jpeg_quality, optimize=True)
         return BeautifyResult(
@@ -97,6 +98,18 @@ class NaturalBeautifyService:
             exif_orientation_applied=exif_orientation_applied,
             straighten_applied=straighten_applied,
         )
+
+    def prepare_delivery_image(self, image_bytes: bytes, profile: BeautifyProfile) -> bytes:
+        """Encode an orientation-normalized image to the configured delivery size."""
+        try:
+            with Image.open(BytesIO(image_bytes)) as image:
+                image.load()
+                delivery = self._ensure_minimum_output_size(image.convert("RGB"), profile)
+        except (OSError, UnidentifiedImageError) as exc:
+            raise ValueError("图片无法解码，无法生成交付图") from exc
+        output = BytesIO()
+        delivery.save(output, format="JPEG", quality=profile.jpeg_quality, optimize=True)
+        return output.getvalue()
 
     @staticmethod
     def assess_enhancement_need(
@@ -218,6 +231,19 @@ class NaturalBeautifyService:
             (inset, inset, rotated.width - inset, rotated.height - inset)
         )
         return cropped.resize(image.size, Image.Resampling.LANCZOS)
+
+    @staticmethod
+    def _ensure_minimum_output_size(image: Image.Image, profile: BeautifyProfile) -> Image.Image:
+        """Keep native detail when available and upscale smaller delivery images to 2K."""
+        long_side = max(image.size)
+        if long_side >= profile.min_output_long_side:
+            return image
+        scale = profile.min_output_long_side / long_side
+        target_size = (
+            max(1, round(image.width * scale)),
+            max(1, round(image.height * scale)),
+        )
+        return image.resize(target_size, Image.Resampling.LANCZOS)
 
     @staticmethod
     def _estimate_skew_angle(image: Image.Image, max_degrees: float) -> float | None:

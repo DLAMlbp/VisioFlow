@@ -2,10 +2,17 @@ import type { Decision, JobStatus } from "../types";
 
 export function decisionLabel(decision: Decision): string {
   const labels: Record<Decision, string> = {
+    queued: "等待处理",
+    analyzing: "质量检测中",
+    filtered: "等待美化",
+    enhancing: "美化中",
+    enhanced: "等待分析",
     selected: "已保留并美化",
     tagging: "标签生成中",
     rejected: "未通过标准",
-    failed: "处理失败"
+    not_selected: "质量合格未入选",
+    failed: "处理失败",
+    cancelled: "已取消"
   };
   return labels[decision];
 }
@@ -15,6 +22,7 @@ export function statusLabel(status: JobStatus): string {
     created: "已创建",
     uploading: "上传中",
     queued: "排队中",
+    processing: "流水处理中",
     analyzing: "智能分析中",
     ranking: "排序筛选中",
     enhancing: "自然美化中",
@@ -51,8 +59,8 @@ export function isTerminalStatus(status: JobStatus): boolean {
 }
 
 export function normalizeDecision(value: string): Decision {
-  if (value === "selected" || value === "rejected" || value === "failed" || value === "tagging") {
-    return value;
+  if (["queued", "analyzing", "filtered", "enhancing", "enhanced", "selected", "rejected", "not_selected", "failed", "tagging", "cancelled"].includes(value)) {
+    return value as Decision;
   }
   return "failed";
 }

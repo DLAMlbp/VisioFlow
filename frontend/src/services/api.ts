@@ -1,5 +1,6 @@
 import type {
   AIModelConfig,
+  Decision,
   CreateJobRequest,
   CreateJobResponse,
   JobHistoryResponse,
@@ -8,7 +9,12 @@ import type {
   PresignRequest,
   PresignResponse,
   ProfileOption,
-  UpdateAIModelConfig
+  LibraryAsset,
+  LibraryAssetList,
+  LibraryTagNode,
+  TagReview,
+  UpdateAIModelConfig,
+  UploadBatchRegistration
 } from "../types";
 import { mockApi } from "./mockApi";
 
@@ -17,15 +23,17 @@ const USE_MOCK_API = import.meta.env.VITE_USE_MOCK_API !== "false";
 
 interface BackendResultImage {
   image_id: string;
-  decision: "selected" | "rejected" | "failed";
+  decision: Decision;
   score: number | null;
   original_object_key: string;
   enhanced_object_key: string | null;
+  files_expired: boolean;
   reject_codes: string[];
   reasons: string[];
   metrics: JobResults["images"][number]["metrics"] | null;
   enhanced_metrics: JobResults["images"][number]["metrics"] | null;
   ai_tags: JobResults["images"][number]["ai_tags"] | null;
+  tagging_result: JobResults["images"][number]["tagging_result"] | null;
 }
 
 interface BackendJobResults {
@@ -33,6 +41,10 @@ interface BackendJobResults {
   total: number;
   selected: number;
   rejected: number;
+  not_selected: number;
+  result_total: number;
+  limit: number;
+  offset: number;
   images: BackendResultImage[];
 }
 
@@ -49,6 +61,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(detail || `请求失败：${response.status}`);
   }
 
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -70,41 +83,77 @@ export const api = USE_MOCK_API
           body: JSON.stringify(payload)
         });
       },
+      createUploadBatch(payload: {
+        filter_profile: string;
+        beautify_profile: string;
+        similarity_profile: string;
+        enhance_level: number;
+        max_selected: number;
+        files: PresignRequest[];
+      }): Promise<UploadBatchRegistration> {
+        return request<UploadBatchRegistration>("/api/v1/upload-batches", {
+          method: "POST",
+          body: JSON.stringify(payload)
+        });
+      },
+      completeUploadBatch(batchId: string, itemIds: string[]): Promise<CreateJobResponse> {
+        return request<CreateJobResponse>(`/api/v1/upload-batches/${batchId}/complete`, {
+          method: "POST",
+          body: JSON.stringify({ item_ids: itemIds })
+        });
+      },
       getJob(jobId: string): Promise<JobProgress> {
         return request<JobProgress>(`/api/v1/image/jobs/${jobId}`);
       },
       getHistory(): Promise<JobHistoryResponse> {
         return request<JobHistoryResponse>("/api/v1/image/jobs?limit=30");
       },
-      async getResults(jobId: string): Promise<JobResults> {
-        const result = await request<BackendJobResults>(`/api/v1/image/jobs/${jobId}/results`);
-        const images = await Promise.all(
-          result.images.map(async (image) => ({
+      async getResults(jobId: string, limit = 50, offset = 0, decision?: string): Promise<JobResults> {
+        const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+        if (decision) params.set("decision", decision);
+        const result = await request<BackendJobResults>(`/api/v1/image/jobs/${jobId}/results?${params}`);
+        const objectKeys = result.images.flatMap((image) => [
+          ...(image.files_expired ? [] : [image.original_object_key]),
+          ...(image.files_expired || !image.enhanced_object_key ? [] : [image.enhanced_object_key])
+        ]);
+        const downloadUrls = await getDownloadUrlsSafely(objectKeys);
+        const images = result.images.map((image) => ({
             image_id: image.image_id,
             rank: null,
             score: image.score ?? 0,
             decision: image.decision,
-            original_url: await getDownloadUrlSafely(image.original_object_key),
+            original_url: downloadUrls.get(image.original_object_key),
             enhanced_url: image.enhanced_object_key
-              ? await getDownloadUrlSafely(image.enhanced_object_key)
+              ? downloadUrls.get(image.enhanced_object_key)
               : undefined,
+            files_expired: image.files_expired,
             metrics: image.metrics ?? {},
             enhanced_metrics: image.enhanced_metrics ?? undefined,
             reasons: image.reasons,
             warnings: [],
             reject_codes: image.reject_codes,
-            ai_tags: image.ai_tags ?? undefined
-          }))
-        );
+            ai_tags: image.ai_tags ?? undefined,
+            tagging_result: image.tagging_result ?? undefined
+          }));
         return {
           job_id: result.job_id,
           summary: {
             total: result.total,
             selected: result.selected,
-            rejected: result.rejected
+            rejected: result.rejected,
+            not_selected: result.not_selected
           },
+          result_total: result.result_total,
+          limit: result.limit,
+          offset: result.offset,
           images
         };
+      },
+      cancelJob(jobId: string): Promise<JobProgress> {
+        return request<JobProgress>(`/api/v1/image/jobs/${jobId}/cancel`, { method: "POST" });
+      },
+      retryImage(jobId: string, imageId: string): Promise<JobProgress> {
+        return request<JobProgress>(`/api/v1/image/jobs/${jobId}/images/${imageId}/retry`, { method: "POST" });
       },
       getFilterProfiles(): Promise<ProfileOption[]> {
         return request<ProfileOption[]>("/api/v1/filter-profiles");
@@ -112,12 +161,66 @@ export const api = USE_MOCK_API
       getBeautifyProfiles(): Promise<ProfileOption[]> {
         return request<ProfileOption[]>("/api/v1/beautify-profiles");
       },
+      getSimilarityProfiles(): Promise<ProfileOption[]> {
+        return request<ProfileOption[]>("/api/v1/similarity-profiles");
+      },
       getAIModelConfig(): Promise<AIModelConfig> {
         return request<AIModelConfig>("/api/v1/settings/ai-model");
       },
       updateAIModelConfig(payload: UpdateAIModelConfig): Promise<AIModelConfig> {
         return request<AIModelConfig>("/api/v1/settings/ai-model", {
           method: "PUT",
+          body: JSON.stringify(payload)
+        });
+      },
+      getLibraryTagTree(): Promise<LibraryTagNode[]> {
+        return request<LibraryTagNode[]>("/api/v1/library/tag-tree");
+      },
+      createLibraryTagNode(payload: { name: string; parent_id?: string | null }): Promise<LibraryTagNode> {
+        return request<LibraryTagNode>("/api/v1/library/tag-nodes", {
+          method: "POST",
+          body: JSON.stringify(payload)
+        });
+      },
+      updateLibraryTagNode(nodeId: string, payload: { name?: string; sort_order?: number; status?: "active" | "disabled" }): Promise<LibraryTagNode> {
+        return request<LibraryTagNode>(`/api/v1/library/tag-nodes/${nodeId}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload)
+        });
+      },
+      async deleteLibraryTagNode(nodeId: string): Promise<void> {
+        await request<void>(`/api/v1/library/tag-nodes/${nodeId}`, { method: "DELETE" });
+      },
+      async createLibraryAsset(payload: { object_key: string; leaf_tag_node_id: string; original_filename?: string }): Promise<LibraryAsset> {
+        return request<LibraryAsset>("/api/v1/library/assets", {
+          method: "POST",
+          body: JSON.stringify(payload)
+        });
+      },
+      async getLibraryAssets(leafTagNodeId?: string | null): Promise<LibraryAssetList> {
+        const query = leafTagNodeId ? `?leaf_tag_node_id=${encodeURIComponent(leafTagNodeId)}` : "";
+        const result = await request<LibraryAssetList>(`/api/v1/library/assets${query}`);
+        const items = await Promise.all(result.items.map(async (asset) => ({
+          ...asset,
+          preview_url: await getDownloadUrlSafely(asset.original_object_key)
+        })));
+        return { ...result, items };
+      },
+      updateLibraryAsset(assetId: string, payload: { leaf_tag_node_id?: string; status?: "active" | "disabled" }): Promise<LibraryAsset> {
+        return request<LibraryAsset>(`/api/v1/library/assets/${assetId}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload)
+        });
+      },
+      reindexLibraryAsset(assetId: string): Promise<LibraryAsset> {
+        return request<LibraryAsset>(`/api/v1/library/assets/${assetId}/reindex`, { method: "POST" });
+      },
+      getTagReviews(): Promise<TagReview[]> {
+        return request<TagReview[]>("/api/v1/tag-reviews?limit=200");
+      },
+      decideTagReview(imageId: string, payload: { decision: "matched" | "unmatched"; matched_asset_id?: string | null }): Promise<TagReview> {
+        return request<TagReview>(`/api/v1/tag-reviews/${imageId}/decision`, {
+          method: "POST",
           body: JSON.stringify(payload)
         });
       }
@@ -136,6 +239,20 @@ async function getDownloadUrlSafely(objectKey: string): Promise<string | undefin
     return await getDownloadUrl(objectKey);
   } catch {
     return undefined;
+  }
+}
+
+async function getDownloadUrlsSafely(objectKeys: string[]): Promise<Map<string, string>> {
+  const uniqueKeys = Array.from(new Set(objectKeys)).slice(0, 100);
+  if (!uniqueKeys.length) return new Map();
+  try {
+    const response = await request<{ items: Array<{ object_key: string; download_url: string }> }>(
+      "/api/v1/uploads/presign-download-batch",
+      { method: "POST", body: JSON.stringify({ object_keys: uniqueKeys }) }
+    );
+    return new Map(response.items.map((item) => [item.object_key, item.download_url]));
+  } catch {
+    return new Map();
   }
 }
 

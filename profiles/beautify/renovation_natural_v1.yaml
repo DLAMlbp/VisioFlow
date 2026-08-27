@@ -1,6 +1,6 @@
 id: renovation_natural_v1
-version: 4
-description: 保留装修现场真实状态的自然增强，校正局部光线、色彩与材质细节，不添加或移除任何装修内容。
+version: 5
+description: 保留装修现场真实状态的自然增强，校正局部光线、色彩与材质细节，不添加或移除任何装修内容；交付图长边至少为 2048px。
 
 brightness: 1.03
 contrast: 1.08
@@ -17,4 +17,5 @@ glare_reduction_strength: 0.2
 local_clarity_strength: 0.24
 auto_straighten: true
 max_straighten_degrees: 12
-jpeg_quality: 90
+min_output_long_side: 2048
+jpeg_quality: 95

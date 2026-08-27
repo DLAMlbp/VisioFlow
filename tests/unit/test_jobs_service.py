@@ -7,6 +7,7 @@ from src.models.image_item import ImageItem
 from src.models.image_job import ImageJob
 from src.models.image_metric import ImageMetric
 from src.models.image_result import ImageResult
+from src.repositories.jobs import JobProgressSnapshot
 from src.schemas.jobs import CreateImageJobRequest
 from src.services.jobs.service import ImageJobService, InvalidJobRequest, JobNotFound
 from src.services.profiles import ProfileLoader
@@ -28,6 +29,36 @@ class FakeJobRepository:
     async def list_jobs(self, limit: int, offset: int) -> tuple[int, list[ImageJob]]:
         jobs = sorted(self.jobs.values(), key=lambda job: job.created_at, reverse=True)
         return len(jobs), jobs[offset : offset + limit]
+
+    async def get_progress_snapshot(self, job_id: str) -> JobProgressSnapshot | None:
+        job = self.jobs.get(job_id)
+        if job is None:
+            return None
+        waiting = max(0, job.total_count - job.processed_count)
+        return JobProgressSnapshot(
+            id=job.id,
+            status=job.status,
+            total_count=job.total_count,
+            processed_count=job.processed_count,
+            selected_count=job.selected_count,
+            rejected_count=job.rejected_count,
+            not_selected_count=job.not_selected_count or 0,
+            stage_counts={
+                "waiting": waiting,
+                "completed": job.selected_count,
+                "rejected": job.rejected_count,
+                "not_selected": job.not_selected_count or 0,
+            },
+        )
+
+    async def list_result_items(
+        self, job_id: str, *, limit: int, offset: int, decision: str | None
+    ) -> tuple[int, list[ImageItem]]:
+        job = self.jobs[job_id]
+        items = [item for item in job.items if item.result is not None]
+        if decision:
+            items = [item for item in items if item.result and item.result.decision == decision]
+        return len(items), items[offset : offset + limit]
 
 
 class FakeTaskPublisher:
@@ -66,10 +97,29 @@ async def test_create_job_persists_job_and_image_items() -> None:
     assert response.total == 2
     assert repository.item_count == 2
     assert repository.jobs[response.job_id].ai_tagging_model == "vision-model-test"
+    assert repository.jobs[response.job_id].similarity_profile_id == "library_similarity_v2"
 
 
 @pytest.mark.asyncio
-async def test_create_job_publishes_each_image_for_metadata_processing() -> None:
+async def test_create_job_persists_selected_similarity_profile() -> None:
+    repository = FakeJobRepository()
+    service = ImageJobService(
+        repository=repository,
+        settings=Settings(max_images_per_job=50, profiles_directory="profiles"),
+        profile_loader=ProfileLoader(Settings(profiles_directory="profiles")),
+    )
+    payload = make_payload()
+    payload.filter_profile = "renovation_submission_v1"
+    payload.beautify_profile = "renovation_natural_v1"
+    payload.similarity_profile = "library_similarity_v1"
+
+    response = await service.create_job(payload)
+
+    assert repository.jobs[response.job_id].similarity_profile_id == "library_similarity_v1"
+
+
+@pytest.mark.asyncio
+async def test_create_job_publishes_one_job_dispatch_task() -> None:
     publisher = FakeTaskPublisher()
     service = ImageJobService(
         repository=FakeJobRepository(),
@@ -79,8 +129,8 @@ async def test_create_job_publishes_each_image_for_metadata_processing() -> None
 
     await service.create_job(make_payload())
 
-    assert len(publisher.image_ids) == 2
-    assert all(image_id.startswith("img_") for image_id in publisher.image_ids)
+    assert len(publisher.image_ids) == 1
+    assert publisher.image_ids[0].startswith("job_")
 
 
 @pytest.mark.asyncio

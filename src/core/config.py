@@ -24,7 +24,11 @@ class Settings(BaseSettings):
     s3_region: str = "us-east-1"
     s3_presign_expires_seconds: int = 900
 
-    max_images_per_job: int = 50
+    max_images_per_job: int = 500
+    max_upload_batch_size: int = 500
+    upload_batch_expiry_hours: int = 24
+    upload_batch_presign_expires_seconds: int = 3600
+    job_dispatch_chunk_size: int = 25
     max_image_size_mb: int = 25
     allowed_image_content_types: set[str] = Field(
         default_factory=lambda: {"image/jpeg", "image/png", "image/webp"}
@@ -51,7 +55,7 @@ class Settings(BaseSettings):
     profiles_directory: str = "profiles"
     default_filter_profile: str = "renovation_submission_v1"
     default_beautify_profile: str = "renovation_natural_v1"
-    image_retention_days: int = 7
+    image_retention_days: int = 30
 
     ai_tagging_enabled: bool = True
     ai_tagging_provider: str = "openai"
@@ -61,6 +65,19 @@ class Settings(BaseSettings):
     ai_tagging_timeout_seconds: int = 30
     ai_tagging_max_retries: int = 2
     ai_tagging_image_long_side: int = 1024
+    ai_tagging_concurrency: int = 4
+    ai_tagging_rate_limit_per_minute: int = 24
+    ai_tagging_store_raw_response: bool = False
+
+    image_embedding_model: str = "ViT-B-32"
+    image_embedding_pretrained: str = "laion2b_s34b_b79k"
+    image_embedding_version: str = "openclip_vit_b32_v1"
+    inference_device: str = "auto"
+    inference_cpu_threads: int = 4
+    default_similarity_profile: str = "library_similarity_v2"
+    cleanup_interval_seconds: int = 3600
+    pipeline_recovery_interval_seconds: int = 300
+    pipeline_stale_seconds: int = 900
 
 
 

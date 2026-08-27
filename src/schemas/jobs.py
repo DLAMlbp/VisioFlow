@@ -10,6 +10,7 @@ class JobStatus(StrEnum):
     CREATED = "created"
     UPLOADING = "uploading"
     QUEUED = "queued"
+    PROCESSING = "processing"
     ANALYZING = "analyzing"
     RANKING = "ranking"
     ENHANCING = "enhancing"
@@ -30,6 +31,8 @@ class ImageItemStatus(StrEnum):
     REJECTED = "rejected"
     SELECTED = "selected"
     FAILED = "failed"
+    NOT_SELECTED = "not_selected"
+    CANCELLED = "cancelled"
 
 
 class CreateJobImage(BaseModel):
@@ -48,6 +51,7 @@ class CreateJobImage(BaseModel):
 class CreateImageJobRequest(BaseModel):
     filter_profile: str = Field(default="renovation_submission_v1", min_length=1, max_length=80)
     beautify_profile: str = Field(default="renovation_natural_v1", min_length=1, max_length=80)
+    similarity_profile: str = Field(default="library_similarity_v2", min_length=1, max_length=80)
     enhance_level: int = Field(default=1, ge=0, le=2)
     max_selected: int = Field(default=10, ge=1)
     images: list[CreateJobImage] = Field(min_length=1)
@@ -68,7 +72,9 @@ class ImageJobProgressResponse(BaseModel):
     processed: int
     selected: int
     rejected: int
+    not_selected: int = 0
     tagging: int = 0
+    stage_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class ImageJobHistoryItemResponse(BaseModel):
@@ -78,6 +84,7 @@ class ImageJobHistoryItemResponse(BaseModel):
     processed: int
     selected: int
     rejected: int
+    not_selected: int = 0
     ai_tagging_model: str | None = None
     created_at: datetime
     completed_at: datetime | None = None
@@ -109,17 +116,28 @@ class ImageAITagsResponse(BaseModel):
     error_message: str | None = None
 
 
+class ImageSimilarityResultResponse(BaseModel):
+    decision: str
+    tag_path: list[str] = Field(default_factory=list)
+    matched_asset_id: str | None = None
+    similarity: float | None = Field(default=None, ge=0, le=1)
+    final_score: float | None = Field(default=None, ge=0, le=1)
+    message: str
+
+
 class ImageJobResultItemResponse(BaseModel):
     image_id: str
     decision: ImageItemStatus
     score: float | None = None
     original_object_key: str
     enhanced_object_key: str | None = None
+    files_expired: bool = False
     reject_codes: list[str] = Field(default_factory=list)
     reasons: list[str] = Field(default_factory=list)
     metrics: ImageMetricsResponse | None = None
     enhanced_metrics: ImageMetricsResponse | None = None
     ai_tags: ImageAITagsResponse | None = None
+    tagging_result: ImageSimilarityResultResponse | None = None
 
 
 class ImageJobResultsResponse(BaseModel):
@@ -127,4 +145,8 @@ class ImageJobResultsResponse(BaseModel):
     total: int
     selected: int
     rejected: int
+    not_selected: int = 0
+    result_total: int = 0
+    limit: int = 50
+    offset: int = 0
     images: list[ImageJobResultItemResponse]

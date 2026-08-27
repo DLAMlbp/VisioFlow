@@ -31,6 +31,9 @@ class MinIOStorageProvider(StorageProvider):
             config=Config(signature_version="s3v4"),
         )
 
+    async def healthcheck(self) -> None:
+        await asyncio.to_thread(self.client.head_bucket, Bucket=self.settings.s3_bucket)
+
     async def upload(self, object_key: str, data: bytes, content_type: str) -> None:
         validate_object_key(object_key)
         await asyncio.to_thread(

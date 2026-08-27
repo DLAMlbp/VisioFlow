@@ -2,6 +2,9 @@ from abc import ABC, abstractmethod
 
 
 class StorageProvider(ABC):
+    async def healthcheck(self) -> None:
+        """Raise when the storage backend is unavailable."""
+
     @abstractmethod
     async def upload(self, object_key: str, data: bytes, content_type: str) -> None:
         pass

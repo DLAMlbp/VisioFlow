@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -13,6 +14,7 @@ if TYPE_CHECKING:
     from src.models.image_job import ImageJob
     from src.models.image_metric import ImageMetric
     from src.models.image_result import ImageResult
+    from src.models.image_similarity_match import ImageSimilarityMatch
 
 
 class ImageItem(Base):
@@ -23,6 +25,7 @@ class ImageItem(Base):
 
     object_key: Mapped[str] = mapped_column(String(1024), nullable=False)
     thumbnail_object_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    analysis_object_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
     original_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
     content_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -35,9 +38,27 @@ class ImageItem(Base):
 
     sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     phash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(512), nullable=True)
+    embedding_version: Mapped[str | None] = mapped_column(String(120), nullable=True)
     reject_codes: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    analysis_status: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)
+    embedding_status: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)
+    match_status: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)
+
+    preprocess_dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    preprocess_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    preprocess_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    enhance_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    enhance_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    analysis_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    analysis_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    embedding_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    embedding_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    match_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    match_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -55,3 +76,6 @@ class ImageItem(Base):
     metric: Mapped[ImageMetric | None] = relationship(back_populates="image", lazy="selectin")
     result: Mapped[ImageResult | None] = relationship(back_populates="image", lazy="selectin")
     ai_tag: Mapped[ImageAITag | None] = relationship(back_populates="image", lazy="selectin")
+    similarity_match: Mapped[ImageSimilarityMatch | None] = relationship(
+        back_populates="image", cascade="all, delete-orphan", uselist=False, lazy="selectin"
+    )

@@ -50,6 +50,10 @@ def build_enhanced_object_key(job_id: str, image_id: str) -> str:
     return f"enhanced/{job_id}/{image_id}.jpg"
 
 
+def build_analysis_object_key(job_id: str, image_id: str) -> str:
+    return f"analysis/{job_id}/{image_id}.jpg"
+
+
 def validate_object_key(object_key: str) -> None:
     if object_key.startswith("/") or ".." in object_key.split("/"):
         raise InvalidUploadRequest("object_key 不合法")

@@ -5,6 +5,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from src.core.config import Settings, get_settings
 from src.core.exceptions import InvalidUploadRequest
 from src.schemas.uploads import (
+    BatchPresignedDownloadItem,
+    BatchPresignedDownloadRequest,
+    BatchPresignedDownloadResponse,
     PresignedDownloadRequest,
     PresignedDownloadResponse,
     PresignedUploadRequest,
@@ -59,3 +62,23 @@ async def presign_download(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message) from exc
 
     return PresignedDownloadResponse(object_key=payload.object_key, download_url=download_url)
+
+
+@router.post("/presign-download-batch", response_model=BatchPresignedDownloadResponse)
+async def presign_download_batch(
+    payload: BatchPresignedDownloadRequest,
+    settings: SettingsDep,
+    storage: StorageDep,
+) -> BatchPresignedDownloadResponse:
+    items: list[BatchPresignedDownloadItem] = []
+    for object_key in dict.fromkeys(payload.object_keys):
+        try:
+            validate_object_key(object_key)
+            download_url = await storage.presign_download(
+                object_key=object_key,
+                expires_seconds=settings.s3_presign_expires_seconds,
+            )
+        except InvalidUploadRequest as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message) from exc
+        items.append(BatchPresignedDownloadItem(object_key=object_key, download_url=download_url))
+    return BatchPresignedDownloadResponse(items=items)

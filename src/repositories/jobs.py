@@ -1,6 +1,9 @@
 from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import datetime
 
-from sqlalchemy import desc, func, select, update
+from sqlalchemy import cast, delete, desc, func, literal, select, update
+from sqlalchemy.dialects.postgresql import BIT
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -9,6 +12,32 @@ from src.models.image_item import ImageItem
 from src.models.image_job import ImageJob
 from src.models.image_metric import ImageMetric
 from src.models.image_result import ImageResult
+from src.models.image_similarity_match import ImageSimilarityMatch
+
+
+@dataclass(frozen=True)
+class JobConfig:
+    id: str
+    status: str
+    filter_profile_id: str
+    beautify_profile_id: str
+    similarity_profile_id: str
+    max_selected: int
+    total_count: int
+    dispatch_cursor: int
+    cancel_requested_at: datetime | None
+
+
+@dataclass(frozen=True)
+class JobProgressSnapshot:
+    id: str
+    status: str
+    total_count: int
+    processed_count: int
+    selected_count: int
+    rejected_count: int
+    not_selected_count: int
+    stage_counts: dict[str, int]
 
 
 class ImageJobRepository:
@@ -34,6 +63,54 @@ class ImageJobRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_config(self, job_id: str) -> JobConfig | None:
+        row = (
+            await self.session.execute(
+                select(
+                    ImageJob.id,
+                    ImageJob.status,
+                    ImageJob.filter_profile_id,
+                    ImageJob.beautify_profile_id,
+                    ImageJob.similarity_profile_id,
+                    ImageJob.max_selected,
+                    ImageJob.total_count,
+                    ImageJob.dispatch_cursor,
+                    ImageJob.cancel_requested_at,
+                ).where(ImageJob.id == job_id)
+            )
+        ).one_or_none()
+        return JobConfig(*row) if row else None
+
+    async def list_item_ids_for_dispatch(
+        self, job_id: str, *, offset: int, limit: int
+    ) -> list[str]:
+        result = await self.session.execute(
+            select(ImageItem.id)
+            .where(ImageItem.job_id == job_id)
+            .order_by(ImageItem.created_at, ImageItem.id)
+            .offset(offset)
+            .limit(limit)
+        )
+        return list(result.scalars())
+
+    async def advance_dispatch_cursor(self, job_id: str, cursor: int) -> None:
+        await self.session.execute(
+            update(ImageJob)
+            .where(ImageJob.id == job_id, ImageJob.dispatch_cursor < cursor)
+            .values(dispatch_cursor=cursor)
+        )
+        await self.session.commit()
+
+    async def mark_preprocess_dispatched(self, image_ids: list[str]) -> None:
+        if not image_ids:
+            return
+        await self.session.execute(
+            update(ImageItem)
+            .where(ImageItem.id.in_(image_ids), ImageItem.preprocess_dispatched_at.is_(None))
+            .values(preprocess_dispatched_at=func.now())
+        )
+        await self.session.commit()
+
     async def get_item(self, image_id: str) -> ImageItem | None:
         result = await self.session.execute(
             select(ImageItem)
@@ -45,6 +122,142 @@ class ImageJobRepository:
             )
         )
         return result.scalar_one_or_none()
+
+    async def claim_preprocess(self, image_id: str) -> ImageItem | None:
+        row = await self.session.execute(
+            update(ImageItem)
+            .where(ImageItem.id == image_id, ImageItem.status == "queued")
+            .values(status="analyzing", preprocess_started_at=func.now())
+            .returning(ImageItem.job_id)
+        )
+        job_id = row.scalar_one_or_none()
+        if job_id is None:
+            await self.session.rollback()
+            return None
+        await self.session.execute(
+            update(ImageJob)
+            .where(ImageJob.id == job_id, ImageJob.cancel_requested_at.is_(None))
+            .values(status="processing", started_at=func.coalesce(ImageJob.started_at, func.now()))
+        )
+        await self.session.commit()
+        return await self.get_item(image_id)
+
+    async def claim_enhancement(self, image_id: str) -> ImageItem | None:
+        row = await self.session.execute(
+            update(ImageItem)
+            .where(ImageItem.id == image_id, ImageItem.status == "filtered")
+            .values(status="enhancing", enhance_started_at=func.now())
+            .returning(ImageItem.id)
+        )
+        if row.scalar_one_or_none() is None:
+            await self.session.rollback()
+            return None
+        await self.session.commit()
+        return await self.get_item(image_id)
+
+    async def claim_analysis(self, image_id: str) -> ImageItem | None:
+        result = await self.session.execute(
+            update(ImageItem)
+            .where(
+                ImageItem.id == image_id,
+                ImageItem.status == "tagging",
+                ImageItem.analysis_status == "pending",
+            )
+            .values(analysis_status="processing", analysis_started_at=func.now())
+            .returning(ImageItem.id)
+        )
+        if result.scalar_one_or_none() is None:
+            await self.session.rollback()
+            return None
+        await self.session.commit()
+        return await self.get_item(image_id)
+
+    async def complete_analysis_stage(self, image_id: str, *, succeeded: bool) -> None:
+        await self.session.execute(
+            update(ImageItem)
+            .where(ImageItem.id == image_id, ImageItem.analysis_status == "processing")
+            .values(
+                analysis_status="completed" if succeeded else "failed",
+                analysis_completed_at=func.now(),
+            )
+        )
+        await self.session.commit()
+
+    async def claim_embedding(self, image_id: str) -> ImageItem | None:
+        result = await self.session.execute(
+            update(ImageItem)
+            .where(
+                ImageItem.id == image_id,
+                ImageItem.status == "tagging",
+                ImageItem.embedding_status == "pending",
+            )
+            .values(embedding_status="processing", embedding_started_at=func.now())
+            .returning(ImageItem.id)
+        )
+        if result.scalar_one_or_none() is None:
+            await self.session.rollback()
+            return None
+        await self.session.commit()
+        return await self.get_item(image_id)
+
+    async def complete_embedding_stage(
+        self,
+        image_id: str,
+        *,
+        embedding: list[float] | None,
+        embedding_version: str | None,
+    ) -> None:
+        await self.session.execute(
+            update(ImageItem)
+            .where(ImageItem.id == image_id, ImageItem.embedding_status == "processing")
+            .values(
+                embedding=embedding,
+                embedding_version=embedding_version,
+                embedding_status="completed" if embedding is not None else "failed",
+                embedding_completed_at=func.now(),
+            )
+        )
+        await self.session.commit()
+
+    async def claim_match_if_ready(self, image_id: str) -> bool:
+        result = await self.session.execute(
+            update(ImageItem)
+            .where(
+                ImageItem.id == image_id,
+                ImageItem.status == "tagging",
+                ImageItem.match_status == "pending",
+                ImageItem.analysis_status.in_(("completed", "failed")),
+                ImageItem.embedding_status.in_(("completed", "failed")),
+            )
+            .values(match_status="queued")
+        )
+        await self.session.commit()
+        return result.rowcount == 1
+
+    async def claim_match(self, image_id: str) -> ImageItem | None:
+        result = await self.session.execute(
+            update(ImageItem)
+            .where(
+                ImageItem.id == image_id,
+                ImageItem.status == "tagging",
+                ImageItem.match_status == "queued",
+            )
+            .values(match_status="processing", match_started_at=func.now())
+            .returning(ImageItem.id)
+        )
+        if result.scalar_one_or_none() is None:
+            await self.session.rollback()
+            return None
+        await self.session.commit()
+        return await self.get_item(image_id)
+
+    async def complete_match_stage(self, image_id: str) -> None:
+        await self.session.execute(
+            update(ImageItem)
+            .where(ImageItem.id == image_id, ImageItem.match_status == "processing")
+            .values(match_status="completed", match_completed_at=func.now())
+        )
+        await self.session.commit()
 
     async def list_jobs(self, limit: int, offset: int) -> tuple[int, list[ImageJob]]:
         total = await self.session.scalar(select(func.count()).select_from(ImageJob))
@@ -62,6 +275,49 @@ class ImageJobRepository:
         await self.session.commit()
         await self.session.refresh(item)
         return item
+
+    async def save_metadata_and_find_duplicates(
+        self,
+        item: ImageItem,
+        values: Mapping[str, object],
+        *,
+        max_hamming_distance: int,
+    ) -> tuple[ImageItem | None, ImageItem | None]:
+        """Persist hashes and compare them under a per-job transaction lock."""
+        await self.session.execute(select(func.pg_advisory_xact_lock(func.hashtext(item.job_id))))
+        for name, value in values.items():
+            setattr(item, name, value)
+        await self.session.flush()
+
+        exact = await self.session.scalar(
+            select(ImageItem)
+            .where(
+                ImageItem.job_id == item.job_id,
+                ImageItem.id != item.id,
+                ImageItem.sha256 == item.sha256,
+            )
+            .limit(1)
+        )
+        similar = None
+        if exact is None and item.phash:
+            distance = func.bit_count(
+                cast(ImageItem.phash, BIT(64)).bitwise_xor(
+                    cast(literal(item.phash), BIT(64))
+                )
+            )
+            similar = await self.session.scalar(
+                select(ImageItem)
+                .where(
+                    ImageItem.job_id == item.job_id,
+                    ImageItem.id != item.id,
+                    ImageItem.phash.is_not(None),
+                    distance <= max_hamming_distance,
+                )
+                .order_by(distance, ImageItem.created_at, ImageItem.id)
+                .limit(1)
+            )
+        await self.session.commit()
+        return exact, similar
 
     async def find_duplicate_item(
         self,
@@ -90,17 +346,20 @@ class ImageJobRepository:
         phash: str,
         max_hamming_distance: int,
     ) -> ImageItem | None:
-        candidates = await self.session.execute(
-            select(ImageItem).where(
+        distance = func.bit_count(
+            cast(ImageItem.phash, BIT(64)).bitwise_xor(cast(literal(phash), BIT(64)))
+        )
+        return await self.session.scalar(
+            select(ImageItem)
+            .where(
                 ImageItem.job_id == job_id,
                 ImageItem.id != image_id,
                 ImageItem.phash.is_not(None),
+                distance <= max_hamming_distance,
             )
+            .order_by(distance, ImageItem.created_at, ImageItem.id)
+            .limit(1)
         )
-        for candidate in candidates.scalars():
-            if candidate.phash and _hamming_distance(candidate.phash, phash) <= max_hamming_distance:
-                return candidate
-        return None
 
     async def start_item(self, item: ImageItem) -> None:
         await self.session.execute(
@@ -132,7 +391,9 @@ class ImageJobRepository:
                 rejected_count=ImageJob.rejected_count + 1,
             )
         )
+        item.preprocess_completed_at = item.preprocess_completed_at or func.now()
         await self.session.commit()
+        await self.complete_job_if_finished(item.job_id)
 
     async def fail_item(self, item: ImageItem, reason: str) -> None:
         if not await self._transition_to_terminal(item, "failed"):
@@ -150,6 +411,7 @@ class ImageJobRepository:
             .values(processed_count=ImageJob.processed_count + 1)
         )
         await self.session.commit()
+        await self.complete_job_if_finished(item.job_id)
 
     async def complete_filter(
         self,
@@ -161,7 +423,7 @@ class ImageJobRepository:
         transitioned = await self.session.execute(
             update(ImageItem)
             .where(ImageItem.id == item.id, ImageItem.status == "analyzing")
-            .values(status="filtered")
+            .values(status="filtered", preprocess_completed_at=func.now())
         )
         if transitioned.rowcount != 1:
             return False
@@ -175,6 +437,7 @@ class ImageJobRepository:
             },
         )
         await self.session.commit()
+        item.status = "filtered"
         return True
 
     async def claim_enhancement_phase_if_filtering_complete(self, job_id: str) -> bool:
@@ -238,13 +501,18 @@ class ImageJobRepository:
         item: ImageItem,
         *,
         enhanced_object_key: str,
+        analysis_object_key: str,
         enhanced_metrics: Mapping[str, float],
         reasons: list[str],
     ) -> bool:
         transitioned = await self.session.execute(
             update(ImageItem)
             .where(ImageItem.id == item.id, ImageItem.status == "enhancing")
-            .values(status="enhanced")
+            .values(
+                status="enhanced",
+                analysis_object_key=analysis_object_key,
+                enhance_completed_at=func.now(),
+            )
         )
         if transitioned.rowcount != 1:
             return False
@@ -310,7 +578,12 @@ class ImageJobRepository:
         transitioned = await self.session.execute(
             update(ImageItem)
             .where(ImageItem.id == item.id, ImageItem.status == "enhanced")
-            .values(status="tagging")
+            .values(
+                status="tagging",
+                analysis_status="pending",
+                embedding_status="pending",
+                match_status="pending",
+            )
         )
         if transitioned.rowcount != 1:
             return False
@@ -401,6 +674,256 @@ class ImageJobRepository:
         await self.session.commit()
         await self.complete_job_if_finished(item.job_id)
 
+    async def mark_not_selected(self, item: ImageItem) -> None:
+        transitioned = await self.session.execute(
+            update(ImageItem)
+            .where(ImageItem.id == item.id, ImageItem.status == "filtered")
+            .values(status="not_selected")
+        )
+        if transitioned.rowcount != 1:
+            await self.session.rollback()
+            return
+        await self._upsert_result(
+            item.id,
+            {
+                "decision": "not_selected",
+                "reasons_json": ["质量合格，但未进入本任务的优选数量范围"],
+            },
+        )
+        await self.session.execute(
+            update(ImageJob)
+            .where(ImageJob.id == item.job_id)
+            .values(
+                processed_count=ImageJob.processed_count + 1,
+                not_selected_count=ImageJob.not_selected_count + 1,
+            )
+        )
+        await self.session.commit()
+        await self.complete_job_if_finished(item.job_id)
+
+    async def list_filtered_items_by_score(self, job_id: str) -> list[ImageItem]:
+        result = await self.session.execute(
+            select(ImageItem)
+            .join(ImageResult, ImageResult.image_id == ImageItem.id)
+            .where(ImageItem.job_id == job_id, ImageItem.status == "filtered")
+            .order_by(ImageResult.final_score.desc(), ImageItem.created_at)
+            .options(selectinload(ImageItem.metric), selectinload(ImageItem.result))
+        )
+        return list(result.scalars())
+
+    async def claim_ranking_if_filtering_complete(self, job_id: str) -> bool:
+        pending = await self.session.scalar(
+            select(func.count()).select_from(ImageItem).where(
+                ImageItem.job_id == job_id,
+                ImageItem.status.in_(("queued", "analyzing")),
+            )
+        )
+        if pending:
+            return False
+        result = await self.session.execute(
+            update(ImageJob)
+            .where(
+                ImageJob.id == job_id,
+                ImageJob.cancel_requested_at.is_(None),
+                ImageJob.status == "processing",
+            )
+            .values(status="ranking")
+        )
+        await self.session.commit()
+        return result.rowcount == 1
+
+    async def finish_ranking(self, job_id: str) -> None:
+        await self.session.execute(
+            update(ImageJob)
+            .where(ImageJob.id == job_id, ImageJob.status == "ranking")
+            .values(status="processing")
+        )
+        await self.session.commit()
+
+    async def get_progress_snapshot(self, job_id: str) -> JobProgressSnapshot | None:
+        job_row = (
+            await self.session.execute(
+                select(
+                    ImageJob.id,
+                    ImageJob.status,
+                    ImageJob.total_count,
+                    ImageJob.processed_count,
+                    ImageJob.selected_count,
+                    ImageJob.rejected_count,
+                    ImageJob.not_selected_count,
+                ).where(ImageJob.id == job_id)
+            )
+        ).one_or_none()
+        if job_row is None:
+            return None
+        rows = await self.session.execute(
+            select(
+                ImageItem.status,
+                ImageItem.analysis_status,
+                ImageItem.embedding_status,
+                ImageItem.match_status,
+                func.count(ImageItem.id),
+            )
+            .where(ImageItem.job_id == job_id)
+            .group_by(
+                ImageItem.status,
+                ImageItem.analysis_status,
+                ImageItem.embedding_status,
+                ImageItem.match_status,
+            )
+        )
+        counts = {
+            "waiting": 0,
+            "filtering": 0,
+            "beautifying": 0,
+            "content_analysis": 0,
+            "matching": 0,
+            "completed": 0,
+            "rejected": 0,
+            "not_selected": 0,
+            "failed": 0,
+            "cancelled": 0,
+        }
+        for status, analysis_status, embedding_status, match_status, count in rows:
+            count = int(count)
+            if status == "queued":
+                counts["waiting"] += count
+            elif status == "analyzing":
+                counts["filtering"] += count
+            elif status in {"filtered", "enhancing", "enhanced"}:
+                counts["beautifying"] += count
+            elif status == "tagging":
+                if analysis_status in {"pending", "processing"} or embedding_status in {"pending", "processing"}:
+                    counts["content_analysis"] += count
+                elif match_status in {"pending", "queued", "processing"}:
+                    counts["matching"] += count
+            elif status == "selected":
+                counts["completed"] += count
+            elif status == "rejected":
+                counts["rejected"] += count
+            elif status == "not_selected":
+                counts["not_selected"] += count
+            elif status == "failed":
+                counts["failed"] += count
+            elif status == "cancelled":
+                counts["cancelled"] += count
+        return JobProgressSnapshot(*job_row, stage_counts=counts)
+
+    async def list_result_items(
+        self,
+        job_id: str,
+        *,
+        limit: int,
+        offset: int,
+        decision: str | None,
+    ) -> tuple[int, list[ImageItem]]:
+        filters = [ImageItem.job_id == job_id, ImageItem.result.has()]
+        if decision:
+            filters.append(ImageResult.decision == decision)
+        total_statement = (
+            select(func.count(ImageItem.id))
+            .outerjoin(ImageResult, ImageResult.image_id == ImageItem.id)
+            .where(*filters)
+        )
+        total = int(await self.session.scalar(total_statement) or 0)
+        result = await self.session.execute(
+            select(ImageItem)
+            .outerjoin(ImageResult, ImageResult.image_id == ImageItem.id)
+            .where(*filters)
+            .order_by(ImageItem.created_at, ImageItem.id)
+            .limit(limit)
+            .offset(offset)
+            .options(
+                selectinload(ImageItem.metric),
+                selectinload(ImageItem.result),
+                selectinload(ImageItem.ai_tag),
+                selectinload(ImageItem.similarity_match),
+            )
+        )
+        return total, list(result.scalars().unique())
+
+    async def cancel_job(self, job_id: str) -> bool:
+        job_result = await self.session.execute(
+            update(ImageJob)
+            .where(
+                ImageJob.id == job_id,
+                ImageJob.status.not_in(("completed", "partial_failed", "failed", "cancelled")),
+            )
+            .values(status="cancelled", cancel_requested_at=func.now(), completed_at=func.now())
+        )
+        if job_result.rowcount != 1:
+            await self.session.rollback()
+            return False
+        terminal = ("selected", "rejected", "failed", "not_selected", "cancelled")
+        pending_count = int(
+            await self.session.scalar(
+                select(func.count()).select_from(ImageItem).where(
+                    ImageItem.job_id == job_id, ImageItem.status.not_in(terminal)
+                )
+            )
+            or 0
+        )
+        await self.session.execute(
+            update(ImageItem)
+            .where(ImageItem.job_id == job_id, ImageItem.status.not_in(terminal))
+            .values(status="cancelled")
+        )
+        await self.session.execute(
+            update(ImageJob)
+            .where(ImageJob.id == job_id)
+            .values(processed_count=ImageJob.processed_count + pending_count)
+        )
+        await self.session.commit()
+        return True
+
+    async def retry_failed_item(self, job_id: str, image_id: str) -> bool:
+        result = await self.session.execute(
+            update(ImageItem)
+            .where(
+                ImageItem.id == image_id,
+                ImageItem.job_id == job_id,
+                ImageItem.status == "failed",
+            )
+            .values(
+                status="queued",
+                reject_codes=None,
+                analysis_status=None,
+                embedding_status=None,
+                match_status=None,
+                embedding=None,
+                embedding_version=None,
+                preprocess_started_at=None,
+                preprocess_completed_at=None,
+                enhance_started_at=None,
+                enhance_completed_at=None,
+                analysis_started_at=None,
+                analysis_completed_at=None,
+                embedding_started_at=None,
+                embedding_completed_at=None,
+                match_started_at=None,
+                match_completed_at=None,
+            )
+        )
+        if result.rowcount != 1:
+            await self.session.rollback()
+            return False
+        await self.session.execute(delete(ImageResult).where(ImageResult.image_id == image_id))
+        await self.session.execute(delete(ImageAITag).where(ImageAITag.image_id == image_id))
+        await self.session.execute(
+            delete(ImageSimilarityMatch).where(ImageSimilarityMatch.image_id == image_id)
+        )
+        await self.session.execute(
+            update(ImageJob)
+            .where(ImageJob.id == job_id)
+            .values(
+                status="processing",
+                completed_at=None,
+                processed_count=func.greatest(ImageJob.processed_count - 1, 0),
+            )
+        )
+        await self.session.commit()
+        return True
+
     async def _upsert_result(self, image_id: str, values: Mapping[str, object]) -> ImageResult:
         result = await self.session.execute(select(ImageResult).where(ImageResult.image_id == image_id))
         image_result = result.scalar_one_or_none()
@@ -429,14 +952,14 @@ class ImageJobRepository:
         return result.rowcount == 1
 
     async def complete_job_if_finished(self, job_id: str) -> None:
-        job = await self.get(job_id)
-        if job is None:
-            return
-
-        # Other image tasks update the counters in separate database sessions.
-        # Refresh avoids completing against the value cached when this task began.
-        await self.session.refresh(job)
-        if job.processed_count < job.total_count:
+        counters = (
+            await self.session.execute(
+                select(ImageJob.processed_count, ImageJob.total_count, ImageJob.status).where(
+                    ImageJob.id == job_id
+                )
+            )
+        ).one_or_none()
+        if counters is None or counters.processed_count < counters.total_count:
             return
 
         failed_item = await self.session.scalar(
@@ -449,7 +972,7 @@ class ImageJobRepository:
             .where(
                 ImageJob.id == job_id,
                 ImageJob.processed_count >= ImageJob.total_count,
-                ImageJob.status.in_(("queued", "analyzing", "enhancing", "tagging")),
+                ImageJob.status.in_(("queued", "processing", "ranking", "analyzing", "enhancing", "tagging")),
             )
             .values(
                 status="partial_failed" if failed_item is not None else "completed",
@@ -457,9 +980,3 @@ class ImageJobRepository:
             )
         )
         await self.session.commit()
-
-
-def _hamming_distance(left: str, right: str) -> int:
-    if len(left) != len(right):
-        return max(len(left), len(right))
-    return sum(left_bit != right_bit for left_bit, right_bit in zip(left, right, strict=True))

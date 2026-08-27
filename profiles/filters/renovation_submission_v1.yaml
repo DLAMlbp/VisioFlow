@@ -1,6 +1,6 @@
 id: renovation_submission_v1
-version: 6
-description: 装修工匠提交照片的基础技术校验、质量提示与批量去重标准。严重模糊、纯色/近纯色、近黑无有效内容和综合评分不足的画面自动淘汰，其余质量指标仅提示。
+version: 7
+description: 装修工匠提交照片的基础技术校验、质量提示与批量去重标准。只淘汰无效、无法使用或重复的画面；综合质量及单项质量分数仅用于提示和美化策略，不作为自动淘汰条件。
 
 hard_rules:
   min_width: 1280
@@ -13,8 +13,8 @@ hard_rules:
   # 超过 85% 近黑且可见内容不足 3%，通常是黑屏、镜头遮挡或无效画面。
   reject_underexposed_ratio: 0.85
   min_visible_content_ratio: 0.03
-  # 以下质量阈值用于提示和美化策略，不作为自动淘汰条件；综合评分、纯色/近纯色除外。
-  min_quality_score: 95
+  # 以下质量阈值仅用于提示和美化策略，不作为自动淘汰条件。
+  min_quality_score: 65
   max_solid_color_stddev: 3.0
   min_sharpness_score: 50
   min_exposure_score: 60

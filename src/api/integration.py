@@ -29,6 +29,7 @@ async def create_integration_job(
     storage: StorageDep,
     filter_profile: Annotated[str, Form()] = "renovation_submission_v1",
     beautify_profile: Annotated[str, Form()] = "renovation_natural_v1",
+    similarity_profile: Annotated[str, Form()] = "library_similarity_v2",
     enhance_level: Annotated[int, Form(ge=0, le=2)] = 1,
     max_selected: Annotated[int, Form(ge=1)] = 10,
     callback_url: Annotated[str | None, Form()] = None,
@@ -59,6 +60,7 @@ async def create_integration_job(
         payload = CreateImageJobRequest(
             filter_profile=filter_profile,
             beautify_profile=beautify_profile,
+            similarity_profile=similarity_profile,
             enhance_level=enhance_level,
             max_selected=max_selected,
             images=[{"object_key": object_key} for object_key in image_keys],

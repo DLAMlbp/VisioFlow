@@ -18,7 +18,7 @@ from src.services.images.metadata import (
     make_thumbnail,
 )
 from src.services.images.quality import QualityEngine
-from src.services.jobs.dispatch import EnhancementBatchTaskPublisher
+from src.services.jobs.dispatch import EnhancementTaskPublisher, RankingTaskPublisher
 from src.services.profiles import ProfileLoader
 from src.services.storage.factory import get_storage_provider
 from src.workers.celery_app import celery_app
@@ -58,7 +58,7 @@ async def _preprocess_image_metadata(image_id: str) -> None:
         if item is None:
             return
         if item.status == ImageItemStatus.FILTERED.value:
-            await _start_enhancement_batch_if_ready(repository, item.job_id)
+            await _advance_after_preprocess(repository, item)
             return
         if item.status in {
             ImageItemStatus.ENHANCING.value,
@@ -70,8 +70,11 @@ async def _preprocess_image_metadata(image_id: str) -> None:
         }:
             return
 
+        item = await repository.claim_preprocess(image_id)
+        if item is None:
+            return
         settings = get_settings()
-        job = await repository.get(item.job_id)
+        job = await repository.get_config(item.job_id)
         if job is None:
             return
         profiles = ProfileLoader(settings)
@@ -79,7 +82,6 @@ async def _preprocess_image_metadata(image_id: str) -> None:
         beautify_profile = profiles.get_beautify_profile(job.beautify_profile_id)
         storage = get_storage_provider()
 
-        await repository.start_item(item)
         service = ImageMetadataService(storage, settings)
         try:
             metadata = await service.process(
@@ -89,7 +91,7 @@ async def _preprocess_image_metadata(image_id: str) -> None:
             )
         except ImageMetadataError as exc:
             await repository.fail_item(item, str(exc))
-            await _start_enhancement_batch_if_ready(repository, item.job_id)
+            await _advance_after_preprocess(repository, item)
             return
 
         beautify_service = NaturalBeautifyService()
@@ -104,7 +106,7 @@ async def _preprocess_image_metadata(image_id: str) -> None:
                 make_thumbnail(normalized_image, settings.thumbnail_long_side)
             )
 
-        await repository.update_item(
+        duplicate, similar = await repository.save_metadata_and_find_duplicates(
             item,
             {
                 "content_type": metadata.content_type,
@@ -117,25 +119,14 @@ async def _preprocess_image_metadata(image_id: str) -> None:
                 "phash": metadata.phash,
                 "thumbnail_object_key": metadata.thumbnail_object_key,
             },
-        )
-
-        duplicate = await repository.find_duplicate_item(
-            job_id=item.job_id,
-            image_id=item.id,
-            sha256=metadata.sha256,
+            max_hamming_distance=filter_profile.hard_rules.duplicate_hamming_distance,
         )
         if duplicate is not None:
             await repository.reject_item(item, [RejectCode.DUPLICATE_IMAGE])
-            await _start_enhancement_batch_if_ready(repository, item.job_id)
+            await _advance_after_preprocess(repository, item)
             return
 
         warnings: list[str] = []
-        similar = await repository.find_similar_item(
-            job_id=item.job_id,
-            image_id=item.id,
-            phash=metadata.phash,
-            max_hamming_distance=filter_profile.hard_rules.duplicate_hamming_distance,
-        )
         if similar is not None:
             warnings.append("与同批次照片构图相似，已保留，请按需确认是否重复")
 
@@ -147,7 +138,7 @@ async def _preprocess_image_metadata(image_id: str) -> None:
         )
         if not filter_result.passed:
             await repository.reject_item(item, list(filter_result.reject_codes))
-            await _start_enhancement_batch_if_ready(repository, item.job_id)
+            await _advance_after_preprocess(repository, item)
             return
 
         quality_metrics = QualityEngine(settings).evaluate(normalized_thumbnail)
@@ -169,9 +160,7 @@ async def _preprocess_image_metadata(image_id: str) -> None:
             noise=quality_metrics.noise_score,
         )
         if final_score < filter_profile.hard_rules.min_quality_score:
-            await repository.reject_item(item, [RejectCode.QUALITY_SCORE_TOO_LOW])
-            await _start_enhancement_batch_if_ready(repository, item.job_id)
-            return
+            quality_warning_codes.append(RejectCode.QUALITY_SCORE_TOO_LOW)
         warnings.extend(_quality_warning_text(code) for code in quality_warning_codes)
 
         await repository.complete_filter(
@@ -179,12 +168,19 @@ async def _preprocess_image_metadata(image_id: str) -> None:
             final_score=final_score,
             reasons=warnings,
         )
-        await _start_enhancement_batch_if_ready(repository, item.job_id)
+        await _advance_after_preprocess(repository, item)
 
 
-async def _start_enhancement_batch_if_ready(repository: ImageJobRepository, job_id: str) -> None:
-    if await repository.claim_enhancement_phase_if_filtering_complete(job_id):
-        EnhancementBatchTaskPublisher().publish(job_id)
+async def _advance_after_preprocess(repository: ImageJobRepository, item) -> None:
+    job = await repository.get_config(item.job_id)
+    if job is None or job.cancel_requested_at is not None:
+        return
+    if job.max_selected >= job.total_count:
+        if item.status == ImageItemStatus.FILTERED.value:
+            EnhancementTaskPublisher().publish(item.id)
+        return
+    if await repository.claim_ranking_if_filtering_complete(job.id):
+        RankingTaskPublisher().publish(job.id)
 
 
 async def _mark_item_failed(image_id: str, reason: str) -> None:

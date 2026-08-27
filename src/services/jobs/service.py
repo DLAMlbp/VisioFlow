@@ -20,10 +20,11 @@ from src.schemas.jobs import (
     ImageJobResultItemResponse,
     ImageJobResultsResponse,
     ImageMetricsResponse,
+    ImageSimilarityResultResponse,
     JobStatus,
 )
 from src.services.ai_model_config import load_ai_model_settings
-from src.services.jobs.dispatch import CeleryMetadataTaskPublisher, MetadataTaskPublisher
+from src.services.jobs.dispatch import JobDispatchTaskPublisher, TaskPublisher
 from src.services.jobs.ids import build_image_id, build_job_id
 from src.services.profiles import ProfileLoader, ProfileNotFoundError
 
@@ -41,7 +42,7 @@ class ImageJobService:
         self,
         repository: ImageJobRepository,
         settings: Settings,
-        task_publisher: MetadataTaskPublisher | None = None,
+        task_publisher: TaskPublisher | None = None,
         profile_loader: ProfileLoader | None = None,
     ) -> None:
         self.repository = repository
@@ -56,6 +57,7 @@ class ImageJobService:
             try:
                 self.profile_loader.get_filter_profile(payload.filter_profile)
                 self.profile_loader.get_beautify_profile(payload.beautify_profile)
+                self.profile_loader.get_similarity_profile(payload.similarity_profile)
             except ProfileNotFoundError as exc:
                 raise InvalidJobRequest(exc.args[0]) from exc
 
@@ -64,6 +66,7 @@ class ImageJobService:
             status=JobStatus.QUEUED.value,
             filter_profile_id=payload.filter_profile,
             beautify_profile_id=payload.beautify_profile,
+            similarity_profile_id=payload.similarity_profile,
             ai_tagging_model=self.settings.ai_tagging_model if self.settings.ai_tagging_enabled else None,
             enhance_level=payload.enhance_level,
             max_selected=payload.max_selected,
@@ -71,6 +74,8 @@ class ImageJobService:
             processed_count=0,
             selected_count=0,
             rejected_count=0,
+            not_selected_count=0,
+            dispatch_cursor=0,
             callback_url=str(payload.callback_url) if payload.callback_url else None,
         )
         items = [
@@ -85,8 +90,7 @@ class ImageJobService:
 
         created = await self.repository.create(job, items)
         if self.task_publisher is not None:
-            for item in items:
-                self.task_publisher.publish(item.id)
+            self.task_publisher.publish(created.id)
         return CreateImageJobResponse(
             job_id=created.id,
             status=JobStatus(created.status),
@@ -94,20 +98,27 @@ class ImageJobService:
         )
 
     async def get_progress(self, job_id: str) -> ImageJobProgressResponse:
-        job = await self.repository.get(job_id)
-        if job is None:
+        snapshot = await self.repository.get_progress_snapshot(job_id)
+        if snapshot is None:
             raise JobNotFound("Job 不存在")
 
-        progress = self._calculate_progress(job)
+        progress = self._calculate_progress(
+            snapshot.stage_counts, snapshot.total_count, snapshot.status
+        )
         return ImageJobProgressResponse(
-            job_id=job.id,
-            status=JobStatus(job.status),
+            job_id=snapshot.id,
+            status=JobStatus(snapshot.status),
             progress=progress,
-            total=job.total_count,
-            processed=job.processed_count,
-            selected=job.selected_count,
-            rejected=job.rejected_count,
-            tagging=sum(item.status == ImageItemStatus.TAGGING.value for item in job.items),
+            total=snapshot.total_count,
+            processed=snapshot.processed_count,
+            selected=snapshot.selected_count,
+            rejected=snapshot.rejected_count,
+            not_selected=snapshot.not_selected_count,
+            tagging=(
+                snapshot.stage_counts.get("content_analysis", 0)
+                + snapshot.stage_counts.get("matching", 0)
+            ),
+            stage_counts=snapshot.stage_counts,
         )
 
     async def list_history(self, limit: int, offset: int) -> ImageJobHistoryResponse:
@@ -124,6 +135,7 @@ class ImageJobService:
                     processed=job.processed_count,
                     selected=job.selected_count,
                     rejected=job.rejected_count,
+                    not_selected=job.not_selected_count or 0,
                     ai_tagging_model=(
                         job.ai_tagging_model
                         if job.ai_tagging_model is not None
@@ -136,13 +148,22 @@ class ImageJobService:
             ],
         )
 
-    async def get_results(self, job_id: str) -> ImageJobResultsResponse:
-        job = await self.repository.get(job_id)
-        if job is None:
+    async def get_results(
+        self,
+        job_id: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        decision: str | None = None,
+    ) -> ImageJobResultsResponse:
+        snapshot = await self.repository.get_progress_snapshot(job_id)
+        if snapshot is None:
             raise JobNotFound("Job 不存在")
-
+        result_total, result_items = await self.repository.list_result_items(
+            job_id, limit=limit, offset=offset, decision=decision
+        )
         images = []
-        for item in job.items:
+        for item in result_items:
             result = item.result
             metric = item.metric
             if result is None:
@@ -154,6 +175,7 @@ class ImageJobService:
                     score=result.final_score,
                     original_object_key=item.object_key,
                     enhanced_object_key=result.enhanced_object_key,
+                    files_expired=item.purged_at is not None,
                     reject_codes=result.reject_codes_json or [],
                     reasons=result.reasons_json or [],
                     metrics=(
@@ -186,44 +208,70 @@ class ImageJobService:
                         if item.ai_tag is not None
                         else None
                     ),
+                    tagging_result=(
+                        ImageSimilarityResultResponse(
+                            decision=item.similarity_match.decision,
+                            tag_path=item.similarity_match.matched_tag_path_snapshot or [],
+                            matched_asset_id=item.similarity_match.matched_asset_id,
+                            similarity=item.similarity_match.similarity_score,
+                            final_score=item.similarity_match.final_score,
+                            message=item.similarity_match.message,
+                        )
+                        if item.similarity_match is not None
+                        else None
+                    ),
                 )
             )
         return ImageJobResultsResponse(
-            job_id=job.id,
-            total=job.total_count,
-            selected=job.selected_count,
-            rejected=job.rejected_count,
+            job_id=snapshot.id,
+            total=snapshot.total_count,
+            selected=snapshot.selected_count,
+            rejected=snapshot.rejected_count,
+            not_selected=snapshot.not_selected_count,
+            result_total=result_total,
+            limit=limit,
+            offset=offset,
             images=images,
         )
 
     @staticmethod
-    def _calculate_progress(job: ImageJob) -> int:
-        if job.status in {
+    def _calculate_progress(stage_counts: dict[str, int], total: int, status: str) -> int:
+        if status in {
             JobStatus.COMPLETED.value,
             JobStatus.PARTIAL_FAILED.value,
             JobStatus.FAILED.value,
             JobStatus.CANCELLED.value,
         }:
             return 100
-        if job.total_count <= 0:
+        if total <= 0:
             return 0
+        terminal = sum(
+            stage_counts.get(key, 0)
+            for key in ("completed", "rejected", "not_selected", "failed", "cancelled")
+        )
+        weighted = (
+            stage_counts.get("filtering", 0) * 0.15
+            + stage_counts.get("beautifying", 0) * 0.38
+            + stage_counts.get("content_analysis", 0) * 0.68
+            + stage_counts.get("matching", 0) * 0.90
+            + terminal
+        )
+        return min(99, max(0, int(weighted / total * 100)))
 
-        statuses = [item.status for item in job.items]
-        if not statuses:
-            return min(99, int((job.processed_count / job.total_count) * 100))
-        if job.status in {JobStatus.QUEUED.value, JobStatus.ANALYZING.value}:
-            filter_completed = sum(status not in {"queued", "analyzing"} for status in statuses)
-            return int((filter_completed / job.total_count) * 35)
-        if job.status == JobStatus.ENHANCING.value:
-            enhancement_completed = sum(
-                status in {"enhanced", "tagging", "selected", "rejected", "failed"}
-                for status in statuses
-            )
-            return 35 + int((enhancement_completed / job.total_count) * 40)
-        if job.status == JobStatus.TAGGING.value:
-            tagging_completed = sum(status in {"selected", "rejected", "failed"} for status in statuses)
-            return 75 + int((tagging_completed / job.total_count) * 24)
-        return 0
+    async def cancel_job(self, job_id: str) -> ImageJobProgressResponse:
+        if not await self.repository.cancel_job(job_id):
+            if await self.repository.get_config(job_id) is None:
+                raise JobNotFound("Job 不存在")
+            raise InvalidJobRequest("任务已经结束，不能取消")
+        return await self.get_progress(job_id)
+
+    async def retry_failed_image(self, job_id: str, image_id: str) -> ImageJobProgressResponse:
+        if not await self.repository.retry_failed_item(job_id, image_id):
+            raise InvalidJobRequest("仅支持重试当前任务中处理失败的图片")
+        from src.services.jobs.dispatch import MetadataTaskPublisher
+
+        MetadataTaskPublisher().publish(image_id)
+        return await self.get_progress(job_id)
 
 
 def get_job_service(
@@ -234,6 +282,6 @@ def get_job_service(
     return ImageJobService(
         ImageJobRepository(session),
         settings,
-        task_publisher=CeleryMetadataTaskPublisher(),
+        task_publisher=JobDispatchTaskPublisher(),
         profile_loader=ProfileLoader(settings),
     )

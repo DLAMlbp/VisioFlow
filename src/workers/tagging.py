@@ -7,10 +7,20 @@ from celery import Task
 
 from src.core.config import get_settings
 from src.db.session import AsyncSessionLocal
+from src.models.library_tag_node import LibraryTagNode
 from src.repositories.jobs import ImageJobRepository
+from src.repositories.library import LibraryRepository
 from src.schemas.jobs import ImageItemStatus
 from src.services.ai_model_config import load_ai_model_settings
+from src.services.images.embedding import ImageEmbeddingError, OpenClipImageEmbedder
+from src.services.images.similarity import (
+    ScoredCandidate,
+    decide_similarity,
+    feature_similarity,
+    unmatched_decision,
+)
 from src.services.images.tagging import TaggingOutcome, get_tag_provider
+from src.services.profiles import ProfileLoader
 from src.services.storage.factory import get_storage_provider
 from src.workers.celery_app import celery_app
 
@@ -41,11 +51,19 @@ def generate_image_tags(task, image_id: str) -> None:
 async def _generate_image_tags(image_id: str) -> None:
     async with AsyncSessionLocal() as session:
         repository = ImageJobRepository(session)
+        library_repository = LibraryRepository(session)
         item = await repository.get_item(image_id)
         if item is None or item.status != ImageItemStatus.TAGGING.value or item.ai_tag is None:
             return
 
+        job = await repository.get(item.job_id)
+        if job is None:
+            return
+
         settings = load_ai_model_settings(get_settings())
+        similarity_profile = ProfileLoader(settings).get_similarity_profile(
+            job.similarity_profile_id
+        )
         source_key = item.ai_tag.source_object_key
         try:
             image_bytes = await get_storage_provider().download(source_key)
@@ -56,6 +74,69 @@ async def _generate_image_tags(image_id: str) -> None:
             logger.exception("Unable to load image for AI tagging")
             outcome = TaggingOutcome(status="failed", error_message="标签图片读取失败")
 
+        tag_json = outcome.payload.model_dump() if outcome.payload else None
+        match_decision = unmatched_decision(
+            outcome.error_message or "未识别到相似的图片素材"
+        )
+        if outcome.status == "completed" and outcome.payload is not None:
+            try:
+                embedding = await OpenClipImageEmbedder(settings).embed(image_bytes)
+                similar_assets = await library_repository.find_similar_assets(
+                    embedding, similarity_profile.similarity_candidate_limit
+                )
+                nodes = {node.id: node for node in await library_repository.list_tag_nodes()}
+                scored: list[ScoredCandidate] = []
+                for asset, similarity_score in similar_assets:
+                    tag_path = _tag_path(asset.leaf_tag_node_id, nodes)
+                    feature_score = feature_similarity(
+                        outcome.payload.model_dump(), asset.analysis_json
+                    )
+                    final_score = (
+                        similarity_score * similarity_profile.similarity_image_weight
+                        + feature_score * similarity_profile.similarity_feature_weight
+                    )
+                    scored.append(
+                        ScoredCandidate(
+                            asset=asset,
+                            tag_path=tag_path,
+                            similarity_score=similarity_score,
+                            feature_score=feature_score,
+                            final_score=final_score,
+                        )
+                    )
+                match_decision = decide_similarity(candidates=scored, settings=similarity_profile)
+            except ImageEmbeddingError as exc:
+                match_decision = unmatched_decision(str(exc))
+            except Exception:
+                logger.exception("Unable to match image against material library")
+                match_decision = unmatched_decision("素材库匹配暂不可用")
+
+        await library_repository.upsert_match(
+            image_id=item.id,
+            values={
+                "matched_asset_id": match_decision.matched_asset_id,
+                "matched_tag_path_snapshot": match_decision.tag_path,
+                "similarity_score": match_decision.similarity_score,
+                "feature_score": match_decision.feature_score,
+                "final_score": match_decision.final_score,
+                "decision": match_decision.decision,
+                "message": match_decision.message,
+                "candidate_json": match_decision.candidates,
+            },
+        )
+        if tag_json is not None:
+            tag_json["tags"] = (
+                match_decision.tag_path if match_decision.decision == "matched" else []
+            )
+            tag_json["categories"] = (
+                {"path": match_decision.tag_path}
+                if match_decision.decision == "matched"
+                else {}
+            )
+            tag_json["candidate_tags"] = (
+                match_decision.tag_path if match_decision.decision == "pending_review" else []
+            )
+
         await repository.upsert_ai_tag(
             image_id=item.id,
             source_object_key=source_key,
@@ -64,11 +145,15 @@ async def _generate_image_tags(image_id: str) -> None:
             prompt_version=item.ai_tag.prompt_version,
             status=outcome.status,
             duration_ms=outcome.duration_ms,
-            tag_json=outcome.payload.model_dump() if outcome.payload else None,
+            tag_json=tag_json,
             raw_response_json=outcome.raw_response,
             error_message=outcome.error_message,
         )
-        reason = "AI 内容标签已生成" if outcome.status == "completed" else "AI 标签暂不可用，图片已保留"
+        reason = (
+            match_decision.message
+            if outcome.status == "completed"
+            else "AI 内容分析暂不可用，图片已保留"
+        )
         await repository.complete_tagging(item, reason=reason)
 
 
@@ -87,3 +172,14 @@ async def _complete_failed_tagging(image_id: str, reason: str) -> None:
         item = await repository.get_item(image_id)
         if item is not None and item.status == ImageItemStatus.TAGGING.value:
             await repository.complete_tagging(item, reason=reason)
+
+
+def _tag_path(leaf_node_id: str, nodes: dict[str, LibraryTagNode]) -> list[str]:
+    path: list[str] = []
+    seen: set[str] = set()
+    current = nodes.get(leaf_node_id)
+    while current is not None and current.id not in seen:
+        seen.add(current.id)
+        path.append(current.name)
+        current = nodes.get(current.parent_id) if current.parent_id else None
+    return list(reversed(path))

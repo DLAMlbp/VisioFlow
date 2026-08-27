@@ -3,5 +3,20 @@ from src.models.image_item import ImageItem
 from src.models.image_job import ImageJob
 from src.models.image_metric import ImageMetric
 from src.models.image_result import ImageResult
+from src.models.image_similarity_match import ImageSimilarityMatch
+from src.models.library_asset import LibraryAsset
+from src.models.library_tag_node import LibraryTagNode
+from src.models.upload_batch import UploadBatch, UploadBatchItem
 
-__all__ = ["ImageAITag", "ImageItem", "ImageJob", "ImageMetric", "ImageResult"]
+__all__ = [
+    "ImageAITag",
+    "ImageItem",
+    "ImageJob",
+    "ImageMetric",
+    "ImageResult",
+    "ImageSimilarityMatch",
+    "LibraryAsset",
+    "LibraryTagNode",
+    "UploadBatch",
+    "UploadBatchItem",
+]

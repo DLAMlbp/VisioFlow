@@ -2,9 +2,11 @@ import {
   AlertCircle,
   ArrowDownToLine,
   Check,
+  ChevronLeft,
   ChevronRight,
   CircleDot,
   Clock3,
+  Database,
   Eye,
   FileImage,
   History,
@@ -19,6 +21,7 @@ import {
 } from "lucide-react";
 import { ChangeEvent, DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./services/api";
+import { LibraryWorkspace } from "./LibraryWorkspace";
 import brandLogo from "./assets/image-processing-logo.svg";
 import type {
   Decision,
@@ -30,13 +33,17 @@ import type {
   AIModelConfig,
   ProfileOption,
   ResultImage,
+  ResultFilter,
+  SimilarityCandidate,
+  SimilarityTaggingResult,
   UploadItem
 } from "./types";
 import { decisionLabel, isTerminalStatus, rejectCodeLabel, statusLabel } from "./utils/decision";
 
-const MAX_IMAGES = 50;
+const MAX_IMAGES = 500;
 const MAX_IMAGE_SIZE_MB = 25;
-const UPLOAD_CONCURRENCY = 4;
+const UPLOAD_CONCURRENCY = 6;
+const PAGE_SIZE = 50;
 
 const fallbackFilterProfiles: ProfileOption[] = [
   {
@@ -54,6 +61,19 @@ const fallbackBeautifyProfiles: ProfileOption[] = [
   }
 ];
 
+const fallbackSimilarityProfiles: ProfileOption[] = [
+  {
+    id: "library_similarity_v2",
+    name: "装修场景智能匹配（推荐）",
+    description: "结合图片向量和中文场景特征，自动继承最相似素材的完整标签路径。"
+  },
+  {
+    id: "library_similarity_v1",
+    name: "装修场景严格匹配",
+    description: "使用更高自动确认门槛，不确定结果进入人工复核。"
+  }
+];
+
 function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const itemsRef = useRef<UploadItem[]>([]);
@@ -61,12 +81,16 @@ function App() {
   const [items, setItems] = useState<UploadItem[]>([]);
   const [filterProfiles, setFilterProfiles] = useState<ProfileOption[]>(fallbackFilterProfiles);
   const [beautifyProfiles, setBeautifyProfiles] = useState<ProfileOption[]>(fallbackBeautifyProfiles);
+  const [similarityProfiles, setSimilarityProfiles] = useState<ProfileOption[]>(fallbackSimilarityProfiles);
   const [filterProfile, setFilterProfile] = useState("renovation_submission_v1");
   const [beautifyProfile, setBeautifyProfile] = useState("renovation_natural_v1");
+  const [similarityProfile, setSimilarityProfile] = useState("library_similarity_v2");
   const [job, setJob] = useState<JobProgress | null>(null);
   const [results, setResults] = useState<JobResults | null>(null);
   const [selectedImage, setSelectedImage] = useState<ResultImage | null>(null);
-  const [resultFilter, setResultFilter] = useState<"all" | Decision>("all");
+  const [resultFilter, setResultFilter] = useState<ResultFilter>("all");
+  const [resultPage, setResultPage] = useState(0);
+  const [uploadPage, setUploadPage] = useState(0);
   const [history, setHistory] = useState<JobHistoryResponse | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -78,17 +102,18 @@ function App() {
   const [modelConfigSaving, setModelConfigSaving] = useState(false);
   const [modelConfig, setModelConfig] = useState<AIModelConfig | null>(null);
   const [modelApiKey, setModelApiKey] = useState("");
+  const [activeWorkspace, setActiveWorkspace] = useState<"processing" | "library">("processing");
 
   const uploadedCount = items.filter((item) => item.status === "uploaded").length;
   const failedCount = items.filter((item) => item.status === "failed").length;
-  const canCreateJob = items.length > 0 && !busy;
+  const canCreateJob = items.some((item) => item.file) && !busy;
   const currentStep = results
     ? 4
     : job?.status === "tagging"
       ? 3
       : job?.status === "enhancing"
         ? 2
-        : job && ["queued", "analyzing", "ranking"].includes(job.status)
+        : job && ["queued", "processing", "analyzing", "ranking"].includes(job.status)
           ? 1
           : 0;
   const averageScore = useMemo(() => {
@@ -97,15 +122,36 @@ function App() {
     return Math.round(selected.reduce((sum, image) => sum + image.score, 0) / selected.length);
   }, [results]);
 
-  const visibleResults = useMemo(() => {
-    if (!results) return [];
-    if (resultFilter === "all") return results.images;
-    return results.images.filter((image) => image.decision === resultFilter);
-  }, [resultFilter, results]);
+  const visibleResults = results?.images ?? [];
+  const pagedUploadItems = useMemo(
+    () => items.slice(uploadPage * PAGE_SIZE, (uploadPage + 1) * PAGE_SIZE),
+    [items, uploadPage]
+  );
+
+  function applyReviewResult(imageId: string, taggingResult: SimilarityTaggingResult) {
+    const updateImage = (image: ResultImage): ResultImage => {
+      if (image.image_id !== imageId) return image;
+      const matched = taggingResult.decision === "matched";
+      return {
+        ...image,
+        tagging_result: taggingResult,
+        ai_tags: image.ai_tags ? {
+          ...image.ai_tags,
+          tags: matched ? taggingResult.tag_path : [],
+          categories: matched ? { path: taggingResult.tag_path } : {},
+          candidate_tags: []
+        } : image.ai_tags
+      };
+    };
+    setResults((current) => current ? { ...current, images: current.images.map(updateImage) } : current);
+    setSelectedImage((current) => current ? updateImage(current) : current);
+    setMessage(taggingResult.decision === "matched" ? "人工复核已确认标签" : "人工复核已标记为未匹配");
+  }
 
   useEffect(() => {
     api.getFilterProfiles().then(setFilterProfiles).catch(() => undefined);
     api.getBeautifyProfiles().then(setBeautifyProfiles).catch(() => undefined);
+    api.getSimilarityProfiles().then(setSimilarityProfiles).catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -114,7 +160,7 @@ function App() {
 
   useEffect(() => {
     return () => {
-      itemsRef.current.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+      itemsRef.current.forEach((item) => item.previewUrl && URL.revokeObjectURL(item.previewUrl));
     };
   }, []);
 
@@ -128,12 +174,10 @@ function App() {
         const nextJob = await api.getJob(job.job_id);
         if (!isCurrentOperation(operationVersion)) return;
         setJob(nextJob);
-
-        if (nextJob.status === "completed" || nextJob.status === "partial_failed") {
-          const nextResults = await api.getResults(nextJob.job_id);
-          if (!isCurrentOperation(operationVersion)) return;
-          setResults(nextResults);
-          setSelectedImage(nextResults.images.find((image) => image.decision === "selected") ?? nextResults.images[0] ?? null);
+        if (nextJob.progress > 0 || isTerminalStatus(nextJob.status)) {
+          await loadResultPage(nextJob.job_id, operationVersion, resultPage, resultFilter);
+        }
+        if (isTerminalStatus(nextJob.status)) {
           void loadHistory(operationVersion);
         }
       } catch (error) {
@@ -143,7 +187,43 @@ function App() {
     }, delay);
 
     return () => window.clearTimeout(timer);
-  }, [job]);
+  }, [job, resultFilter, resultPage]);
+
+  async function loadResultPage(
+    jobId: string,
+    operationVersion: number,
+    page: number,
+    filter: ResultFilter
+  ) {
+    const nextResults = await api.getResults(
+      jobId,
+      PAGE_SIZE,
+      page * PAGE_SIZE,
+      filter === "all" ? undefined : filter
+    );
+    if (!isCurrentOperation(operationVersion)) return;
+    setResults(nextResults);
+    setSelectedImage((current) =>
+      nextResults.images.find((image) => image.image_id === current?.image_id)
+      ?? nextResults.images.find((image) => image.decision === "selected")
+      ?? nextResults.images[0]
+      ?? null
+    );
+  }
+
+  async function changeResultPage(page: number, filter = resultFilter) {
+    if (!job) return;
+    const operationVersion = operationVersionRef.current;
+    setResultPage(page);
+    setResultFilter(filter);
+    try {
+      await loadResultPage(job.job_id, operationVersion, page, filter);
+    } catch (error) {
+      if (isCurrentOperation(operationVersion)) {
+        setMessage(error instanceof Error ? error.message : "加载结果失败");
+      }
+    }
+  }
 
   function addFiles(fileList: FileList | File[]) {
     const incoming = Array.from(fileList);
@@ -160,6 +240,9 @@ function App() {
       .map<UploadItem>((file) => ({
         id: crypto.randomUUID(),
         file,
+        filename: file.name,
+        fileSize: file.size,
+        contentType: file.type || "application/octet-stream",
         previewUrl: URL.createObjectURL(file),
         status: "ready",
         progress: 0
@@ -186,20 +269,22 @@ function App() {
   function removeItem(itemId: string) {
     setItems((current) => {
       const item = current.find((entry) => entry.id === itemId);
-      if (item) URL.revokeObjectURL(item.previewUrl);
+      if (item?.previewUrl) URL.revokeObjectURL(item.previewUrl);
       return current.filter((entry) => entry.id !== itemId);
     });
   }
 
   function resetWorkspace() {
     operationVersionRef.current += 1;
-    itemsRef.current.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+    itemsRef.current.forEach((item) => item.previewUrl && URL.revokeObjectURL(item.previewUrl));
     itemsRef.current = [];
     setItems([]);
     setJob(null);
     setResults(null);
     setSelectedImage(null);
     setResultFilter("all");
+    setResultPage(0);
+    setUploadPage(0);
     setBusy(false);
     setMessage(null);
   }
@@ -272,8 +357,10 @@ function App() {
       const restoredJob = await api.getJob(entry.job_id);
       if (!isCurrentOperation(operationVersion)) return;
       setJob(restoredJob);
+      setResultPage(0);
+      setResultFilter("all");
       if (isTerminalStatus(restoredJob.status)) {
-        const restoredResults = await api.getResults(entry.job_id);
+        const restoredResults = await api.getResults(entry.job_id, PAGE_SIZE, 0);
         if (!isCurrentOperation(operationVersion)) return;
         setResults(restoredResults);
         setSelectedImage(restoredResults.images.find((image) => image.decision === "selected") ?? restoredResults.images[0] ?? null);
@@ -289,20 +376,19 @@ function App() {
     }
   }
 
-  async function uploadOne(item: UploadItem, operationVersion: number) {
+  async function uploadOne(
+    item: UploadItem,
+    registered: { id: string; object_key: string; upload_url: string },
+    operationVersion: number
+  ) {
     try {
-      updateItem(item.id, { status: "presigning", error: undefined }, operationVersion);
-      const presigned = await api.presignUpload({
-        filename: item.file.name,
-        content_type: item.file.type || "application/octet-stream",
-        file_size: item.file.size
-      });
+      if (!item.file) throw new Error("本地图片已释放，请重新选择");
       if (!isCurrentOperation(operationVersion)) return undefined;
-      updateItem(item.id, { objectKey: presigned.object_key, status: "uploading", progress: 1 }, operationVersion);
-      await api.uploadToStorage(presigned.upload_url, item.file, (progress) => updateItem(item.id, { progress }, operationVersion));
+      updateItem(item.id, { objectKey: registered.object_key, status: "uploading", progress: 1 }, operationVersion);
+      await api.uploadToStorage(registered.upload_url, item.file, (progress) => updateItem(item.id, { progress }, operationVersion));
       if (!isCurrentOperation(operationVersion)) return undefined;
-      updateItem(item.id, { status: "uploaded", progress: 100, objectKey: presigned.object_key }, operationVersion);
-      return presigned.object_key;
+      updateItem(item.id, { status: "uploaded", progress: 100, objectKey: registered.object_key }, operationVersion);
+      return registered.id;
     } catch (error) {
       if (!isCurrentOperation(operationVersion)) return undefined;
       updateItem(item.id, {
@@ -324,25 +410,37 @@ function App() {
     setSelectedImage(null);
 
     try {
-      const freshItems = items.filter((item) => item.status !== "uploaded");
-      await runConcurrent(freshItems, UPLOAD_CONCURRENCY, (item) => uploadOne(item, operationVersion));
-      if (!isCurrentOperation(operationVersion)) return;
-      const latestItems = await waitForUploadedItems();
-      if (!isCurrentOperation(operationVersion)) return;
-      const objectKeys = latestItems.map((item) => item.objectKey).filter(Boolean) as string[];
-
-      if (!objectKeys.length) {
-        throw new Error("没有可创建任务的已上传图片");
-      }
-
-      const created = await api.createJob({
+      const uploadable = items.filter((item) => item.file);
+      uploadable.forEach((item) => updateItem(item.id, { status: "presigning", error: undefined }, operationVersion));
+      const batch = await api.createUploadBatch({
         filter_profile: filterProfile,
         beautify_profile: beautifyProfile,
+        similarity_profile: similarityProfile,
         enhance_level: 1,
-        max_selected: MAX_IMAGES,
-        images: objectKeys.map((object_key) => ({ object_key }))
+        max_selected: uploadable.length,
+        files: uploadable.map((item) => ({
+          filename: item.filename,
+          content_type: item.contentType,
+          file_size: item.fileSize
+        }))
+      });
+      const successfulIds: string[] = [];
+      const registrations = uploadable.map((item, index) => ({ item, registered: batch.items[index] }));
+      await runConcurrent(registrations, UPLOAD_CONCURRENCY, async ({ item, registered }) => {
+        if (!registered) return;
+        const uploadedId = await uploadOne(item, registered, operationVersion);
+        if (uploadedId) successfulIds.push(uploadedId);
       });
       if (!isCurrentOperation(operationVersion)) return;
+      if (!successfulIds.length) throw new Error("没有成功上传的图片，无法创建任务");
+      const created = await api.completeUploadBatch(batch.batch_id, successfulIds);
+      if (!isCurrentOperation(operationVersion)) return;
+
+      setItems((current) => current.map((item) => {
+        if (item.status !== "uploaded") return item;
+        if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+        return { ...item, file: undefined, previewUrl: undefined };
+      }));
 
       const initialJob: JobProgress = {
         job_id: created.job_id,
@@ -351,7 +449,10 @@ function App() {
         total: created.total,
         processed: 0,
         selected: 0,
-        rejected: 0
+        rejected: 0,
+        not_selected: 0,
+        tagging: 0,
+        stage_counts: { waiting: created.total }
       };
       setJob(initialJob);
     } catch (error) {
@@ -362,20 +463,32 @@ function App() {
     }
   }
 
-  function waitForUploadedItems(): Promise<UploadItem[]> {
-    return new Promise((resolve) => {
-      window.setTimeout(() => {
-        setItems((current) => {
-          resolve(current.filter((item) => item.status === "uploaded"));
-          return current;
-        });
-      }, 0);
-    });
-  }
-
   function updateItem(itemId: string, patch: Partial<UploadItem>, operationVersion?: number) {
     if (operationVersion !== undefined && !isCurrentOperation(operationVersion)) return;
     setItems((current) => current.map((item) => (item.id === itemId ? { ...item, ...patch } : item)));
+  }
+
+  async function cancelCurrentJob() {
+    if (!job || isTerminalStatus(job.status)) return;
+    try {
+      const cancelled = await api.cancelJob(job.job_id);
+      setJob(cancelled);
+      setMessage("任务已取消，尚未开始的图片不会继续处理。");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "取消任务失败");
+    }
+  }
+
+  async function retryImage(imageId: string) {
+    if (!job) return;
+    try {
+      const nextJob = await api.retryImage(job.job_id, imageId);
+      setJob(nextJob);
+      setMessage("失败图片已重新进入处理队列。");
+      await loadResultPage(job.job_id, operationVersionRef.current, resultPage, resultFilter);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "重试图片失败");
+    }
   }
 
   return (
@@ -391,18 +504,9 @@ function App() {
             <p className="eyebrow">IMAGE STUDIO</p>
           </div>
         </div>
-        <nav className="top-nav app-flow" aria-label="图片处理流程">
-          {["上传图片", "质量检测", "自动美化", "AI 标签", "结果"].map((label, index) => {
-            const done = index < currentStep;
-            const active = index === currentStep;
-            return (
-              <div key={label} className={`flow-step ${active ? "active" : ""} ${done ? "done" : ""}`} aria-current={active ? "step" : undefined}>
-                <span>{done ? <Check size={13} aria-hidden="true" /> : index + 1}</span>
-                <strong>{label}</strong>
-                {index < 4 && <i aria-hidden="true" />}
-              </div>
-            );
-          })}
+        <nav className="workspace-switch" aria-label="工作区">
+          <button className={activeWorkspace === "processing" ? "active" : ""} type="button" aria-current={activeWorkspace === "processing" ? "page" : undefined} onClick={() => setActiveWorkspace("processing")}><Sparkles size={16} aria-hidden="true" />图片处理</button>
+          <button className={activeWorkspace === "library" ? "active" : ""} type="button" aria-current={activeWorkspace === "library" ? "page" : undefined} onClick={() => setActiveWorkspace("library")}><Database size={16} aria-hidden="true" />素材库</button>
         </nav>
         <div className="topbar-actions">
           <span className="mode-pill">{import.meta.env.VITE_USE_MOCK_API === "false" ? "真实处理" : "模拟演示"}</span>
@@ -418,6 +522,22 @@ function App() {
           </button>
         </div>
       </header>
+
+      {activeWorkspace === "processing" && (
+        <nav className="top-nav app-flow workflow-nav" aria-label="图片处理流程">
+          {["上传图片", "质量检测", "自动美化", "相似匹配", "结果"].map((label, index) => {
+            const done = index < currentStep;
+            const active = index === currentStep;
+            return (
+              <div key={label} className={`flow-step ${active ? "active" : ""} ${done ? "done" : ""}`} aria-current={active ? "step" : undefined}>
+                <span>{done ? <Check size={13} aria-hidden="true" /> : index + 1}</span>
+                <strong>{label}</strong>
+                {index < 4 && <i aria-hidden="true" />}
+              </div>
+            );
+          })}
+        </nav>
+      )}
 
       {message && (
         <section className="notice" role="status">
@@ -451,6 +571,7 @@ function App() {
         </div>
       )}
 
+      {activeWorkspace === "processing" ? <>
       <div className="workspace-grid" id="mainWorkspace">
         <section className="control-panel reference-control">
           <div className="panel-intro">
@@ -476,13 +597,13 @@ function App() {
                 <input ref={fileInputRef} id="filePicker" type="file" accept="image/*" multiple onChange={onFileChange} />
                 <button className="secondary-button" type="button" onClick={() => fileInputRef.current?.click()}><FileImage size={16} aria-hidden="true" />选择图片</button>
               </div>
-              {items.length > 0 && <div className="upload-grid" aria-live="polite">{items.map((item) => (
+              {items.length > 0 && <><div className="upload-grid" aria-live="polite">{pagedUploadItems.map((item) => (
                 <article className="upload-card" key={item.id}>
-                  <img src={item.previewUrl} alt={item.file.name} />
-                  <div className="upload-card-body"><div><strong title={item.file.name}>{item.file.name}</strong><span>{formatBytes(item.file.size)}</span></div><UploadStatus item={item} /></div>
-                  <button className="icon-button" type="button" aria-label={`移除 ${item.file.name}`} onClick={() => removeItem(item.id)}><Trash2 size={16} aria-hidden="true" /></button>
+                  {item.previewUrl ? <img src={item.previewUrl} alt={item.filename} /> : <span className="upload-placeholder"><FileImage size={20} aria-hidden="true" /></span>}
+                  <div className="upload-card-body"><div><strong title={item.filename}>{item.filename}</strong><span>{formatBytes(item.fileSize)}</span></div><UploadStatus item={item} /></div>
+                  <button className="icon-button" type="button" aria-label={`移除 ${item.filename}`} onClick={() => removeItem(item.id)}><Trash2 size={16} aria-hidden="true" /></button>
                 </article>
-              ))}</div>}
+              ))}</div><Pagination page={uploadPage} total={items.length} pageSize={PAGE_SIZE} onChange={setUploadPage} label="上传图片" /></>}
             </section>
           </div>
 
@@ -510,6 +631,17 @@ function App() {
             </select>
             <p>{beautifyProfiles.find((profile) => profile.id === beautifyProfile)?.description}</p>
             </div>
+            <div className="field-stack">
+              <label htmlFor="similarityProfile">相似匹配标准</label>
+              <select id="similarityProfile" value={similarityProfile} onChange={(event) => setSimilarityProfile(event.target.value)}>
+                {similarityProfiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name}
+                  </option>
+                ))}
+              </select>
+              <p>{similarityProfiles.find((profile) => profile.id === similarityProfile)?.description}</p>
+            </div>
           </div>
 
           <button className="primary-button" type="button" onClick={startJob} disabled={!canCreateJob}>
@@ -521,7 +653,7 @@ function App() {
         <section className="result-stage" aria-label="生成结果">
           <div className="result-stage-heading"><div><h2>生成结果</h2><p>{results ? "结果会按处理顺序排列" : "完成上传并处理后，结果将在这里出现"}</p></div></div>
           {!results && <div className="result-empty"><span><Sparkles size={25} aria-hidden="true" /></span><strong>从一组现场照片，整理出可用成果</strong><p>在左侧上传照片并选择处理标准。每张图片都会独立筛选、美化和打标签。</p></div>}
-          {results && <ResultsPanel results={results} averageScore={averageScore} resultFilter={resultFilter} visibleResults={visibleResults} selectedImage={selectedImage} onFilterChange={setResultFilter} onSelectImage={setSelectedImage} />}
+          {results && <ResultsPanel results={results} averageScore={averageScore} resultFilter={resultFilter} visibleResults={visibleResults} selectedImage={selectedImage} page={resultPage} onFilterChange={(filter) => void changeResultPage(0, filter)} onPageChange={(page) => void changeResultPage(page)} onSelectImage={setSelectedImage} onReviewResolved={applyReviewResult} onRetry={(imageId) => void retryImage(imageId)} />}
         </section>
       </div>
 
@@ -532,14 +664,18 @@ function App() {
             <div>
               <h2>{statusLabel(job.status)}</h2>
               <p>
-                {job.processed}/{job.total} 已处理，{job.selected} 已选中，{job.rejected} 已淘汰
+                {job.processed}/{job.total} 已处理，{job.selected} 已保留，{job.rejected} 未通过
               </p>
+              <div className="stage-counts">
+                {Object.entries(job.stage_counts).filter(([, count]) => count > 0).map(([stage, count]) => <span key={stage}>{stageCountLabel(stage)} {count}</span>)}
+              </div>
             </div>
           </div>
           <div className="progress-meter" aria-label={`任务进度 ${job.progress}%`}>
             <span style={{ width: `${job.progress}%` }} />
           </div>
           <strong>{job.progress}%</strong>
+          {!isTerminalStatus(job.status) && <button className="cancel-job-button" type="button" onClick={() => void cancelCurrentJob()}><X size={15} aria-hidden="true" />取消任务</button>}
         </section>
       )}
 
@@ -551,6 +687,7 @@ function App() {
           onOpen={(entry) => void openHistoryJob(entry)}
         />
       )}
+      </> : <LibraryWorkspace onMessage={setMessage} />}
     </main>
   );
 }
@@ -561,16 +698,24 @@ function ResultsPanel({
   resultFilter,
   visibleResults,
   selectedImage,
+  page,
   onFilterChange,
-  onSelectImage
+  onPageChange,
+  onSelectImage,
+  onReviewResolved,
+  onRetry
 }: {
   results: JobResults;
   averageScore: number;
-  resultFilter: "all" | Decision;
+  resultFilter: ResultFilter;
   visibleResults: ResultImage[];
   selectedImage: ResultImage | null;
-  onFilterChange: (value: "all" | Decision) => void;
+  page: number;
+  onFilterChange: (value: ResultFilter) => void;
+  onPageChange: (page: number) => void;
   onSelectImage: (image: ResultImage) => void;
+  onReviewResolved: (imageId: string, result: SimilarityTaggingResult) => void;
+  onRetry: (imageId: string) => void;
 }) {
   return (
     <section className="results-panel">
@@ -578,21 +723,25 @@ function ResultsPanel({
         <Metric label="总图片" value={results.summary.total} />
         <Metric label="保留并美化" value={results.summary.selected} tone="selected" />
         <Metric label="未通过标准" value={results.summary.rejected} tone="rejected" />
+        <Metric label="合格未入选" value={results.summary.not_selected} />
         <Metric label="保留图平均分" value={averageScore} />
       </div>
       <div className="result-toolbar">
         <div className="tabs" role="tablist" aria-label="结果筛选">
-          {[["all", "全部"], ["selected", "保留并美化"], ["tagging", "标签生成中"], ["rejected", "未通过标准"], ["failed", "处理失败"]].map(([value, label]) => (
-            <button key={value} className={resultFilter === value ? "active" : ""} type="button" role="tab" aria-selected={resultFilter === value} onClick={() => onFilterChange(value as "all" | Decision)}>{label}</button>
+          {[["all", "全部"], ["selected", "保留并美化"], ["rejected", "未通过标准"], ["not_selected", "合格未入选"], ["failed", "处理失败"]].map(([value, label]) => (
+            <button key={value} className={resultFilter === value ? "active" : ""} type="button" role="tab" aria-selected={resultFilter === value} onClick={() => onFilterChange(value as ResultFilter)}>{label}</button>
           ))}
         </div>
+        <button className="page-download-button" type="button" disabled={!visibleResults.some((image) => image.enhanced_url ?? image.original_url)} onClick={() => downloadCurrentPage(visibleResults)}><ArrowDownToLine size={15} aria-hidden="true" />下载本页</button>
       </div>
       <div className="result-layout">
         <div className="result-grid">
           {visibleResults.map((image) => <ResultCard key={image.image_id} image={image} active={selectedImage?.image_id === image.image_id} onOpen={() => onSelectImage(image)} />)}
+          {!visibleResults.length && <p className="result-page-empty">当前筛选下还没有结果。</p>}
         </div>
-        <aside className="detail-panel" aria-label="图片详情">{selectedImage ? <ImageDetail image={selectedImage} /> : <EmptyDetail />}</aside>
+        <aside className="detail-panel" aria-label="图片详情">{selectedImage ? <ImageDetail image={selectedImage} onReviewResolved={onReviewResolved} onRetry={onRetry} /> : <EmptyDetail />}</aside>
       </div>
+      <Pagination page={page} total={results.result_total} pageSize={results.limit} onChange={onPageChange} label="处理结果" />
     </section>
   );
 }
@@ -702,16 +851,16 @@ function ResultCard({ image, active, onOpen }: { image: ResultImage; active: boo
         <b>{image.score}</b>
       </div>
       <p>{image.reject_codes?.[0] ? rejectCodeLabel(image.reject_codes[0]) : image.reasons[0] ?? "基础质量达标"}</p>
-      {image.ai_tags?.tags.length ? (
+      {image.tagging_result?.tag_path.length ? (
         <div className="tag-row" aria-label="AI 自动标签">
-          {image.ai_tags.tags.slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}
+          {image.tagging_result.tag_path.slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}
         </div>
-      ) : null}
+      ) : image.tagging_result?.decision === "unmatched" ? <p className="unmatched-note">未识别到相似素材</p> : null}
     </article>
   );
 }
 
-function ImageDetail({ image }: { image: ResultImage }) {
+function ImageDetail({ image, onReviewResolved, onRetry }: { image: ResultImage; onReviewResolved: (imageId: string, result: SimilarityTaggingResult) => void; onRetry: (imageId: string) => void }) {
   const [showEnhanced, setShowEnhanced] = useState(true);
   const [compare, setCompare] = useState(50);
   const imageUrl = showEnhanced && image.enhanced_url ? image.enhanced_url : image.original_url;
@@ -741,6 +890,8 @@ function ImageDetail({ image }: { image: ResultImage }) {
           </div>
         ) : imageUrl ? (
           <img src={imageUrl} alt={`${image.image_id} 大图预览`} />
+        ) : image.files_expired ? (
+          <p>图片文件已过期，处理记录和标签仍保留。</p>
         ) : (
           <p>该图片的预览地址暂不可用。</p>
         )}
@@ -769,6 +920,7 @@ function ImageDetail({ image }: { image: ResultImage }) {
         </div>
         <strong>{image.score}</strong>
       </div>
+      {image.decision === "failed" && <button className="retry-image-button" type="button" onClick={() => onRetry(image.image_id)}><RefreshCw size={15} aria-hidden="true" />重试这张图片</button>}
 
       <div className="metrics-compare">
         <MetricList title="美化前" metrics={image.metrics} />
@@ -784,8 +936,76 @@ function ImageDetail({ image }: { image: ResultImage }) {
         />
       </div>
       <AITags tags={image.ai_tags} />
+      <SimilarityMatch imageId={image.image_id} result={image.tagging_result} onResolved={onReviewResolved} />
     </>
   );
+}
+
+function SimilarityMatch({ imageId, result, onResolved }: { imageId: string; result?: ResultImage["tagging_result"]; onResolved: (imageId: string, result: SimilarityTaggingResult) => void }) {
+  const [candidates, setCandidates] = useState<SimilarityCandidate[]>([]);
+  const [selectedAssetId, setSelectedAssetId] = useState(result?.matched_asset_id ?? "");
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSelectedAssetId(result?.matched_asset_id ?? "");
+    setCandidates([]);
+    setReviewError(null);
+    if (result?.decision !== "pending_review") return;
+    let active = true;
+    api.getTagReviews().then((reviews) => {
+      if (!active) return;
+      const review = reviews.find((entry) => entry.image_id === imageId);
+      if (!review) return;
+      const byPath = new Map<string, SimilarityCandidate>();
+      review.candidates.forEach((candidate) => {
+        const key = candidate.tag_path.join(" / ");
+        if (!byPath.has(key)) byPath.set(key, candidate);
+      });
+      const options = Array.from(byPath.values());
+      setCandidates(options);
+      setSelectedAssetId((current) => current || review.matched_asset_id || options[0]?.asset_id || "");
+    }).catch((error) => {
+      if (active) setReviewError(error instanceof Error ? error.message : "候选素材读取失败");
+    });
+    return () => { active = false; };
+  }, [imageId, result?.decision, result?.matched_asset_id]);
+
+  async function decideReview(decision: "matched" | "unmatched") {
+    setReviewBusy(true);
+    setReviewError(null);
+    try {
+      const review = await api.decideTagReview(imageId, {
+        decision,
+        matched_asset_id: decision === "matched" ? selectedAssetId || result?.matched_asset_id : null
+      });
+      onResolved(imageId, {
+        decision: review.decision,
+        tag_path: review.tag_path,
+        matched_asset_id: review.matched_asset_id,
+        similarity: review.similarity_score,
+        final_score: review.final_score,
+        message: review.message
+      });
+    } catch (error) {
+      setReviewError(error instanceof Error ? error.message : "人工复核处理失败");
+    } finally {
+      setReviewBusy(false);
+    }
+  }
+
+  if (!result) return null;
+  return <section className={`similarity-panel ${result.decision}`}>
+    <div className="similarity-heading"><h3>素材匹配</h3><span>{result.decision === "matched" ? "已匹配" : result.decision === "pending_review" ? "待复核" : "未匹配"}</span></div>
+    <p>{result.message}</p>
+    {result.tag_path.length ? <div className="path-tags">{result.tag_path.map((tag, index) => <span key={`${tag}-${index}`}>{tag}{index < result.tag_path.length - 1 && <ChevronRight size={13} aria-hidden="true" />}</span>)}</div> : null}
+    {result.similarity != null ? <small>图片相似度 {Math.round(result.similarity * 100)}%</small> : null}
+    {result.decision === "pending_review" && <div className="review-controls">
+      {candidates.length > 1 && <label>选择候选标签<select value={selectedAssetId} onChange={(event) => setSelectedAssetId(event.target.value)}>{candidates.map((candidate) => <option key={candidate.asset_id} value={candidate.asset_id}>{candidate.tag_path.join(" / ")}（{Math.round(candidate.final_score * 100)}%）</option>)}</select></label>}
+      <div className="review-actions"><button className="review-confirm" type="button" disabled={reviewBusy || (!selectedAssetId && !result.matched_asset_id)} onClick={() => void decideReview("matched")}>{reviewBusy ? <Loader2 className="spin" size={15} /> : <Check size={15} />}确认此标签</button><button type="button" disabled={reviewBusy} onClick={() => void decideReview("unmatched")}><X size={15} />设为未匹配</button></div>
+      {reviewError && <p className="review-error">{reviewError}</p>}
+    </div>}
+  </section>;
 }
 
 function AITags({ tags }: { tags?: ResultImage["ai_tags"] }) {
@@ -877,10 +1097,54 @@ async function runConcurrent<T>(items: T[], concurrency: number, worker: (item: 
   const runners = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
     while (queue.length) {
       const item = queue.shift();
-      if (item) await worker(item);
+      if (item) {
+        try {
+          await worker(item);
+        } catch {
+          // Individual upload errors are already reflected on their own rows.
+        }
+      }
     }
   });
   await Promise.all(runners);
+}
+
+function Pagination({ page, total, pageSize, onChange, label }: { page: number; total: number; pageSize: number; onChange: (page: number) => void; label: string }) {
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  if (pageCount <= 1) return null;
+  return <nav className="pagination" aria-label={`${label}分页`}>
+    <button type="button" aria-label="上一页" disabled={page <= 0} onClick={() => onChange(page - 1)}><ChevronLeft size={16} aria-hidden="true" /></button>
+    <span>第 {page + 1} / {pageCount} 页 · 共 {total} 张</span>
+    <button type="button" aria-label="下一页" disabled={page >= pageCount - 1} onClick={() => onChange(page + 1)}><ChevronRight size={16} aria-hidden="true" /></button>
+  </nav>;
+}
+
+function stageCountLabel(stage: string): string {
+  return {
+    waiting: "等待",
+    filtering: "过滤",
+    beautifying: "美化",
+    content_analysis: "内容分析",
+    matching: "匹配",
+    completed: "完成",
+    rejected: "淘汰",
+    not_selected: "未入选",
+    failed: "失败",
+    cancelled: "取消"
+  }[stage] ?? stage;
+}
+
+function downloadCurrentPage(images: ResultImage[]) {
+  images.forEach((image, index) => {
+    const url = image.enhanced_url ?? image.original_url;
+    if (!url) return;
+    window.setTimeout(() => {
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${image.image_id}.jpg`;
+      link.click();
+    }, index * 80);
+  });
 }
 
 function formatBytes(bytes: number): string {

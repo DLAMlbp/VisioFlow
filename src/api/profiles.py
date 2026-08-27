@@ -40,3 +40,20 @@ async def list_beautify_profiles(settings: SettingsDep) -> list[ProfileOptionRes
         )
         for profile in profiles
     ]
+
+
+@router.get("/similarity-profiles", response_model=list[ProfileOptionResponse])
+async def list_similarity_profiles(settings: SettingsDep) -> list[ProfileOptionResponse]:
+    profiles = ProfileLoader(settings).list_similarity_profiles()
+    names = {
+        "library_similarity_v2": "装修场景智能匹配（推荐）",
+        "library_similarity_v1": "装修场景严格匹配",
+    }
+    return [
+        ProfileOptionResponse(
+            id=profile.id,
+            name=names.get(profile.id, profile.id),
+            description=profile.description,
+        )
+        for profile in profiles
+    ]

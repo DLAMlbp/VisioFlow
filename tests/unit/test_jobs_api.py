@@ -33,12 +33,17 @@ class FakeJobService:
             rejected=0,
         )
 
-    async def get_results(self, job_id: str):
+    async def get_results(
+        self, job_id: str, *, limit: int = 50, offset: int = 0, decision: str | None = None
+    ):
         return ImageJobResultsResponse(
             job_id=job_id,
             total=2,
             selected=1,
             rejected=1,
+            result_total=0,
+            limit=limit,
+            offset=offset,
             images=[],
         )
 
@@ -156,4 +161,3 @@ def test_get_image_job_results_returns_final_summary() -> None:
     assert response.status_code == 200
     assert response.json()["selected"] == 1
     assert response.json()["rejected"] == 1
-
