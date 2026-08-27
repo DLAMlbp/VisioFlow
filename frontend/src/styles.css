@@ -1172,6 +1172,8 @@ body {
 .config-field { display: grid; gap: 7px; color: var(--ink); font-size: 13px; font-weight: 600; }
 .config-field input { width: 100%; min-height: 40px; box-sizing: border-box; border: 1px solid #e1dfea; border-radius: 9px; background: #fbfbfe; color: var(--ink); padding: 0 11px; font: inherit; font-weight: 400; outline: none; }
 .config-field input:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(113, 71, 255, .12); }
+.config-key-link { width: fit-content; margin-top: -9px; color: var(--cyan); font-size: 12px; font-weight: 600; text-decoration: none; }
+.config-key-link:hover { text-decoration: underline; }
 .config-toggle { display: flex; align-items: center; gap: 8px; color: var(--ink); font-size: 13px; font-weight: 600; cursor: pointer; }
 .config-toggle input { accent-color: var(--cyan); }
 .config-note { margin: -5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
