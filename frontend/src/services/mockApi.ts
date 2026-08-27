@@ -16,6 +16,7 @@ import type {
   UpdateAIModelConfig,
   UploadBatchRegistration
 } from "../types";
+import { createClientId } from "../utils/id";
 
 const filterProfiles: ProfileOption[] = [
   { id: "renovation_submission_v1", name: "装修照片基础筛选", description: "过滤尺寸不足、模糊、曝光异常和纯色图片" }
@@ -87,7 +88,7 @@ export const mockApi = {
     await wait(180);
     const safeName = payload.filename.replace(/[^\w.-]/g, "_");
     return {
-      object_key: `uploads/mock/${crypto.randomUUID()}-${safeName}`,
+      object_key: `uploads/mock/${createClientId()}-${safeName}`,
       upload_url: `mock://upload/${safeName}`
     };
   },
@@ -129,11 +130,11 @@ export const mockApi = {
       status: "registered",
       expires_at: new Date(Date.now() + 86_400_000).toISOString(),
       items: payload.files.map((file) => ({
-        id: crypto.randomUUID(),
+        id: createClientId(),
         filename: file.filename,
         content_type: file.content_type,
         file_size: file.file_size,
-        object_key: `uploads/mock/${crypto.randomUUID()}-${file.filename}`,
+        object_key: `uploads/mock/${createClientId()}-${file.filename}`,
         upload_url: `mock://upload/${file.filename}`
       }))
     };
@@ -281,7 +282,7 @@ export const mockApi = {
     await wait(180);
     const parent = payload.parent_id ? findTagNode(libraryTagTree, payload.parent_id) : null;
     const node: LibraryTagNode = {
-      id: `tag_${crypto.randomUUID()}`,
+      id: `tag_${createClientId()}`,
       parent_id: parent?.id ?? null,
       name: payload.name,
       depth: parent ? parent.depth + 1 : 0,
@@ -322,7 +323,7 @@ export const mockApi = {
     const node = findTagNode(libraryTagTree, payload.leaf_tag_node_id);
     if (!node) throw new Error("标签不存在");
     const path = findTagPath(libraryTagTree, node.id);
-    const asset = createMockLibraryAsset(`ast_${crypto.randomUUID()}`, node.id, path, libraryAssets.length + 50);
+    const asset = createMockLibraryAsset(`ast_${createClientId()}`, node.id, path, libraryAssets.length + 50);
     asset.original_object_key = payload.object_key;
     asset.original_filename = payload.original_filename;
     libraryAssets.unshift(asset);

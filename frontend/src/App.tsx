@@ -39,6 +39,7 @@ import type {
   UploadItem
 } from "./types";
 import { decisionLabel, isTerminalStatus, rejectCodeLabel, statusLabel } from "./utils/decision";
+import { createClientId } from "./utils/id";
 
 const MAX_IMAGES = 500;
 const MAX_IMAGE_SIZE_MB = 25;
@@ -238,7 +239,7 @@ function App() {
     const nextItems = accepted
       .filter((file) => file.size <= MAX_IMAGE_SIZE_MB * 1024 * 1024)
       .map<UploadItem>((file) => ({
-        id: crypto.randomUUID(),
+        id: createClientId(),
         file,
         filename: file.name,
         fileSize: file.size,

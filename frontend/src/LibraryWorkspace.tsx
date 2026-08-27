@@ -18,6 +18,7 @@ import {
 import { ChangeEvent, CSSProperties, DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./services/api";
 import type { LibraryAsset, LibraryTagNode, UploadItem } from "./types";
+import { createClientId } from "./utils/id";
 
 const MAX_LIBRARY_UPLOADS = 50;
 
@@ -177,7 +178,7 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
       .filter((file) => file.type.startsWith("image/"))
       .slice(0, available)
       .map<UploadItem>((file) => ({
-        id: crypto.randomUUID(),
+        id: createClientId(),
         file,
         filename: file.name,
         fileSize: file.size,
