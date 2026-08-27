@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     app_port: int = 8000
     cors_allowed_origins: str = "http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:5174,http://localhost:5174"
     api_key: str = ""
+    integration_api_key: str = ""
+    integration_max_files: int = 50
 
     database_url: str = "postgresql+asyncpg://user:password@postgres:5432/image_ai"
     redis_url: str = "redis://redis:6379/0"

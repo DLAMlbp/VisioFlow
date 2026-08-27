@@ -1,5 +1,7 @@
 # Image Intelligence Service
 
+公司服务端接入说明见 [`docs/company-api.md`](docs/company-api.md)。交付包中的所有 API Key 均为空，必须由部署方自行配置。
+
 多图智能筛选与自动美化服务。
 
 当前实现为装修工匠照片处理 MVP。

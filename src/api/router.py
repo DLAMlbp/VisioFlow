@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 
-from src.api.auth import require_api_key
+from src.api.auth import require_api_key, require_integration_api_key
 from src.api.health import router as health_router
 from src.api.integration import router as integration_router
 from src.api.jobs import router as jobs_router
@@ -59,5 +59,5 @@ api_router.include_router(
     integration_router,
     prefix="/api/v1/integration",
     tags=["third-party integration"],
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(require_integration_api_key)],
 )

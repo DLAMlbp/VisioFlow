@@ -4,7 +4,12 @@ from src.api.jobs import get_job_service
 from src.api.uploads import get_storage_provider
 from src.core.config import Settings, get_settings
 from src.main import app
-from src.schemas.jobs import ImageJobProgressResponse, ImageJobResultsResponse
+from src.schemas.jobs import (
+    ImageItemStatus,
+    ImageJobProgressResponse,
+    ImageJobResultItemResponse,
+    ImageJobResultsResponse,
+)
 from src.services.storage.interfaces import StorageProvider
 
 
@@ -29,7 +34,7 @@ class FakeStorageProvider(StorageProvider):
         return ""
 
     async def presign_download(self, object_key: str, expires_seconds: int) -> str:
-        return ""
+        return f"https://storage.test/{object_key}?expires={expires_seconds}"
 
 
 class FakeJobService:
@@ -42,8 +47,25 @@ class FakeJobService:
             job_id=job_id, status="queued", progress=0, total=1, processed=0, selected=0, rejected=0
         )
 
-    async def get_results(self, job_id: str):
-        return ImageJobResultsResponse(job_id=job_id, total=1, selected=0, rejected=0, images=[])
+    async def get_results(self, job_id: str, *, limit=50, offset=0, decision=None):
+        return ImageJobResultsResponse(
+            job_id=job_id,
+            total=1,
+            selected=1,
+            rejected=0,
+            result_total=1,
+            limit=limit,
+            offset=offset,
+            images=[
+                ImageJobResultItemResponse(
+                    image_id="img_integration",
+                    decision=ImageItemStatus.SELECTED,
+                    score=98.0,
+                    original_object_key="uploads/job/original.jpg",
+                    enhanced_object_key="enhanced/job/result.jpg",
+                )
+            ],
+        )
 
 
 def test_integration_job_uploads_files_and_creates_async_job() -> None:
@@ -51,7 +73,7 @@ def test_integration_job_uploads_files_and_creates_async_job() -> None:
     jobs = FakeJobService()
     app.dependency_overrides[get_storage_provider] = lambda: storage
     app.dependency_overrides[get_job_service] = lambda: jobs
-    app.dependency_overrides[get_settings] = lambda: Settings(api_key="test-api-key")
+    app.dependency_overrides[get_settings] = lambda: Settings(integration_api_key="test-integration-key")
     client = TestClient(app)
 
     response = client.post(
@@ -61,7 +83,7 @@ def test_integration_job_uploads_files_and_creates_async_job() -> None:
             ("files", ("bathroom.png", b"two", "image/png")),
         ],
         data={"max_selected": "1", "enhance_level": "2"},
-        headers={"X-API-Key": "test-api-key"},
+        headers={"X-API-Key": "test-integration-key"},
     )
 
     app.dependency_overrides.clear()
@@ -77,7 +99,7 @@ def test_integration_job_rejects_invalid_file_and_removes_prior_uploads() -> Non
     storage = FakeStorageProvider()
     app.dependency_overrides[get_storage_provider] = lambda: storage
     app.dependency_overrides[get_job_service] = lambda: FakeJobService()
-    app.dependency_overrides[get_settings] = lambda: Settings(api_key="test-api-key")
+    app.dependency_overrides[get_settings] = lambda: Settings(integration_api_key="test-integration-key")
     client = TestClient(app)
 
     response = client.post(
@@ -86,7 +108,7 @@ def test_integration_job_rejects_invalid_file_and_removes_prior_uploads() -> Non
             ("files", ("valid.jpg", b"one", "image/jpeg")),
             ("files", ("invalid.gif", b"two", "image/gif")),
         ],
-        headers={"X-API-Key": "test-api-key"},
+        headers={"X-API-Key": "test-integration-key"},
     )
 
     app.dependency_overrides.clear()
@@ -98,12 +120,20 @@ def test_integration_job_rejects_invalid_file_and_removes_prior_uploads() -> Non
 
 def test_integration_job_progress_and_results_are_available() -> None:
     app.dependency_overrides[get_job_service] = lambda: FakeJobService()
-    app.dependency_overrides[get_settings] = lambda: Settings(api_key="test-api-key")
+    app.dependency_overrides[get_storage_provider] = lambda: FakeStorageProvider()
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        integration_api_key="test-integration-key",
+        s3_presign_expires_seconds=600,
+    )
     client = TestClient(app)
 
-    progress = client.get("/api/v1/integration/jobs/job_integration", headers={"X-API-Key": "test-api-key"})
+    progress = client.get(
+        "/api/v1/integration/jobs/job_integration",
+        headers={"X-API-Key": "test-integration-key"},
+    )
     results = client.get(
-        "/api/v1/integration/jobs/job_integration/results", headers={"X-API-Key": "test-api-key"}
+        "/api/v1/integration/jobs/job_integration/results?limit=25&offset=0",
+        headers={"X-API-Key": "test-integration-key"},
     )
 
     app.dependency_overrides.clear()
@@ -111,3 +141,22 @@ def test_integration_job_progress_and_results_are_available() -> None:
     assert progress.status_code == 200
     assert progress.json()["job_id"] == "job_integration"
     assert results.status_code == 200
+    assert results.json()["download_expires_in"] == 600
+    assert results.json()["images"][0]["original_url"].startswith("https://storage.test/")
+    assert results.json()["images"][0]["enhanced_url"].startswith("https://storage.test/")
+
+
+def test_integration_api_does_not_accept_internal_admin_key() -> None:
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        api_key="internal-admin-key",
+        integration_api_key="company-key",
+    )
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/v1/integration/jobs/job_integration",
+        headers={"X-API-Key": "internal-admin-key"},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 401

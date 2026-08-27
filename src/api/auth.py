@@ -17,3 +17,16 @@ async def require_api_key(
         )
     if x_api_key is None or not compare_digest(x_api_key, settings.api_key):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="API Key 无效")
+
+
+async def require_integration_api_key(
+    settings: Annotated[Settings, Depends(get_settings)],
+    x_api_key: Annotated[str | None, Header()] = None,
+) -> None:
+    if not settings.integration_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="服务端 INTEGRATION_API_KEY 未配置",
+        )
+    if x_api_key is None or not compare_digest(x_api_key, settings.integration_api_key):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="集成 API Key 无效")
