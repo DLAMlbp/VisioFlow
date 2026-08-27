@@ -68,3 +68,7 @@ curl "https://<service-host>/api/v1/integration/jobs/job_xxx/results?limit=50&of
 - `503`：部署方尚未配置 `INTEGRATION_API_KEY`，或依赖服务未就绪。
 
 健康检查无需密钥：`GET /health`、`GET /health/ready`。
+
+## API 稳定性约定
+
+`/api/v1/integration/*` 是长期稳定接口。后续服务功能更新必须保持现有路径、HTTP 方法、鉴权头、字段名称、字段类型、状态和错误语义向后兼容。允许新增可选字段；客户应忽略不认识的响应字段。任何破坏性变化必须发布新的 `/api/v2`，不得直接修改 v1 导致现有客户调用失败。每次发布必须通过接口契约测试、健康检查和端到端回归。
