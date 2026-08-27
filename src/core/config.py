@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -59,8 +60,10 @@ class Settings(BaseSettings):
 
     ai_tagging_enabled: bool = True
     ai_tagging_provider: str = "openai"
-    ai_tagging_base_url: str = "https://api.openai.com/v1"
-    ai_tagging_model: str = "gpt-5.6-luna"
+    ai_tagging_base_url: Literal["https://router.keenlight.ai/v1"] = (
+        "https://router.keenlight.ai/v1"
+    )
+    ai_tagging_model: str = "gpt-5.6-sol"
     ai_tagging_api_key: str = ""
     ai_tagging_timeout_seconds: int = 30
     ai_tagging_max_retries: int = 2

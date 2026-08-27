@@ -1,7 +1,6 @@
 import type {
   CreateJobRequest,
   CreateJobResponse,
-  AIModelConfig,
   JobHistoryResponse,
   JobProgress,
   JobResults,
@@ -13,7 +12,6 @@ import type {
   ProfileOption,
   ResultImage,
   TagReview,
-  UpdateAIModelConfig,
   UploadBatchRegistration
 } from "../types";
 
@@ -39,14 +37,6 @@ let activeJob: {
 } | null = null;
 
 let pendingBatch: UploadBatchRegistration | null = null;
-
-let aiModelConfig: AIModelConfig = {
-  enabled: true,
-  provider: "openai",
-  base_url: "https://api.openai.com/v1",
-  model: "gpt-5.6-luna",
-  api_key_configured: true
-};
 
 let libraryTagTree: LibraryTagNode[] = [
   {
@@ -203,7 +193,7 @@ export const mockApi = {
           selected: progress.selected,
           rejected: progress.rejected,
           not_selected: progress.not_selected,
-          ai_tagging_model: aiModelConfig.enabled ? aiModelConfig.model : null,
+          ai_tagging_model: null,
           created_at: new Date(activeJob.createdAt).toISOString(),
           completed_at: progress.status === "completed" ? new Date().toISOString() : undefined
         }
@@ -256,26 +246,9 @@ export const mockApi = {
     return beautifyProfiles;
   },
 
-  async getAIModelConfig(): Promise<AIModelConfig> {
-    await wait(120);
-    return aiModelConfig;
-  },
-
   async getSimilarityProfiles(): Promise<ProfileOption[]> {
     await wait(100);
     return similarityProfiles;
-  },
-
-  async updateAIModelConfig(payload: UpdateAIModelConfig): Promise<AIModelConfig> {
-    await wait(180);
-    aiModelConfig = {
-      ...aiModelConfig,
-      enabled: payload.enabled,
-      base_url: payload.base_url,
-      model: payload.model,
-      api_key_configured: aiModelConfig.api_key_configured || Boolean(payload.api_key)
-    };
-    return aiModelConfig;
   },
 
   async getLibraryTagTree(): Promise<LibraryTagNode[]> {

@@ -1,5 +1,4 @@
 import type {
-  AIModelConfig,
   Decision,
   CreateJobRequest,
   CreateJobResponse,
@@ -13,7 +12,6 @@ import type {
   LibraryAssetList,
   LibraryTagNode,
   TagReview,
-  UpdateAIModelConfig,
   UploadBatchRegistration
 } from "../types";
 import { mockApi } from "./mockApi";
@@ -163,15 +161,6 @@ export const api = USE_MOCK_API
       },
       getSimilarityProfiles(): Promise<ProfileOption[]> {
         return request<ProfileOption[]>("/api/v1/similarity-profiles");
-      },
-      getAIModelConfig(): Promise<AIModelConfig> {
-        return request<AIModelConfig>("/api/v1/settings/ai-model");
-      },
-      updateAIModelConfig(payload: UpdateAIModelConfig): Promise<AIModelConfig> {
-        return request<AIModelConfig>("/api/v1/settings/ai-model", {
-          method: "PUT",
-          body: JSON.stringify(payload)
-        });
       },
       getLibraryTagTree(): Promise<LibraryTagNode[]> {
         return request<LibraryTagNode[]>("/api/v1/library/tag-tree");

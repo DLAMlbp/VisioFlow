@@ -1,7 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from redis.exceptions import RedisError
 
 from src.core.config import Settings, get_settings
@@ -20,12 +20,13 @@ class AIModelConfigResponse(BaseModel):
 
 
 class UpdateAIModelConfigRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     enabled: bool = True
-    base_url: str = Field(min_length=8, max_length=512)
     model: str = Field(min_length=1, max_length=120)
     api_key: str | None = Field(default=None, min_length=1, max_length=1024)
 
-    @field_validator("base_url", "model")
+    @field_validator("model")
     @classmethod
     def strip_required_value(cls, value: str) -> str:
         value = value.strip()
@@ -58,7 +59,6 @@ async def update_ai_model_config(
         updated = save_ai_model_settings(
             settings,
             enabled=payload.enabled,
-            base_url=payload.base_url,
             model=payload.model,
             api_key=payload.api_key.strip() if payload.api_key else None,
         )

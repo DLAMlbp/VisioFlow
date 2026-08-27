@@ -1040,13 +1040,6 @@ select:focus-visible {
   }
 }
 
-.history-model {
-  font-family: "IBM Plex Mono", monospace;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* Layered dark workspace inspired by the reference's canvas, rail, and focus treatment. */
 :root {
   color-scheme: dark;
@@ -1169,22 +1162,6 @@ body {
 .mode-pill { min-height: 32px; border-color: #e4e2eb; background: rgba(255,255,255,.72); color: #777486; font-size: 12px; }
 .tool-button { width: 36px; height: 36px; display: grid; place-items: center; border: 0; border-radius: 9px; background: transparent; color: #5d5d6d; transition: background 180ms ease, color 180ms ease; }
 .tool-button:hover { background: var(--cyan-soft); color: var(--cyan); }
-.model-config-button { min-height: 34px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid #ded9f1; border-radius: 9px; background: #fff; color: #514b69; padding: 0 11px; font-size: 12px; font-weight: 600; cursor: pointer; }
-.model-config-button:hover { border-color: #c9b9ff; background: var(--cyan-soft); color: var(--cyan); }
-.model-config-backdrop { position: fixed; z-index: 30; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(33, 30, 49, .28); }
-.model-config-dialog { width: min(440px, 100%); display: grid; gap: 16px; border: 1px solid #e3dfef; border-radius: 16px; background: #fff; box-shadow: 0 28px 76px rgba(46, 39, 82, .22); padding: 22px; }
-.model-config-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.model-config-heading span { color: var(--cyan); font-family: "IBM Plex Mono", monospace; font-size: 10px; font-weight: 700; letter-spacing: .1em; }
-.model-config-heading h2 { margin: 4px 0 0; font-size: 18px; }
-.config-field { display: grid; gap: 7px; color: var(--ink); font-size: 13px; font-weight: 600; }
-.config-field input { width: 100%; min-height: 40px; box-sizing: border-box; border: 1px solid #e1dfea; border-radius: 9px; background: #fbfbfe; color: var(--ink); padding: 0 11px; font: inherit; font-weight: 400; outline: none; }
-.config-field input:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(113, 71, 255, .12); }
-.config-toggle { display: flex; align-items: center; gap: 8px; color: var(--ink); font-size: 13px; font-weight: 600; cursor: pointer; }
-.config-toggle input { accent-color: var(--cyan); }
-.config-note { margin: -5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
-.model-config-loading { min-height: 180px; display: grid; place-content: center; justify-items: center; gap: 10px; color: var(--muted); font-size: 13px; }
-.model-config-actions { display: grid; grid-template-columns: 108px minmax(0, 1fr); gap: 10px; padding-top: 4px; }
-.model-config-actions .ghost-button, .model-config-actions .primary-button { width: 100%; min-height: 40px; padding: 0 14px; white-space: nowrap; }
 
 .workspace-grid { grid-template-columns: 420px minmax(0, 1fr); gap: 18px; align-items: stretch; }
 .control-panel, .result-stage { border: 1px solid rgba(224, 223, 234, .9); border-radius: 28px; background: var(--surface); box-shadow: var(--shadow); }
@@ -1331,8 +1308,6 @@ body {
   .app-flow { justify-content: flex-start; }
   .flow-step i { width: 12px; margin: 0 5px; }
   .topbar-actions { margin-left: auto; }
-  .model-config-button span { display: none; }
-  .model-config-button { width: 36px; justify-content: center; padding: 0; }
   .mode-pill { display: none; }
   .control-panel, .result-stage { border-radius: 20px; }
   .reference-control { padding: 24px 16px; }

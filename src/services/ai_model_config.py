@@ -8,7 +8,7 @@ from redis.exceptions import RedisError
 from src.core.config import Settings
 
 _CONFIG_KEY = "image_intelligence:ai_model_config"
-_CONFIG_FIELDS = ("ai_tagging_enabled", "ai_tagging_base_url", "ai_tagging_model", "ai_tagging_api_key")
+_CONFIG_FIELDS = ("ai_tagging_enabled", "ai_tagging_model", "ai_tagging_api_key")
 
 
 def load_ai_model_settings(settings: Settings) -> Settings:
@@ -30,14 +30,13 @@ def save_ai_model_settings(
     settings: Settings,
     *,
     enabled: bool,
-    base_url: str,
     model: str,
     api_key: str | None,
 ) -> Settings:
     current = load_ai_model_settings(settings)
     payload = {
         "ai_tagging_enabled": enabled,
-        "ai_tagging_base_url": base_url.rstrip("/"),
+        "ai_tagging_base_url": settings.ai_tagging_base_url,
         "ai_tagging_model": model,
         "ai_tagging_api_key": api_key if api_key is not None else current.ai_tagging_api_key,
     }

@@ -51,6 +51,17 @@ def test_openai_provider_is_configurable_without_importing_sdk() -> None:
     assert isinstance(provider, OpenAIChatVisionTagProvider)
 
 
+def test_ai_tagging_defaults_use_locked_router_and_model() -> None:
+    settings = Settings()
+
+    assert settings.ai_tagging_enabled is True
+    assert settings.ai_tagging_base_url == "https://router.keenlight.ai/v1"
+    assert settings.ai_tagging_model == "gpt-5.6-sol"
+
+    with pytest.raises(ValidationError):
+        Settings(ai_tagging_base_url="https://api.example.com/v1")
+
+
 def test_chat_completions_url_uses_configured_openai_compatible_base_url() -> None:
     assert _chat_completions_url("https://router.keenlight.ai/v1/") == (
         "https://router.keenlight.ai/v1/chat/completions"

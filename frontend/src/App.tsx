@@ -13,7 +13,6 @@ import {
   Images,
   Loader2,
   RefreshCw,
-  SlidersHorizontal,
   Sparkles,
   Trash2,
   UploadCloud,
@@ -30,7 +29,6 @@ import type {
   JobHistoryResponse,
   JobProgress,
   JobResults,
-  AIModelConfig,
   ProfileOption,
   ResultImage,
   ResultFilter,
@@ -97,11 +95,6 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [modelConfigOpen, setModelConfigOpen] = useState(false);
-  const [modelConfigLoading, setModelConfigLoading] = useState(false);
-  const [modelConfigSaving, setModelConfigSaving] = useState(false);
-  const [modelConfig, setModelConfig] = useState<AIModelConfig | null>(null);
-  const [modelApiKey, setModelApiKey] = useState("");
   const [activeWorkspace, setActiveWorkspace] = useState<"processing" | "library">("processing");
 
   const uploadedCount = items.filter((item) => item.status === "uploaded").length;
@@ -316,40 +309,6 @@ function App() {
     }
   }
 
-  async function openModelConfig() {
-    setModelConfigOpen(true);
-    setModelConfigLoading(true);
-    setModelApiKey("");
-    try {
-      setModelConfig(await api.getAIModelConfig());
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "加载模型配置失败");
-    } finally {
-      setModelConfigLoading(false);
-    }
-  }
-
-  async function saveModelConfig() {
-    if (!modelConfig || !modelConfig.base_url.trim() || !modelConfig.model.trim()) return;
-    setModelConfigSaving(true);
-    try {
-      const updated = await api.updateAIModelConfig({
-        enabled: modelConfig.enabled,
-        base_url: modelConfig.base_url.trim(),
-        model: modelConfig.model.trim(),
-        ...(modelApiKey.trim() ? { api_key: modelApiKey.trim() } : {})
-      });
-      setModelConfig(updated);
-      setModelApiKey("");
-      setModelConfigOpen(false);
-      setMessage("模型配置已保存，将用于新任务。");
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "保存模型配置失败");
-    } finally {
-      setModelConfigSaving(false);
-    }
-  }
-
   async function openHistoryJob(entry: JobHistoryItem) {
     const operationVersion = ++operationVersionRef.current;
     setMessage(null);
@@ -510,10 +469,6 @@ function App() {
         </nav>
         <div className="topbar-actions">
           <span className="mode-pill">{import.meta.env.VITE_USE_MOCK_API === "false" ? "真实处理" : "模拟演示"}</span>
-          <button className="model-config-button" type="button" aria-label="配置 AI 模型" title="配置 AI 模型" onClick={() => void openModelConfig()}>
-            <SlidersHorizontal size={17} aria-hidden="true" />
-            <span>模型配置</span>
-          </button>
           <button className="tool-button" type="button" aria-label="历史记录" title="历史记录" onClick={toggleHistory}>
             <History size={18} aria-hidden="true" />
           </button>
@@ -547,28 +502,6 @@ function App() {
             <X size={16} aria-hidden="true" />
           </button>
         </section>
-      )}
-
-      {modelConfigOpen && (
-        <div className="model-config-backdrop" role="presentation" onMouseDown={() => !modelConfigSaving && setModelConfigOpen(false)}>
-          <section className="model-config-dialog" role="dialog" aria-modal="true" aria-labelledby="modelConfigTitle" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="model-config-heading">
-              <div>
-                <span>AI MODEL</span>
-                <h2 id="modelConfigTitle">模型配置</h2>
-              </div>
-              <button className="icon-button" type="button" aria-label="关闭模型配置" onClick={() => setModelConfigOpen(false)} disabled={modelConfigSaving}><X size={17} aria-hidden="true" /></button>
-            </div>
-            {modelConfigLoading || !modelConfig ? <div className="model-config-loading"><Loader2 className="spin" size={20} aria-hidden="true" />正在读取配置</div> : <>
-              <label className="config-toggle"><input type="checkbox" checked={modelConfig.enabled} onChange={(event) => setModelConfig({ ...modelConfig, enabled: event.target.checked })} /><span>启用 AI 标签</span></label>
-              <label className="config-field">接口地址<input type="url" value={modelConfig.base_url} onChange={(event) => setModelConfig({ ...modelConfig, base_url: event.target.value })} placeholder="https://api.example.com/v1" /></label>
-              <label className="config-field">模型名称<input value={modelConfig.model} onChange={(event) => setModelConfig({ ...modelConfig, model: event.target.value })} placeholder="请输入模型名称" /></label>
-              <label className="config-field">API Key<input type="password" value={modelApiKey} onChange={(event) => setModelApiKey(event.target.value)} placeholder={modelConfig.api_key_configured ? "已配置，留空则保持不变" : "请输入 API Key"} autoComplete="new-password" /></label>
-              <p className="config-note">使用 OpenAI 兼容的 Chat Completions 接口。API Key 不会在页面中显示。</p>
-              <div className="model-config-actions"><button className="ghost-button" type="button" onClick={() => setModelConfigOpen(false)} disabled={modelConfigSaving}>取消</button><button className="primary-button" type="button" onClick={() => void saveModelConfig()} disabled={modelConfigSaving || !modelConfig.base_url.trim() || !modelConfig.model.trim()}>{modelConfigSaving && <Loader2 className="spin" size={16} aria-hidden="true" />}{modelConfigSaving ? "保存中" : "保存配置"}</button></div>
-            </>}
-          </section>
-        </div>
       )}
 
       {activeWorkspace === "processing" ? <>
@@ -782,7 +715,6 @@ function HistoryPanel({
               <span>{formatProcessingDuration(entry.created_at, entry.completed_at)}</span>
               <span>{entry.processed}/{entry.total} 已处理</span>
               <span>{entry.selected} 保留，{entry.rejected} 淘汰</span>
-              <span className="history-model">AI · {entry.ai_tagging_model ?? "未启用"}</span>
               <ChevronRight size={18} aria-hidden="true" />
             </button>
           ))}

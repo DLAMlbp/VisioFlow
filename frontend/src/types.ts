@@ -202,21 +202,6 @@ export interface ProfileOption {
   description: string;
 }
 
-export interface AIModelConfig {
-  enabled: boolean;
-  provider: string;
-  base_url: string;
-  model: string;
-  api_key_configured: boolean;
-}
-
-export interface UpdateAIModelConfig {
-  enabled: boolean;
-  base_url: string;
-  model: string;
-  api_key?: string;
-}
-
 export interface LibraryTagNode {
   id: string;
   parent_id?: string | null;
