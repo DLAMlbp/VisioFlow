@@ -9,6 +9,7 @@ from src.core.config import get_settings
 from src.db.session import AsyncSessionLocal
 from src.repositories.jobs import ImageJobRepository
 from src.schemas.jobs import ImageItemStatus
+from src.services.ai_model_config import load_ai_model_settings
 from src.services.images.beautify import NaturalBeautifyService
 from src.services.images.hard_filter import HardFilterService, RejectCode
 from src.services.images.metadata import (
@@ -17,9 +18,15 @@ from src.services.images.metadata import (
     encode_jpeg,
     make_thumbnail,
 )
+from src.services.images.processing_vision import (
+    PROCESSING_PROMPT_VERSION,
+    ProcessingVisionService,
+    neutralize_beautify_profile,
+)
 from src.services.images.quality import QualityEngine
+from src.services.images.vision_rate_limit import acquire_vision_rate_slot
 from src.services.jobs.dispatch import EnhancementTaskPublisher, RankingTaskPublisher
-from src.services.profiles import ProfileLoader
+from src.services.managed_profiles import beautify_from_snapshot, filter_from_snapshot
 from src.services.storage.factory import get_storage_provider
 from src.workers.celery_app import celery_app
 
@@ -73,13 +80,16 @@ async def _preprocess_image_metadata(image_id: str) -> None:
         item = await repository.claim_preprocess(image_id)
         if item is None:
             return
-        settings = get_settings()
+        settings = load_ai_model_settings(get_settings())
         job = await repository.get_config(item.job_id)
         if job is None:
             return
-        profiles = ProfileLoader(settings)
-        filter_profile = profiles.get_filter_profile(job.filter_profile_id)
-        beautify_profile = profiles.get_beautify_profile(job.beautify_profile_id)
+        filter_profile = filter_from_snapshot(
+            job.filter_profile_snapshot, job.filter_profile_id, settings
+        )
+        beautify_profile = beautify_from_snapshot(
+            job.beautify_profile_snapshot, job.beautify_profile_id, settings
+        )
         storage = get_storage_provider()
 
         service = ImageMetadataService(storage, settings)
@@ -95,9 +105,10 @@ async def _preprocess_image_metadata(image_id: str) -> None:
             return
 
         beautify_service = NaturalBeautifyService()
+        neutral_beautify_profile = neutralize_beautify_profile(beautify_profile)
         orientation_result = beautify_service.normalize_orientation(
             metadata.original_bytes,
-            beautify_profile,
+            neutral_beautify_profile,
         )
         with Image.open(BytesIO(orientation_result.image_bytes)) as normalized_image:
             normalized_image.load()
@@ -119,7 +130,7 @@ async def _preprocess_image_metadata(image_id: str) -> None:
                 "phash": metadata.phash,
                 "thumbnail_object_key": metadata.thumbnail_object_key,
             },
-            max_hamming_distance=filter_profile.hard_rules.duplicate_hamming_distance,
+            max_hamming_distance=settings.technical_duplicate_hamming_distance,
         )
         if duplicate is not None:
             await repository.reject_item(item, [RejectCode.DUPLICATE_IMAGE])
@@ -130,7 +141,7 @@ async def _preprocess_image_metadata(image_id: str) -> None:
         if similar is not None:
             warnings.append("与同批次照片构图相似，已保留，请按需确认是否重复")
 
-        hard_filter = HardFilterService(settings, filter_profile.hard_rules)
+        hard_filter = HardFilterService(settings)
         filter_result = hard_filter.evaluate(
             normalized_thumbnail,
             width=normalized_width,
@@ -143,25 +154,64 @@ async def _preprocess_image_metadata(image_id: str) -> None:
 
         quality_metrics = QualityEngine(settings).evaluate(normalized_thumbnail)
         await repository.upsert_metrics(item.id, quality_metrics.as_db_values())
-        quality_warning_codes = list(filter_result.warning_codes)
-        if quality_metrics.sharpness_score < filter_profile.hard_rules.min_sharpness_score:
-            quality_warning_codes.append(RejectCode.SHARPNESS_SCORE_TOO_LOW)
-        if quality_metrics.exposure_score < filter_profile.hard_rules.min_exposure_score:
-            quality_warning_codes.append(RejectCode.EXPOSURE_SCORE_TOO_LOW)
-        if quality_metrics.contrast_score < filter_profile.hard_rules.min_contrast_score:
-            quality_warning_codes.append(RejectCode.CONTRAST_SCORE_TOO_LOW)
-        if quality_metrics.noise_score < filter_profile.hard_rules.min_noise_score:
-            quality_warning_codes.append(RejectCode.NOISE_SCORE_TOO_LOW)
-
         final_score = QualityEngine.calculate_weighted_quality_score(
             sharpness=quality_metrics.sharpness_score,
             exposure=quality_metrics.exposure_score,
             contrast=quality_metrics.contrast_score,
             noise=quality_metrics.noise_score,
         )
-        if final_score < filter_profile.hard_rules.min_quality_score:
-            quality_warning_codes.append(RejectCode.QUALITY_SCORE_TOO_LOW)
-        warnings.extend(_quality_warning_text(code) for code in quality_warning_codes)
+        if settings.ai_tagging_enabled and settings.ai_tagging_api_key:
+            await acquire_vision_rate_slot(settings)
+        ai_outcome = await ProcessingVisionService(settings).analyze(
+            orientation_result.image_bytes,
+            filter_instruction=_profile_instruction(
+                job.filter_profile_snapshot, filter_profile.description
+            ),
+            beautify_instruction=_profile_instruction(
+                job.beautify_profile_snapshot, beautify_profile.description
+            ),
+            image_context={
+                "width": normalized_width,
+                "height": normalized_height,
+                "sharpness_score": quality_metrics.sharpness_score,
+                "exposure_score": quality_metrics.exposure_score,
+                "contrast_score": quality_metrics.contrast_score,
+                "noise_score": quality_metrics.noise_score,
+                "quality_score": final_score,
+            },
+        )
+        await repository.save_ai_processing(
+            item,
+            status=ai_outcome.status,
+            model_name=settings.ai_tagging_model,
+            prompt_version=PROCESSING_PROMPT_VERSION,
+            duration_ms=ai_outcome.duration_ms,
+            payload=(
+                ai_outcome.payload.model_dump(mode="json")
+                if ai_outcome.payload is not None
+                else None
+            ),
+            error_message=ai_outcome.error_message,
+        )
+        if ai_outcome.status != "completed" or ai_outcome.payload is None:
+            await repository.fail_item(
+                item,
+                f"AI 图片处理失败：{ai_outcome.error_message or '模型未返回有效结果'}",
+            )
+            await _advance_after_preprocess(repository, item)
+            return
+        if (
+            ai_outcome.status == "completed"
+            and ai_outcome.payload.filter.decision == "reject"
+        ):
+            await repository.reject_item(
+                item,
+                [RejectCode.AI_FILTER_REJECTED],
+                reason=ai_outcome.payload.filter.reason,
+            )
+            await _advance_after_preprocess(repository, item)
+            return
+        warnings.append(f"AI 筛选：{ai_outcome.payload.filter.reason}")
 
         await repository.complete_filter(
             item,
@@ -191,16 +241,9 @@ async def _mark_item_failed(image_id: str, reason: str) -> None:
             await repository.fail_item(item, reason)
 
 
-def _quality_warning_text(code: str) -> str:
-    labels = {
-        RejectCode.EXTREME_BLUR: "检测到画面可能严重模糊，已保留，请查看原图确认",
-        RejectCode.EXTREME_OVEREXPOSURE: "检测到大面积高光，已保留并尝试恢复高光细节",
-        RejectCode.EXTREME_UNDEREXPOSURE: "检测到大面积暗部，已保留并尝试提亮阴影细节",
-        RejectCode.SOLID_COLOR: "检测到画面内容较单一，已保留，请确认是否为有效取证照片",
-        RejectCode.SHARPNESS_SCORE_TOO_LOW: "清晰度偏低，已保留，请按需确认",
-        RejectCode.EXPOSURE_SCORE_TOO_LOW: "曝光偏离理想范围，已保留并尝试自然校正",
-        RejectCode.CONTRAST_SCORE_TOO_LOW: "对比度偏低，已保留并尝试自然增强",
-        RejectCode.NOISE_SCORE_TOO_LOW: "噪点偏高，已保留并尝试降噪",
-        RejectCode.QUALITY_SCORE_TOO_LOW: "综合质量偏低，已保留，请按需确认",
-    }
-    return labels[code]
+def _profile_instruction(snapshot: dict[str, object] | None, fallback: str) -> str:
+    if snapshot and isinstance(snapshot.get("instruction"), str):
+        instruction = str(snapshot["instruction"]).strip()
+        if instruction:
+            return instruction
+    return fallback

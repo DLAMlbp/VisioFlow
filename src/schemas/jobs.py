@@ -49,8 +49,8 @@ class CreateJobImage(BaseModel):
 
 
 class CreateImageJobRequest(BaseModel):
-    filter_profile: str = Field(default="renovation_submission_v1", min_length=1, max_length=80)
-    beautify_profile: str = Field(default="renovation_natural_v1", min_length=1, max_length=80)
+    filter_profile: str = Field(min_length=1, max_length=80)
+    beautify_profile: str = Field(min_length=1, max_length=80)
     similarity_profile: str = Field(default="library_similarity_v2", min_length=1, max_length=80)
     enhance_level: int = Field(default=1, ge=0, le=2)
     max_selected: int = Field(default=10, ge=1)

@@ -11,6 +11,10 @@ import type {
   PresignRequest,
   PresignResponse,
   ProfileOption,
+  ProcessingProfile,
+  ProcessingProfileType,
+  ProfilePreview,
+  SaveProcessingProfile,
   ResultImage,
   TagReview,
   UpdateAIModelConfig,
@@ -18,18 +22,16 @@ import type {
 } from "../types";
 import { createClientId } from "../utils/id";
 
-const filterProfiles: ProfileOption[] = [
-  { id: "renovation_submission_v1", name: "装修照片基础筛选", description: "过滤尺寸不足、模糊、曝光异常和纯色图片" }
-];
+const filterProfiles: ProfileOption[] = [];
 
-const beautifyProfiles: ProfileOption[] = [
-  { id: "renovation_natural_v1", name: "装修照片自然美化", description: "轻微提亮、对比度、色彩和锐度增强，保留现场真实状态" }
-];
+const beautifyProfiles: ProfileOption[] = [];
 
 const similarityProfiles: ProfileOption[] = [
-  { id: "library_similarity_v2", name: "装修场景智能匹配（推荐）", description: "结合图片向量和中文场景特征，自动继承最相似素材的完整标签路径。" },
-  { id: "library_similarity_v1", name: "装修场景严格匹配", description: "使用更高自动确认门槛，不确定结果进入人工复核。" }
+  { id: "library_similarity_v2", name: "装修场景智能匹配（推荐）", description: "两项分数都达到 60% 自动匹配，任一分数低于 60% 无法识别并等待人工复核。" },
+  { id: "library_similarity_v1", name: "装修场景严格匹配", description: "两项分数都达到 60% 自动匹配，任一分数低于 60% 无法识别并等待人工复核。" }
 ];
+
+const managedProfiles = new Map<string, ProcessingProfile>();
 
 let activeJob: {
   id: string;
@@ -84,6 +86,9 @@ let libraryAssets: LibraryAsset[] = [
 ];
 
 export const mockApi = {
+  async getObjectPreviewUrl(objectKey: string): Promise<string | undefined> {
+    return `https://picsum.photos/seed/${encodeURIComponent(objectKey)}/640/480`;
+  },
   async presignUpload(payload: PresignRequest): Promise<PresignResponse> {
     await wait(180);
     const safeName = payload.filename.replace(/[^\w.-]/g, "_");
@@ -354,6 +359,65 @@ export const mockApi = {
     return structuredClone(asset);
   },
 
+  async getProcessingProfile(_type: ProcessingProfileType, profileId: string): Promise<ProcessingProfile> {
+    await wait(100);
+    const profile = managedProfiles.get(profileId);
+    if (!profile) throw new Error("标准不存在");
+    return structuredClone(profile);
+  },
+
+  async previewProcessingProfile(type: ProcessingProfileType, instruction: string): Promise<ProfilePreview> {
+    await wait(300);
+    return {
+      description: instruction,
+      config: type === "filter"
+        ? {}
+        : { brightness: 1, contrast: 1, color: 1, denoise_strength: 0 },
+      unsupported: [],
+      can_save: true
+    };
+  },
+
+  async saveProcessingProfile(type: ProcessingProfileType, profileId: string | null, payload: SaveProcessingProfile): Promise<ProcessingProfile> {
+    await wait(180);
+    const id = profileId ?? `${type}_${createClientId()}`;
+    const previous = managedProfiles.get(id);
+    const profile: ProcessingProfile = {
+      id,
+      name: payload.name,
+      description: payload.description,
+      instruction: payload.instruction,
+      config: payload.config,
+      profile_type: type,
+      version: (previous?.version ?? 0) + 1,
+      editable: true,
+      status: "active"
+    };
+    managedProfiles.set(id, profile);
+    const options = type === "filter" ? filterProfiles : beautifyProfiles;
+    const index = options.findIndex((item) => item.id === id);
+    const option = { id, name: profile.name, description: profile.description, version: profile.version, editable: true };
+    if (index >= 0) options[index] = option; else options.push(option);
+    return structuredClone(profile);
+  },
+
+  async deleteProcessingProfile(type: ProcessingProfileType, profileId: string): Promise<void> {
+    await wait(120);
+    managedProfiles.delete(profileId);
+    const options = type === "filter" ? filterProfiles : beautifyProfiles;
+    const index = options.findIndex((item) => item.id === profileId);
+    if (index >= 0) options.splice(index, 1);
+  },
+
+  async deleteLibraryAsset(assetId: string): Promise<void> {
+    await wait(160);
+    const index = libraryAssets.findIndex((entry) => entry.id === assetId);
+    if (index < 0) throw new Error("素材不存在");
+    const [asset] = libraryAssets.splice(index, 1);
+    const node = findTagNode(libraryTagTree, asset.leaf_tag_node_id);
+    if (node) node.asset_count = Math.max(0, node.asset_count - 1);
+  },
+
   async reindexLibraryAsset(assetId: string): Promise<LibraryAsset> {
     await wait(180);
     const asset = libraryAssets.find((entry) => entry.id === assetId);
@@ -469,7 +533,7 @@ function createMockResult(objectKey: string, index: number, maxSelected: number)
     reject_codes: selected ? undefined : ["EXTREME_BLUR"],
     tagging_result: selected
       ? index % 3 === 2
-        ? { decision: "unmatched", tag_path: [], matched_asset_id: null, similarity: 0.52, final_score: 0.49, message: "未识别到相似的图片素材" }
+        ? { decision: "pending_review", tag_path: ["完工案例", "旧房翻新", "客餐厅"], matched_asset_id: "ast_l1", similarity: 0.52, final_score: 0.49, message: "无法识别，等待人工复核" }
         : { decision: "matched", tag_path: ["完工案例", "旧房翻新", index % 2 ? "客餐厅" : "厨房"], matched_asset_id: index % 2 ? "ast_l1" : "ast_k1", similarity: 0.88, final_score: 0.86, message: "已匹配到相似图片素材" }
       : undefined
   };

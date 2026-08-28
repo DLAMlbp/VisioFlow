@@ -37,6 +37,7 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
   const [editingName, setEditingName] = useState("");
   const [editingSortOrder, setEditingSortOrder] = useState(0);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
+  const [deletingAssetId, setDeletingAssetId] = useState<string | null>(null);
 
   const flatNodes = useMemo(() => flattenTree(tree), [tree]);
   const selectedNode = flatNodes.find((node) => node.id === selectedNodeId) ?? null;
@@ -271,6 +272,22 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
     }
   }
 
+  async function deleteAsset(asset: LibraryAsset) {
+    const filename = asset.original_filename ?? "这张素材";
+    if (!window.confirm(`确认删除“${filename}”？原图会一并删除，且无法恢复。`)) return;
+    setDeletingAssetId(asset.id);
+    try {
+      await api.deleteLibraryAsset(asset.id);
+      if (selectedAssetId === asset.id) setSelectedAssetId(null);
+      await loadLibrary();
+      onMessage("素材已删除");
+    } catch (error) {
+      onMessage(error instanceof Error ? error.message : "删除素材失败");
+    } finally {
+      setDeletingAssetId(null);
+    }
+  }
+
   async function reindexAsset(assetId: string) {
     try {
       await api.reindexLibraryAsset(assetId);
@@ -365,7 +382,12 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
                 <article className={`library-asset ${selectedAssetId === asset.id ? "selected" : ""}`} key={asset.id}>
                   <div className="library-asset-preview">{asset.preview_url ? <button className="library-asset-image-button" type="button" aria-label={`展示图片：${asset.original_filename ?? "素材图片"}`} onClick={() => setSelectedAssetId(asset.id)}><img src={asset.preview_url} alt={asset.original_filename ?? "素材图片"} loading="lazy" /></button> : <Images size={26} />}<span className={`asset-status ${asset.status}`}>{assetStatusLabel(asset.status)}</span></div>
                   <div className="library-asset-copy"><strong title={asset.original_filename ?? asset.id}>{asset.original_filename ?? asset.id}</strong><p>{asset.tag_path.join(" / ")}</p>{asset.error_message && <small>{asset.error_message}</small>}</div>
-                  <div className="library-asset-actions"><select aria-label={`修改 ${asset.original_filename ?? asset.id} 所属标签`} title="调整素材标签路径" value={asset.leaf_tag_node_id} onChange={(event) => void moveAsset(asset, event.target.value)}>{leafOptions.map((node) => <option key={node.id} value={node.id}>{findPath(tree, node.id).join(" / ")}</option>)}</select><button type="button" aria-label="重新分析素材" title="重新分析" onClick={() => void reindexAsset(asset.id)}><RotateCcw size={15} /></button><button type="button" aria-label={asset.status === "disabled" ? "启用素材" : "停用素材"} title={asset.status === "disabled" ? "启用素材" : "停用素材"} onClick={() => void updateAssetStatus(asset)} disabled={asset.status === "pending" || asset.status === "failed"}><Power size={15} /></button></div>
+                  <div className="library-asset-actions">
+                    <select aria-label={`修改 ${asset.original_filename ?? asset.id} 所属标签`} title="调整素材标签路径" value={asset.leaf_tag_node_id} onChange={(event) => void moveAsset(asset, event.target.value)}>{leafOptions.map((node) => <option key={node.id} value={node.id}>{findPath(tree, node.id).join(" / ")}</option>)}</select>
+                    <button type="button" aria-label="重新分析素材" title="重新分析" onClick={() => void reindexAsset(asset.id)}><RotateCcw size={15} /></button>
+                    <button type="button" aria-label={asset.status === "disabled" ? "启用素材" : "停用素材"} title={asset.status === "disabled" ? "启用素材" : "停用素材"} onClick={() => void updateAssetStatus(asset)} disabled={asset.status === "pending" || asset.status === "failed"}><Power size={15} /></button>
+                    <button className="danger-icon-button" type="button" aria-label={`删除素材 ${asset.original_filename ?? asset.id}`} title="删除素材" onClick={() => void deleteAsset(asset)} disabled={deletingAssetId === asset.id}>{deletingAssetId === asset.id ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}</button>
+                  </div>
                 </article>
               ))}</div>
             </div> : <div className="library-empty"><Images size={28} /><strong>当前路径还没有素材</strong><p>选择末级标签后上传参考图片。</p></div>}

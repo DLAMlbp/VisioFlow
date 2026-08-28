@@ -11,7 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from PIL import Image
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from src.core.config import Settings
 
@@ -19,6 +19,8 @@ PROMPT_VERSION = "renovation_auto_generic_v2"
 
 
 class TagPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     summary: str = Field(default="", max_length=80)
     scene: str = Field(default="", max_length=80)
     space: str = Field(default="", max_length=80)
@@ -33,6 +35,10 @@ class TagPayload(BaseModel):
     risks: list[str] = Field(default_factory=list, max_length=8)
 
 
+class TagBatchPayload(BaseModel):
+    images: list[TagPayload] = Field(min_length=1)
+
+
 @dataclass(frozen=True)
 class TaggingOutcome:
     status: str
@@ -45,6 +51,8 @@ class TaggingOutcome:
 
 class VisionTagProvider(Protocol):
     async def tag(self, image_bytes: bytes) -> TaggingOutcome: ...
+
+    async def tag_many(self, images: list[bytes]) -> list[TaggingOutcome]: ...
 
 
 class OpenAIChatVisionTagProvider:
@@ -73,6 +81,43 @@ class OpenAIChatVisionTagProvider:
                 duration_ms=round((time.perf_counter() - started) * 1000),
                 retryable=_is_retryable_error(exc),
             )
+
+    async def tag_many(self, images: list[bytes]) -> list[TaggingOutcome]:
+        if not images:
+            return []
+        if len(images) == 1:
+            return [await self.tag(images[0])]
+        if not self.settings.ai_tagging_api_key:
+            return [
+                TaggingOutcome(status="failed", error_message="未配置 AI_TAGGING_API_KEY")
+                for _ in images
+            ]
+
+        started = time.perf_counter()
+        try:
+            response = await asyncio.to_thread(self._request_many, images)
+            content = response["choices"][0]["message"]["content"]
+            payload = TagBatchPayload.model_validate_json(content)
+            if len(payload.images) != len(images):
+                raise ValueError("AI 多图标签数量与输入图片数量不一致")
+            duration_ms = round((time.perf_counter() - started) * 1000)
+            return [
+                TaggingOutcome(
+                    status="completed",
+                    payload=image_payload,
+                    raw_response=response,
+                    duration_ms=duration_ms,
+                )
+                for image_payload in payload.images
+            ]
+        except (HTTPError, URLError, TimeoutError, KeyError, TypeError, ValueError, ValidationError) as exc:
+            outcome = TaggingOutcome(
+                status="failed",
+                error_message=_safe_error_message(exc),
+                duration_ms=round((time.perf_counter() - started) * 1000),
+                retryable=_is_retryable_error(exc),
+            )
+            return [outcome for _ in images]
 
     def _request(self, image_bytes: bytes) -> dict[str, object]:
         image_data = base64.b64encode(_resize_for_tagging(image_bytes, self.settings.ai_tagging_image_long_side)).decode()
@@ -110,10 +155,55 @@ class OpenAIChatVisionTagProvider:
         with urlopen(request, timeout=self.settings.ai_tagging_timeout_seconds) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def _request_many(self, images: list[bytes]) -> dict[str, object]:
+        content: list[dict[str, object]] = [
+            {"type": "text", "text": _batch_user_prompt(len(images))}
+        ]
+        for index, image_bytes in enumerate(images, start=1):
+            image_data = base64.b64encode(
+                _resize_for_tagging(image_bytes, self.settings.ai_tagging_image_long_side)
+            ).decode()
+            content.extend(
+                [
+                    {"type": "text", "text": f"图片 {index}"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_data}",
+                            "detail": "low",
+                        },
+                    },
+                ]
+            )
+        body = {
+            "model": self.settings.ai_tagging_model,
+            "temperature": 0,
+            "response_format": {"type": "json_object"},
+            "max_completion_tokens": min(2800, 700 * len(images)),
+            "messages": [
+                {"role": "system", "content": _BATCH_SYSTEM_PROMPT},
+                {"role": "user", "content": content},
+            ],
+        }
+        request = Request(
+            _chat_completions_url(self.settings.ai_tagging_base_url),
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.settings.ai_tagging_api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urlopen(request, timeout=self.settings.ai_tagging_timeout_seconds) as response:
+            return json.loads(response.read().decode("utf-8"))
+
 
 class DisabledTagProvider:
     async def tag(self, image_bytes: bytes) -> TaggingOutcome:
         return TaggingOutcome(status="failed", error_message="AI 标签功能未启用")
+
+    async def tag_many(self, images: list[bytes]) -> list[TaggingOutcome]:
+        return [await self.tag(image_bytes) for image_bytes in images]
 
 
 def get_tag_provider(settings: Settings) -> VisionTagProvider:
@@ -198,3 +288,30 @@ _USER_PROMPT = """请分析这张已经自然美化后的装修图片，并按�
   "confidence":0.0,
   "risks":[]
 }"""
+
+
+_BATCH_SYSTEM_PROMPT = _SYSTEM_PROMPT + """
+本次会依次提供多张图片。必须返回一个 JSON 对象，顶层只有 images 字段；images 是数组，元素数量和顺序必须与输入图片完全一致。每个元素都使用上述单图字段结构。"""
+
+
+def _batch_user_prompt(image_count: int) -> str:
+    return f"""请依次分析下面 {image_count} 张已经自然美化后的装修图片，并返回：
+{{
+  "images":[
+    {{
+      "summary":"老旧住宅装修前的厨房",
+      "scene":"住宅室内",
+      "space":"厨房",
+      "condition":"装修前",
+      "content_type":"环境展示",
+      "subjects":["灶台","墙砖","橱柜"],
+      "view":"空间全景",
+      "tags":[],
+      "categories":{{}},
+      "candidate_tags":[],
+      "confidence":0.0,
+      "risks":[]
+    }}
+  ]
+}}
+images 数组必须正好包含 {image_count} 个元素。"""

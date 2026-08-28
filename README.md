@@ -36,13 +36,15 @@ Content-Type: multipart/form-data
 X-API-Key: <服务端 API Key>
 ```
 
-必填字段为 `files`，可同时传 1 至 50 个 `image/jpeg`、`image/png` 或 `image/webp` 文件。可选表单字段为 `filter_profile`、`beautify_profile`、`enhance_level`（0-2）、`max_selected` 和 `callback_url`。成功后立即返回 `201` 及 `job_id`，图片在后台异步筛选和美化。
+必填字段为 `files`、`filter_profile` 和 `beautify_profile`；`files` 可同时传 1 至 50 个 `image/jpeg`、`image/png` 或 `image/webp` 文件。可选表单字段为 `enhance_level`（0-2）、`max_selected` 和 `callback_url`。成功后立即返回 `201` 及 `job_id`，图片在后台异步筛选和美化。
 
 ```bash
 curl -X POST http://127.0.0.1:18000/api/v1/integration/jobs \
   -H "X-API-Key: <服务端 API Key>" \
   -F "files=@before.jpg;type=image/jpeg" \
   -F "files=@after.jpg;type=image/jpeg" \
+  -F "filter_profile=<标准管理中的过滤标准 ID>" \
+  -F "beautify_profile=<标准管理中的美化标准 ID>" \
   -F "max_selected=10"
 ```
 
@@ -52,9 +54,9 @@ curl -X POST http://127.0.0.1:18000/api/v1/integration/jobs \
 
 创建任务后的预处理 Worker 会读取原图，校验 Magic Bytes 与实际解码结果，提取尺寸、真实 MIME、文件大小、SHA256，并上传最长边 768px 的 JPEG 缩略图。元数据回写到 `image_items`，不新增对外 API。
 
-Hard Filter 使用缩略图快速淘汰尺寸异常、极端模糊、极端过曝/欠曝与纯色图片。被淘汰的图片会记录 `reject_codes` 并提前结束，不进入后续质量检测或 AI 分析。
+本地预处理只拦截无法解码、超过系统资源上限或完全重复的文件，不再执行固定的业务过滤规则。
 
-通过 Hard Filter 的图片会继续计算清晰度、曝光、对比度和噪声评分，全部归一化为 0-100，并写入 `image_metrics`。随后仅对保留图片执行自然增强，输出 JPEG 存储在 `enhanced/` 前缀下。
+图片会计算清晰度、曝光、对比度和噪声评分，全部归一化为 0-100，并与真实尺寸一起交给视觉 AI。AI 按“标准管理”保存的用户自然语言决定过滤结果，并为每张图片生成一套完整美化参数；旧标准中保存的视觉参数不会参与新任务。AI 失败时任务明确失败并可重试，不会回退到内置业务标准。通过过滤的图片由本地安全执行器应用 AI 参数，输出 JPEG 存储在 `enhanced/` 前缀下。
 
 自然美化完成后，系统会向 AI 视觉模型发送最长边 1024px 的最终交付图副本，生成与业务标签无关的场景特征；随后使用 OpenCLIP 和 pgvector 检索素材库中的相似参考图片。高置信度结果继承参考图片的完整标签路径，中置信度进入复核，低置信度返回“未识别到相似的图片素材”。匹配失败不影响图片保留和交付。
 
@@ -77,7 +79,7 @@ POST  /api/v1/tag-reviews/{image_id}/decision
 
 当前匹配权重和阈值位于 `profiles/tags/library_similarity_v2.yaml`；`v1` 保留为初始基线。后续校准应继续新增配置版本，不直接覆盖历史版本。
 
-筛选与美化参数位于 `profiles/filters/renovation_submission_v1.yaml` 和 `profiles/beautify/renovation_natural_v1.yaml`，可直接编辑后重启 Worker 生效。
+过滤和美化标准全部在“标准管理”中用自然语言创建并保存在数据库中。项目不再内置装修业务筛选或美化标准；首次使用前需要各创建至少一个标准。
 
 ## 本地启动
 

@@ -22,6 +22,7 @@ import {
 import { ChangeEvent, DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./services/api";
 import { LibraryWorkspace } from "./LibraryWorkspace";
+import { ProfileWorkspace } from "./ProfileWorkspace";
 import brandLogo from "./assets/image-processing-logo.svg";
 import type {
   AIModelConfig,
@@ -46,32 +47,16 @@ const MAX_IMAGE_SIZE_MB = 25;
 const UPLOAD_CONCURRENCY = 6;
 const PAGE_SIZE = 50;
 
-const fallbackFilterProfiles: ProfileOption[] = [
-  {
-    id: "renovation_submission_v1",
-    name: "装修照片基础筛选",
-    description: "过滤尺寸不足、模糊、曝光异常和纯色图片"
-  }
-];
-
-const fallbackBeautifyProfiles: ProfileOption[] = [
-  {
-    id: "renovation_natural_v1",
-    name: "装修照片自然美化",
-    description: "轻微提亮、对比度、色彩和锐度增强，保留现场真实状态"
-  }
-];
-
 const fallbackSimilarityProfiles: ProfileOption[] = [
   {
     id: "library_similarity_v2",
     name: "装修场景智能匹配（推荐）",
-    description: "结合图片向量和中文场景特征，自动继承最相似素材的完整标签路径。"
+    description: "两项分数都达到 60% 自动匹配，任一分数低于 60% 无法识别并等待人工复核。"
   },
   {
     id: "library_similarity_v1",
     name: "装修场景严格匹配",
-    description: "使用更高自动确认门槛，不确定结果进入人工复核。"
+    description: "两项分数都达到 60% 自动匹配，任一分数低于 60% 无法识别并等待人工复核。"
   }
 ];
 
@@ -80,11 +65,11 @@ function App() {
   const itemsRef = useRef<UploadItem[]>([]);
   const operationVersionRef = useRef(0);
   const [items, setItems] = useState<UploadItem[]>([]);
-  const [filterProfiles, setFilterProfiles] = useState<ProfileOption[]>(fallbackFilterProfiles);
-  const [beautifyProfiles, setBeautifyProfiles] = useState<ProfileOption[]>(fallbackBeautifyProfiles);
+  const [filterProfiles, setFilterProfiles] = useState<ProfileOption[]>([]);
+  const [beautifyProfiles, setBeautifyProfiles] = useState<ProfileOption[]>([]);
   const [similarityProfiles, setSimilarityProfiles] = useState<ProfileOption[]>(fallbackSimilarityProfiles);
-  const [filterProfile, setFilterProfile] = useState("renovation_submission_v1");
-  const [beautifyProfile, setBeautifyProfile] = useState("renovation_natural_v1");
+  const [filterProfile, setFilterProfile] = useState("");
+  const [beautifyProfile, setBeautifyProfile] = useState("");
   const [similarityProfile, setSimilarityProfile] = useState("library_similarity_v2");
   const [job, setJob] = useState<JobProgress | null>(null);
   const [results, setResults] = useState<JobResults | null>(null);
@@ -103,11 +88,11 @@ function App() {
   const [modelConfigSaving, setModelConfigSaving] = useState(false);
   const [modelConfig, setModelConfig] = useState<AIModelConfig | null>(null);
   const [modelApiKey, setModelApiKey] = useState("");
-  const [activeWorkspace, setActiveWorkspace] = useState<"processing" | "library">("processing");
+  const [activeWorkspace, setActiveWorkspace] = useState<"processing" | "library" | "profiles">("processing");
 
   const uploadedCount = items.filter((item) => item.status === "uploaded").length;
   const failedCount = items.filter((item) => item.status === "failed").length;
-  const canCreateJob = items.some((item) => item.file) && !busy;
+  const canCreateJob = items.some((item) => item.file) && Boolean(filterProfile) && Boolean(beautifyProfile) && !busy;
   const currentStep = results
     ? 4
     : job?.status === "tagging"
@@ -149,14 +134,49 @@ function App() {
     setMessage(taggingResult.decision === "matched" ? "人工复核已确认标签" : "人工复核已标记为未匹配");
   }
 
+  async function reloadProcessingProfiles() {
+    const [filters, beautify] = await Promise.all([api.getFilterProfiles(), api.getBeautifyProfiles()]);
+    setFilterProfiles(filters);
+    setBeautifyProfiles(beautify);
+    setFilterProfile((current) => filters.some((item) => item.id === current) ? current : filters[0]?.id ?? "");
+    setBeautifyProfile((current) => beautify.some((item) => item.id === current) ? current : beautify[0]?.id ?? "");
+  }
+
   useEffect(() => {
-    api.getFilterProfiles().then(setFilterProfiles).catch(() => undefined);
-    api.getBeautifyProfiles().then(setBeautifyProfiles).catch(() => undefined);
+    void reloadProcessingProfiles().catch(() => undefined);
     api.getSimilarityProfiles().then(setSimilarityProfiles).catch(() => undefined);
   }, []);
 
   useEffect(() => {
     itemsRef.current = items;
+  }, [items]);
+
+  useEffect(() => {
+    const missingPreviews = items.filter(
+      (item) => item.status === "uploaded" && !item.previewUrl && item.objectKey
+    );
+    if (!missingPreviews.length) return;
+
+    let active = true;
+    void Promise.all(missingPreviews.map(async (item) => ({
+      id: item.id,
+      previewUrl: await api.getObjectPreviewUrl(item.objectKey!)
+    }))).then((resolved) => {
+      if (!active) return;
+      const previewUrls = new Map(
+        resolved
+          .filter((entry): entry is { id: string; previewUrl: string } => Boolean(entry.previewUrl))
+          .map((entry) => [entry.id, entry.previewUrl])
+      );
+      if (!previewUrls.size) return;
+      setItems((current) => current.map((item) => (
+        item.previewUrl || !previewUrls.has(item.id)
+          ? item
+          : { ...item, previewUrl: previewUrls.get(item.id) }
+      )));
+    });
+
+    return () => { active = false; };
   }, [items]);
 
   useEffect(() => {
@@ -437,8 +457,7 @@ function App() {
 
       setItems((current) => current.map((item) => {
         if (item.status !== "uploaded") return item;
-        if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
-        return { ...item, file: undefined, previewUrl: undefined };
+        return { ...item, file: undefined };
       }));
 
       const initialJob: JobProgress = {
@@ -506,6 +525,7 @@ function App() {
         <nav className="workspace-switch" aria-label="工作区">
           <button className={activeWorkspace === "processing" ? "active" : ""} type="button" aria-current={activeWorkspace === "processing" ? "page" : undefined} onClick={() => setActiveWorkspace("processing")}><Sparkles size={16} aria-hidden="true" />图片处理</button>
           <button className={activeWorkspace === "library" ? "active" : ""} type="button" aria-current={activeWorkspace === "library" ? "page" : undefined} onClick={() => setActiveWorkspace("library")}><Database size={16} aria-hidden="true" />素材库</button>
+          <button className={activeWorkspace === "profiles" ? "active" : ""} type="button" aria-current={activeWorkspace === "profiles" ? "page" : undefined} onClick={() => setActiveWorkspace("profiles")}><SlidersHorizontal size={16} aria-hidden="true" />标准管理</button>
         </nav>
         <div className="topbar-actions">
           <span className="mode-pill">{import.meta.env.VITE_USE_MOCK_API === "false" ? "真实处理" : "模拟演示"}</span>
@@ -610,6 +630,7 @@ function App() {
             <div className="field-stack">
               <label htmlFor="filterProfile">筛选标准</label>
             <select id="filterProfile" value={filterProfile} onChange={(event) => setFilterProfile(event.target.value)}>
+              {!filterProfiles.length && <option value="">请先在标准管理中新建过滤标准</option>}
               {filterProfiles.map((profile) => (
                 <option key={profile.id} value={profile.id}>
                   {profile.name}
@@ -621,6 +642,7 @@ function App() {
             <div className="field-stack">
               <label htmlFor="beautifyProfile">美化标准</label>
             <select id="beautifyProfile" value={beautifyProfile} onChange={(event) => setBeautifyProfile(event.target.value)}>
+              {!beautifyProfiles.length && <option value="">请先在标准管理中新建美化标准</option>}
               {beautifyProfiles.map((profile) => (
                 <option key={profile.id} value={profile.id}>
                   {profile.name}
@@ -685,7 +707,7 @@ function App() {
           onOpen={(entry) => void openHistoryJob(entry)}
         />
       )}
-      </> : <LibraryWorkspace onMessage={setMessage} />}
+      </> : activeWorkspace === "library" ? <LibraryWorkspace onMessage={setMessage} /> : <ProfileWorkspace onMessage={setMessage} onProfilesChanged={reloadProcessingProfiles} />}
     </main>
   );
 }
@@ -827,8 +849,28 @@ function Metric({ label, value, tone }: { label: string; value: number; tone?: "
   );
 }
 
+function formatSimilarityScore(similarity?: number | null) {
+  return similarity == null ? "--" : `${(similarity * 100).toFixed(2)}%`;
+}
+
+function SimilarityScore({ similarity }: { similarity?: number | null }) {
+  const value = formatSimilarityScore(similarity);
+
+  return (
+    <div className="similarity-score" aria-label={`AI匹配相似度 ${value}`}>
+      <span>AI匹配相似度</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
 function ResultCard({ image, active, onOpen }: { image: ResultImage; active: boolean; onOpen: () => void }) {
   const previewUrl = image.enhanced_url ?? image.original_url;
+  const primaryReason = image.reject_codes?.[0] === "AI_FILTER_REJECTED"
+    ? image.reasons[0]
+    : image.reject_codes?.[0]
+      ? rejectCodeLabel(image.reject_codes[0])
+      : image.reasons[0] ?? "基础质量达标";
 
   return (
     <article className={`result-card ${active ? "active" : ""}`}>
@@ -845,14 +887,15 @@ function ResultCard({ image, active, onOpen }: { image: ResultImage; active: boo
           <strong>{image.image_id}</strong>
           <span>{image.decision === "selected" ? "美化图已生成" : "原图保留供查看"}</span>
         </div>
-        <b>{image.score}</b>
+        <SimilarityScore similarity={image.tagging_result?.similarity} />
       </div>
-      <p>{image.reject_codes?.[0] ? rejectCodeLabel(image.reject_codes[0]) : image.reasons[0] ?? "基础质量达标"}</p>
-      {image.tagging_result?.tag_path.length ? (
+      <p>{primaryReason}</p>
+      {image.tagging_result?.decision === "matched" && image.tagging_result.tag_path.length ? (
         <div className="tag-row" aria-label="AI 自动标签">
           {image.tagging_result.tag_path.slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}
         </div>
-      ) : image.tagging_result?.decision === "unmatched" ? <p className="unmatched-note">未识别到相似素材</p> : null}
+      ) : image.tagging_result?.decision === "pending_review" ? <p className="unmatched-note">无法识别，等待人工复核</p>
+        : image.tagging_result?.decision === "unmatched" ? <p className="unmatched-note">无法识别</p> : null}
     </article>
   );
 }
@@ -915,7 +958,7 @@ function ImageDetail({ image, onReviewResolved, onRetry }: { image: ResultImage;
           <span className={`decision-badge ${image.decision}`}>{decisionLabel(image.decision)}</span>
           <h2>{image.image_id}</h2>
         </div>
-        <strong>{image.score}</strong>
+        <SimilarityScore similarity={image.tagging_result?.similarity} />
       </div>
       {image.decision === "failed" && <button className="retry-image-button" type="button" onClick={() => onRetry(image.image_id)}><RefreshCw size={15} aria-hidden="true" />重试这张图片</button>}
 
@@ -998,7 +1041,7 @@ function SimilarityMatch({ imageId, result, onResolved }: { imageId: string; res
     {result.tag_path.length ? <div className="path-tags">{result.tag_path.map((tag, index) => <span key={`${tag}-${index}`}>{tag}{index < result.tag_path.length - 1 && <ChevronRight size={13} aria-hidden="true" />}</span>)}</div> : null}
     {result.similarity != null ? <small>图片相似度 {Math.round(result.similarity * 100)}%</small> : null}
     {result.decision === "pending_review" && <div className="review-controls">
-      {candidates.length > 1 && <label>选择候选标签<select value={selectedAssetId} onChange={(event) => setSelectedAssetId(event.target.value)}>{candidates.map((candidate) => <option key={candidate.asset_id} value={candidate.asset_id}>{candidate.tag_path.join(" / ")}（{Math.round(candidate.final_score * 100)}%）</option>)}</select></label>}
+      {candidates.length > 1 && <label>选择候选标签<select value={selectedAssetId} onChange={(event) => setSelectedAssetId(event.target.value)}>{candidates.map((candidate) => <option key={candidate.asset_id} value={candidate.asset_id}>{candidate.tag_path.join(" / ")}（综合匹配 {Math.round(candidate.final_score * 100)}%）</option>)}</select></label>}
       <div className="review-actions"><button className="review-confirm" type="button" disabled={reviewBusy || (!selectedAssetId && !result.matched_asset_id)} onClick={() => void decideReview("matched")}>{reviewBusy ? <Loader2 className="spin" size={15} /> : <Check size={15} />}确认此标签</button><button type="button" disabled={reviewBusy} onClick={() => void decideReview("unmatched")}><X size={15} />设为未匹配</button></div>
       {reviewError && <p className="review-error">{reviewError}</p>}
     </div>}

@@ -128,6 +128,10 @@ class LibraryRepository:
         await self.session.refresh(asset)
         return asset
 
+    async def delete_asset(self, asset: LibraryAsset) -> None:
+        await self.session.delete(asset)
+        await self.session.commit()
+
     async def list_assets(
         self, *, leaf_tag_node_id: str | None, status: str | None, limit: int, offset: int
     ) -> tuple[int, list[LibraryAsset]]:

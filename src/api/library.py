@@ -97,6 +97,15 @@ async def update_library_asset(
         raise _http_error(exc) from exc
 
 
+@router.delete("/assets/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_library_asset(asset_id: str, service: LibraryServiceDep) -> Response:
+    try:
+        await service.delete_asset(asset_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except (InvalidLibraryRequest, LibraryNotFound) as exc:
+        raise _http_error(exc) from exc
+
+
 @router.post("/assets/{asset_id}/reindex", response_model=LibraryAssetResponse)
 async def reindex_library_asset(
     asset_id: str, service: LibraryServiceDep

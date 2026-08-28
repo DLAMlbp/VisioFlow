@@ -31,6 +31,7 @@ from src.services.jobs.ids import (
     build_upload_batch_id,
     build_upload_batch_item_id,
 )
+from src.services.managed_profiles import ManagedProfileService
 from src.services.profiles import ProfileLoader, ProfileNotFoundError
 from src.services.storage.factory import get_storage_provider
 from src.services.storage.keys import build_upload_object_key, validate_upload_request
@@ -58,8 +59,9 @@ class UploadBatchService:
             )
         try:
             loader = ProfileLoader(self.settings)
-            loader.get_filter_profile(payload.filter_profile)
-            loader.get_beautify_profile(payload.beautify_profile)
+            manager = ManagedProfileService(self.session, self.settings)
+            _, filter_snapshot = await manager.resolve_filter(payload.filter_profile)
+            _, beautify_snapshot = await manager.resolve_beautify(payload.beautify_profile)
             loader.get_similarity_profile(payload.similarity_profile)
         except ProfileNotFoundError as exc:
             raise InvalidUploadBatch(exc.args[0]) from exc
@@ -70,6 +72,8 @@ class UploadBatchService:
             status="registered",
             filter_profile_id=payload.filter_profile,
             beautify_profile_id=payload.beautify_profile,
+            filter_profile_snapshot=filter_snapshot,
+            beautify_profile_snapshot=beautify_snapshot,
             similarity_profile_id=payload.similarity_profile,
             enhance_level=payload.enhance_level,
             max_selected=payload.max_selected or len(payload.files),
@@ -165,6 +169,8 @@ class UploadBatchService:
             status=JobStatus.QUEUED.value,
             filter_profile_id=batch.filter_profile_id,
             beautify_profile_id=batch.beautify_profile_id,
+            filter_profile_snapshot=batch.filter_profile_snapshot,
+            beautify_profile_snapshot=batch.beautify_profile_snapshot,
             similarity_profile_id=batch.similarity_profile_id,
             ai_tagging_model=(
                 self.settings.ai_tagging_model if self.settings.ai_tagging_enabled else None

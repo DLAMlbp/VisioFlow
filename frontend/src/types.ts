@@ -200,6 +200,33 @@ export interface ProfileOption {
   id: string;
   name: string;
   description: string;
+  version?: number;
+  status?: string;
+  editable?: boolean;
+}
+
+export type ProcessingProfileType = "filter" | "beautify";
+
+export interface ProcessingProfile extends ProfileOption {
+  profile_type: ProcessingProfileType;
+  instruction: string;
+  config: Record<string, unknown>;
+  version: number;
+}
+
+export interface ProfilePreview {
+  description: string;
+  config: Record<string, unknown>;
+  unsupported: string[];
+  can_save: boolean;
+}
+
+export interface SaveProcessingProfile {
+  name: string;
+  instruction: string;
+  description: string;
+  config: Record<string, unknown>;
+  expected_version?: number;
 }
 
 export interface AIModelConfig {

@@ -10,7 +10,8 @@ from src.models.image_result import ImageResult
 from src.repositories.jobs import JobProgressSnapshot
 from src.schemas.jobs import CreateImageJobRequest
 from src.services.jobs.service import ImageJobService, InvalidJobRequest, JobNotFound
-from src.services.profiles import ProfileLoader
+from src.services.managed_profiles import ManagedProfileService
+from src.services.profiles import ProfileLoader, ProfileNotFoundError
 
 
 class FakeJobRepository:
@@ -101,21 +102,38 @@ async def test_create_job_persists_job_and_image_items() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_job_persists_selected_similarity_profile() -> None:
+async def test_create_job_snapshots_managed_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     repository = FakeJobRepository()
+    repository.session = object()
+    async def resolve_filter(_self, profile_id: str):
+        return object(), {"id": profile_id, "instruction": "只保留厨房", "config": {}}
+
+    async def resolve_beautify(_self, profile_id: str):
+        return object(), {"id": profile_id, "instruction": "自然提亮", "config": {}}
+
+    monkeypatch.setattr(ManagedProfileService, "resolve_filter", resolve_filter)
+    monkeypatch.setattr(ManagedProfileService, "resolve_beautify", resolve_beautify)
+    monkeypatch.setattr(ProfileLoader, "get_similarity_profile", lambda *_args: object())
     service = ImageJobService(
         repository=repository,
         settings=Settings(max_images_per_job=50, profiles_directory="profiles"),
         profile_loader=ProfileLoader(Settings(profiles_directory="profiles")),
     )
     payload = make_payload()
-    payload.filter_profile = "renovation_submission_v1"
-    payload.beautify_profile = "renovation_natural_v1"
+    payload.filter_profile = "flt_user"
+    payload.beautify_profile = "bty_user"
     payload.similarity_profile = "library_similarity_v1"
 
     response = await service.create_job(payload)
 
-    assert repository.jobs[response.job_id].similarity_profile_id == "library_similarity_v1"
+    stored = repository.jobs[response.job_id]
+    assert stored.similarity_profile_id == "library_similarity_v1"
+    assert stored.filter_profile_snapshot is not None
+    assert stored.filter_profile_snapshot["id"] == "flt_user"
+    assert stored.beautify_profile_snapshot is not None
+    assert stored.beautify_profile_snapshot["id"] == "bty_user"
 
 
 @pytest.mark.asyncio
@@ -211,16 +229,25 @@ async def test_list_history_returns_recent_job_summaries() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_job_rejects_missing_profile() -> None:
+async def test_create_job_rejects_missing_managed_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = FakeJobRepository()
+    repository.session = object()
+
+    async def missing_filter(*_args):
+        raise ProfileNotFoundError("筛选标准不存在或已停用: missing")
+
+    monkeypatch.setattr(ManagedProfileService, "resolve_filter", missing_filter)
     service = ImageJobService(
-        repository=FakeJobRepository(),
+        repository=repository,
         settings=Settings(max_images_per_job=50, profiles_directory="profiles"),
         profile_loader=ProfileLoader(Settings(profiles_directory="profiles")),
     )
     payload = make_payload()
     payload.filter_profile = "missing"
 
-    with pytest.raises(InvalidJobRequest, match="Profile 不存在"):
+    with pytest.raises(InvalidJobRequest, match="筛选标准不存在"):
         await service.create_job(payload)
 
 

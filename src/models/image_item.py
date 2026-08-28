@@ -42,6 +42,13 @@ class ImageItem(Base):
     embedding_version: Mapped[str | None] = mapped_column(String(120), nullable=True)
     reject_codes: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
+    ai_processing_status: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)
+    ai_processing_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    ai_processing_model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    ai_processing_prompt_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    ai_processing_duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ai_processing_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     analysis_status: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)
     embedding_status: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)

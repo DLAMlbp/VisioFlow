@@ -9,6 +9,10 @@ import type {
   PresignRequest,
   PresignResponse,
   ProfileOption,
+  ProcessingProfile,
+  ProcessingProfileType,
+  ProfilePreview,
+  SaveProcessingProfile,
   LibraryAsset,
   LibraryAssetList,
   LibraryTagNode,
@@ -76,6 +80,9 @@ export const api = USE_MOCK_API
       },
       async uploadToStorage(uploadUrl: string, file: File, onProgress: (progress: number) => void): Promise<void> {
         await uploadWithProgress(uploadUrl, file, onProgress);
+      },
+      getObjectPreviewUrl(objectKey: string): Promise<string | undefined> {
+        return getDownloadUrlSafely(objectKey);
       },
       createJob(payload: CreateJobRequest): Promise<CreateJobResponse> {
         return request<CreateJobResponse>("/api/v1/image/jobs", {
@@ -211,6 +218,28 @@ export const api = USE_MOCK_API
           method: "PATCH",
           body: JSON.stringify(payload)
         });
+      },
+      getProcessingProfile(type: ProcessingProfileType, profileId: string): Promise<ProcessingProfile> {
+        return request<ProcessingProfile>(`/api/v1/${type === "filter" ? "filter" : "beautify"}-profiles/${profileId}`);
+      },
+      previewProcessingProfile(type: ProcessingProfileType, instruction: string): Promise<ProfilePreview> {
+        return request<ProfilePreview>(`/api/v1/${type === "filter" ? "filter" : "beautify"}-profiles/preview`, {
+          method: "POST",
+          body: JSON.stringify({ instruction })
+        });
+      },
+      saveProcessingProfile(type: ProcessingProfileType, profileId: string | null, payload: SaveProcessingProfile): Promise<ProcessingProfile> {
+        const root = `/api/v1/${type === "filter" ? "filter" : "beautify"}-profiles`;
+        return request<ProcessingProfile>(profileId ? `${root}/${profileId}` : root, {
+          method: profileId ? "PUT" : "POST",
+          body: JSON.stringify(payload)
+        });
+      },
+      async deleteProcessingProfile(type: ProcessingProfileType, profileId: string): Promise<void> {
+        await request<void>(`/api/v1/${type === "filter" ? "filter" : "beautify"}-profiles/${profileId}`, { method: "DELETE" });
+      },
+      async deleteLibraryAsset(assetId: string): Promise<void> {
+        await request<void>(`/api/v1/library/assets/${assetId}`, { method: "DELETE" });
       },
       reindexLibraryAsset(assetId: string): Promise<LibraryAsset> {
         return request<LibraryAsset>(`/api/v1/library/assets/${assetId}/reindex`, { method: "POST" });

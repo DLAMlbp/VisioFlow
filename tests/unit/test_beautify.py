@@ -2,8 +2,8 @@ from io import BytesIO
 
 from PIL import Image, ImageDraw
 
-from src.services.images.beautify import NaturalBeautifyService, OrientationNormalizationResult
-from src.services.profiles import BeautifyProfile, HardRulesProfile
+from src.services.images.beautify import NaturalBeautifyService
+from src.services.profiles import BeautifyProfile
 
 
 def test_natural_beautify_returns_a_2k_jpeg_for_smaller_source_images() -> None:
@@ -202,101 +202,6 @@ def test_orientation_normalization_applies_exif_rotation_and_larger_confirmed_ti
 
     assert result.exif_orientation_applied is True
     assert result.straighten_applied is True
-
-
-def test_adaptive_profile_adjusts_dark_noisy_photo_without_mutating_base_profile() -> None:
-    profile = BeautifyProfile(
-        id="test",
-        version=1,
-        description="test",
-        brightness=1,
-        contrast=1,
-        color=1,
-        sharpness=1,
-        jpeg_quality=90,
-    )
-
-    effective_profile, adjustments = NaturalBeautifyService._build_adaptive_profile(
-        profile,
-        {
-            "sharpness": 94,
-            "exposure": 90,
-            "contrast": 92,
-            "noise": 90,
-            "brightness_mean": 95,
-        },
-    )
-
-    assert profile.brightness == 1
-    assert profile.denoise_strength == 0.16
-    assert effective_profile.brightness > profile.brightness
-    assert effective_profile.shadow_lift > profile.shadow_lift
-    assert effective_profile.contrast > profile.contrast
-    assert effective_profile.denoise_strength > profile.denoise_strength
-    assert effective_profile.local_clarity_strength < profile.local_clarity_strength
-    assert adjustments == [
-        "自动曝光调整：亮度 +2%",
-        "自动对比度调整：+1%",
-        "自动降噪增强：+5%",
-    ]
-
-
-def test_adaptive_profile_keeps_near_ideal_photo_unchanged() -> None:
-    profile = BeautifyProfile(
-        id="test",
-        version=1,
-        description="test",
-        brightness=1,
-        contrast=1,
-        color=1,
-        sharpness=1,
-        jpeg_quality=90,
-    )
-
-    effective_profile, adjustments = NaturalBeautifyService._build_adaptive_profile(
-        profile,
-        {
-            "sharpness": 100,
-            "exposure": 100,
-            "contrast": 100,
-            "noise": 100,
-            "brightness_mean": 128,
-        },
-    )
-
-    assert effective_profile == profile
-    assert adjustments == []
-
-
-def test_assessment_skips_enhancement_for_an_ideal_straight_photo() -> None:
-    result = NaturalBeautifyService().assess_enhancement_need(
-        quality_scores={
-            "sharpness": 100,
-            "exposure": 100,
-            "contrast": 100,
-            "noise": 100,
-            "brightness_mean": 128,
-        },
-        rules=HardRulesProfile(
-            min_width=1280,
-            min_height=720,
-            max_width=10000,
-            max_height=10000,
-            min_edge_variance=4,
-            max_overexposed_ratio=0.98,
-            max_underexposed_ratio=0.98,
-            min_quality_score=95,
-            max_solid_color_stddev=3,
-        ),
-        orientation_result=OrientationNormalizationResult(
-            image_bytes=b"",
-            exif_orientation_applied=False,
-            straighten_applied=False,
-        ),
-    )
-
-    assert result.needs_enhancement is False
-    assert result.reasons == []
 
 
 def test_delivery_image_is_upscaled_to_the_minimum_long_side() -> None:

@@ -1,3 +1,4 @@
+import json
 from io import BytesIO
 from urllib.error import HTTPError
 
@@ -44,6 +45,43 @@ async def test_disabled_tag_provider_preserves_image_with_reason() -> None:
     outcome = await DisabledTagProvider().tag(make_image())
     assert outcome.status == "failed"
     assert outcome.error_message == "AI 标签功能未启用"
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_batches_multiple_images_in_one_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAIChatVisionTagProvider(Settings(ai_tagging_api_key="test-key"))
+    calls = 0
+
+    def fake_request_many(images: list[bytes]) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        assert len(images) == 2
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "images": [
+                                    {"summary": "厨房", "confidence": 0.9},
+                                    {"summary": "客厅", "confidence": 0.8},
+                                ]
+                            },
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(provider, "_request_many", fake_request_many)
+
+    outcomes = await provider.tag_many([make_image(), make_image()])
+
+    assert calls == 1
+    assert [outcome.payload.summary for outcome in outcomes if outcome.payload] == ["厨房", "客厅"]
 
 
 def test_openai_provider_is_configurable_without_importing_sdk() -> None:

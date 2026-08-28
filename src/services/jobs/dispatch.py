@@ -19,7 +19,9 @@ class MetadataTaskPublisher:
 
 class AnalysisTaskPublisher:
     def publish(self, image_id: str) -> None:
-        celery_app.send_task("image.analyze_content", args=[image_id], queue="analysis")
+        celery_app.send_task(
+            "image.analyze_content", args=[image_id], queue="analysis", countdown=0.5
+        )
 
 
 class EmbeddingTaskPublisher:

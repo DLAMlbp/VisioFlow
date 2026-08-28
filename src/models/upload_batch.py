@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.db.base import Base
@@ -19,6 +19,8 @@ class UploadBatch(Base):
     status: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
     filter_profile_id: Mapped[str] = mapped_column(String(80), nullable=False)
     beautify_profile_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    filter_profile_snapshot: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    beautify_profile_snapshot: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     similarity_profile_id: Mapped[str] = mapped_column(String(80), nullable=False)
     enhance_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     max_selected: Mapped[int] = mapped_column(Integer, nullable=False)

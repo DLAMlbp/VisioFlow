@@ -59,31 +59,23 @@ def decide_similarity(
     settings: SimilarityPolicy,
 ) -> SimilarityDecision:
     if not candidates:
-        return unmatched_decision("未识别到相似的图片素材")
+        return unmatched_decision("无法识别")
 
-    grouped: dict[tuple[str, ...], list[ScoredCandidate]] = {}
-    for candidate in candidates:
-        grouped.setdefault(tuple(candidate.tag_path), []).append(candidate)
-
-    path_scores: list[tuple[float, ScoredCandidate, list[ScoredCandidate]]] = []
-    for group in grouped.values():
-        best_three = sorted(group, key=lambda item: item.similarity_score, reverse=True)[:3]
-        path_score = sum(item.final_score for item in best_three) / len(best_three)
-        path_scores.append((path_score, best_three[0], best_three))
-    path_scores.sort(key=lambda item: item[0], reverse=True)
-
-    best_path_score, best, best_group = path_scores[0]
-    second_score = path_scores[1][0] if len(path_scores) > 1 else 0.0
-    margin = best_path_score - second_score
-    if best_path_score >= settings.similarity_auto_threshold and margin >= settings.similarity_min_margin:
+    ranked = sorted(
+        candidates,
+        key=lambda item: (item.similarity_score, item.final_score),
+        reverse=True,
+    )
+    best = ranked[0]
+    if (
+        best.similarity_score >= settings.similarity_auto_threshold
+        and best.final_score >= settings.similarity_auto_threshold
+    ):
         decision = "matched"
         message = "已匹配到相似图片素材"
-    elif best_path_score >= settings.similarity_review_threshold:
-        decision = "pending_review"
-        message = "已找到候选素材，等待人工确认"
     else:
-        decision = "unmatched"
-        message = "未识别到相似的图片素材"
+        decision = "pending_review"
+        message = "无法识别，等待人工复核"
 
     serialized = [
         {
@@ -93,7 +85,7 @@ def decide_similarity(
             "feature_score": round(candidate.feature_score, 4),
             "final_score": round(candidate.final_score, 4),
         }
-        for candidate in sorted(candidates, key=lambda item: item.final_score, reverse=True)[:10]
+        for candidate in ranked[:10]
     ]
     if decision == "unmatched":
         return SimilarityDecision(
@@ -103,7 +95,7 @@ def decide_similarity(
             tag_path=[],
             similarity_score=best.similarity_score,
             feature_score=best.feature_score,
-            final_score=best_path_score,
+            final_score=best.final_score,
             candidates=serialized,
         )
     return SimilarityDecision(
@@ -111,9 +103,9 @@ def decide_similarity(
         message=message,
         matched_asset_id=best.asset.id,
         tag_path=best.tag_path,
-        similarity_score=sum(item.similarity_score for item in best_group) / len(best_group),
-        feature_score=sum(item.feature_score for item in best_group) / len(best_group),
-        final_score=best_path_score,
+        similarity_score=best.similarity_score,
+        feature_score=best.feature_score,
+        final_score=best.final_score,
         candidates=serialized,
     )
 

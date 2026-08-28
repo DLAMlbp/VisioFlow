@@ -42,7 +42,9 @@ class FilterProfile(BaseModel):
     id: str
     version: int = Field(ge=1)
     description: str
-    hard_rules: HardRulesProfile
+    # Kept only to read snapshots created before filtering became AI-driven.
+    # Runtime filtering no longer executes these business thresholds locally.
+    hard_rules: HardRulesProfile | None = None
     evidence_rules: EvidenceRulesProfile | None = None
 
 

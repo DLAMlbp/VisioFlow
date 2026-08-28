@@ -17,14 +17,18 @@ def _files(count: int) -> list[dict[str, object]]:
 
 
 def test_upload_batch_accepts_500_images() -> None:
-    payload = CreateUploadBatchRequest(files=_files(500))
+    payload = CreateUploadBatchRequest(
+        filter_profile="flt_user", beautify_profile="bty_user", files=_files(500)
+    )
 
     assert len(payload.files) == 500
 
 
 def test_upload_batch_rejects_more_than_500_images() -> None:
     with pytest.raises(ValidationError):
-        CreateUploadBatchRequest(files=_files(501))
+        CreateUploadBatchRequest(
+            filter_profile="flt_user", beautify_profile="bty_user", files=_files(501)
+        )
 
 
 def test_batch_pipeline_defaults_are_server_ready() -> None:

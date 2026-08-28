@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Integer, String, func
+from sqlalchemy import JSON, DateTime, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.db.base import Base
@@ -21,6 +21,8 @@ class ImageJob(Base):
 
     filter_profile_id: Mapped[str] = mapped_column(String(80), nullable=False)
     beautify_profile_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    filter_profile_snapshot: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    beautify_profile_snapshot: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     similarity_profile_id: Mapped[str] = mapped_column(
         String(80), nullable=False, default="library_similarity_v2"
     )

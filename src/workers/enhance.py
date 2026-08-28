@@ -13,10 +13,15 @@ from src.repositories.jobs import ImageJobRepository
 from src.services.ai_model_config import load_ai_model_settings
 from src.services.images.beautify import NaturalBeautifyService
 from src.services.images.metadata import encode_jpeg, make_thumbnail
+from src.services.images.processing_vision import (
+    beautify_from_processing_json,
+    merge_beautify_plan,
+    neutralize_beautify_profile,
+)
 from src.services.images.quality import QualityEngine
 from src.services.images.tagging import PROMPT_VERSION
 from src.services.jobs.dispatch import AnalysisTaskPublisher, EmbeddingTaskPublisher
-from src.services.profiles import ProfileLoader
+from src.services.managed_profiles import beautify_from_snapshot
 from src.services.storage.factory import get_storage_provider
 from src.services.storage.keys import build_analysis_object_key, build_enhanced_object_key
 from src.workers.celery_app import celery_app
@@ -59,30 +64,44 @@ async def _enhance_image(image_id: str) -> None:
         if job is None or job.cancel_requested_at is not None:
             return
         settings = load_ai_model_settings(get_settings())
-        profiles = ProfileLoader(settings)
-        profile = profiles.get_beautify_profile(job.beautify_profile_id)
-        filter_profile = profiles.get_filter_profile(job.filter_profile_id)
+        profile = beautify_from_snapshot(
+            job.beautify_profile_snapshot, job.beautify_profile_id, settings
+        )
         storage = get_storage_provider()
         beautify_service = NaturalBeautifyService()
         original_bytes = await storage.download(item.object_key)
-        orientation_result = beautify_service.normalize_orientation(original_bytes, profile)
-        quality_scores = _quality_scores(item)
-        assessment = beautify_service.assess_enhancement_need(
-            quality_scores=quality_scores,
-            rules=filter_profile.hard_rules,
-            orientation_result=orientation_result,
+        neutral_profile = neutralize_beautify_profile(profile)
+        orientation_result = beautify_service.normalize_orientation(
+            original_bytes, neutral_profile
         )
-        if assessment.needs_enhancement:
+        ai_beautify = (
+            beautify_from_processing_json(item.ai_processing_json)
+            if item.ai_processing_status == "completed"
+            else None
+        )
+        if ai_beautify is None:
+            await repository.fail_item(
+                item, "缺少 AI 美化决策，请重试图片处理"
+            )
+            return
+        effective_profile = merge_beautify_plan(profile, ai_beautify)
+        needs_enhancement = ai_beautify.needed
+        if needs_enhancement:
             beautify_result = beautify_service.enhance_with_details(
-                original_bytes, profile, quality_scores=quality_scores
+                original_bytes, effective_profile
             )
             enhanced_bytes = beautify_result.image_bytes
-            reasons = beautify_service.processing_reasons(profile, beautify_result)
+            reasons = beautify_service.processing_reasons(
+                effective_profile, beautify_result
+            )
+            reasons.insert(0, f"AI 美化：{ai_beautify.reason}")
         else:
             enhanced_bytes = beautify_service.prepare_delivery_image(
-                orientation_result.image_bytes, profile
+                orientation_result.image_bytes, neutral_profile
             )
-            reasons = ["图片质量良好，已跳过不必要的重度美化"]
+            reasons = [
+                f"AI 美化：{ai_beautify.reason}，无需额外调整"
+            ]
 
         enhanced_object_key = build_enhanced_object_key(item.job_id, item.id)
         analysis_object_key = build_analysis_object_key(item.job_id, item.id)
@@ -122,19 +141,6 @@ async def _enhance_image(image_id: str) -> None:
         ):
             AnalysisTaskPublisher().publish(item.id)
             EmbeddingTaskPublisher().publish(item.id)
-
-
-def _quality_scores(item) -> dict[str, float]:
-    if item.metric is None:
-        raise RuntimeError(f"缺少筛选质量指标：{item.id}")
-    raw_metrics = item.metric.raw_metrics_json or {}
-    return {
-        "sharpness": item.metric.sharpness_score,
-        "exposure": item.metric.exposure_score,
-        "contrast": item.metric.contrast_score,
-        "noise": item.metric.noise_score,
-        "brightness_mean": float(raw_metrics.get("brightness_mean", 128)),
-    }
 
 
 async def _mark_enhancement_failed(image_id: str) -> None:

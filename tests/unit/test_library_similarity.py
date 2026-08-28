@@ -1,5 +1,6 @@
 from io import BytesIO
 
+import pytest
 from PIL import Image, ImageFilter
 
 from src.models.library_asset import LibraryAsset
@@ -93,7 +94,7 @@ def test_calibrated_policy_matches_real_dining_room_sample() -> None:
 
     result = decide_similarity(
         candidates=candidates,
-        settings=_policy(similarity_auto_threshold=0.77),
+        settings=_policy(),
     )
 
     assert result.decision == "matched"
@@ -101,11 +102,7 @@ def test_calibrated_policy_matches_real_dining_room_sample() -> None:
 
 
 def test_similarity_decision_matches_high_confidence_path() -> None:
-    settings = _policy(
-        similarity_auto_threshold=0.8,
-        similarity_review_threshold=0.65,
-        similarity_min_margin=0.08,
-    )
+    settings = _policy()
     candidates = [
         _candidate("ast_1", ["完工案例", "厨房"], 0.92),
         _candidate("ast_2", ["完工案例", "客餐厅"], 0.71),
@@ -118,12 +115,8 @@ def test_similarity_decision_matches_high_confidence_path() -> None:
     assert result.matched_asset_id == "ast_1"
 
 
-def test_similarity_decision_queues_ambiguous_match_for_review() -> None:
-    settings = _policy(
-        similarity_auto_threshold=0.8,
-        similarity_review_threshold=0.65,
-        similarity_min_margin=0.08,
-    )
+def test_similarity_decision_does_not_require_candidate_margin_above_75_percent() -> None:
+    settings = _policy()
     candidates = [
         _candidate("ast_1", ["完工案例", "厨房"], 0.84),
         _candidate("ast_2", ["完工案例", "客餐厅"], 0.80),
@@ -131,8 +124,35 @@ def test_similarity_decision_queues_ambiguous_match_for_review() -> None:
 
     result = decide_similarity(candidates=candidates, settings=settings)
 
-    assert result.decision == "pending_review"
+    assert result.decision == "matched"
     assert result.tag_path == ["完工案例", "厨房"]
+
+
+@pytest.mark.parametrize(
+    ("similarity", "feature", "expected"),
+    [
+        (0.5999, 0.90, "pending_review"),
+        (0.70, 0.10, "pending_review"),
+        (0.60, 0.60, "matched"),
+        (0.75, 0.75, "matched"),
+        (0.7501, 0.7501, "matched"),
+        (0.80, 0.50, "matched"),
+        (0.70, 1.00, "matched"),
+    ],
+)
+def test_similarity_decision_uses_requested_boundaries(
+    similarity: float, feature: float, expected: str
+) -> None:
+    result = decide_similarity(
+        candidates=[
+            _scored_candidate(
+                "ast_1", ["完工案例", "厨房"], similarity=similarity, feature=feature
+            )
+        ],
+        settings=_policy(),
+    )
+
+    assert result.decision == expected
 
 
 def test_similarity_uses_most_similar_asset_as_match_evidence() -> None:
@@ -149,18 +169,49 @@ def test_similarity_uses_most_similar_asset_as_match_evidence() -> None:
     assert result.matched_asset_id == "ast_1"
 
 
-def test_similarity_decision_returns_requested_unmatched_message() -> None:
-    settings = _policy(similarity_review_threshold=0.65)
+def test_similarity_uses_highest_image_similarity_candidate_for_both_thresholds() -> None:
+    most_similar = _scored_candidate(
+        "ast_similarity", ["完工案例", "厨房"], similarity=0.76, feature=0.75
+    )
+    higher_final_score = _scored_candidate(
+        "ast_feature", ["完工案例", "客餐厅"], similarity=0.74, feature=1.0
+    )
+
+    result = decide_similarity(
+        candidates=[higher_final_score, most_similar], settings=_policy()
+    )
+
+    assert result.decision == "matched"
+    assert result.matched_asset_id == "ast_similarity"
+    assert result.tag_path == ["完工案例", "厨房"]
+
+
+def test_similarity_matches_when_image_is_71_and_candidate_score_is_76() -> None:
+    result = decide_similarity(
+        candidates=[
+            _scored_candidate(
+                "ast_balcony", ["完工案例", "阳台"], similarity=0.7154, feature=0.875
+            )
+        ],
+        settings=_policy(),
+    )
+
+    assert result.final_score == pytest.approx(0.76328)
+    assert result.decision == "matched"
+
+
+def test_similarity_decision_reviews_when_either_score_is_below_60_percent() -> None:
+    settings = _policy()
 
     result = decide_similarity(
         candidates=[_candidate("ast_1", ["完工案例", "厨房"], 0.52)],
         settings=settings,
     )
 
-    assert result.decision == "unmatched"
-    assert result.tag_path == []
-    assert result.matched_asset_id is None
-    assert result.message == "未识别到相似的图片素材"
+    assert result.decision == "pending_review"
+    assert result.tag_path == ["完工案例", "厨房"]
+    assert result.matched_asset_id == "ast_1"
+    assert result.message == "无法识别，等待人工复核"
 
 
 def _candidate(asset_id: str, path: list[str], score: float) -> ScoredCandidate:
@@ -193,9 +244,9 @@ def _policy(**updates) -> SimilarityProfile:
         "similarity_candidate_limit": 20,
         "similarity_image_weight": 0.7,
         "similarity_feature_weight": 0.3,
-        "similarity_auto_threshold": 0.8,
-        "similarity_review_threshold": 0.65,
-        "similarity_min_margin": 0.08,
+        "similarity_auto_threshold": 0.60,
+        "similarity_review_threshold": 0.60,
+        "similarity_min_margin": 0.0,
     }
     values.update(updates)
     return SimilarityProfile.model_validate(values)

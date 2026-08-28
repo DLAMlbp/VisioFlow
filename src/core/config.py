@@ -11,7 +11,11 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_host: str = "0.0.0.0"
     app_port: int = 8000
-    cors_allowed_origins: str = "http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:5174,http://localhost:5174"
+    cors_allowed_origins: str = (
+        "http://127.0.0.1:5173,http://localhost:5173,"
+        "http://127.0.0.1:5174,http://localhost:5174,"
+        "http://127.0.0.1:5175,http://localhost:5175"
+    )
     api_key: str = ""
     integration_api_key: str = ""
     integration_max_files: int = 50
@@ -38,17 +42,9 @@ class Settings(BaseSettings):
     )
 
     thumbnail_long_side: int = 768
-    hard_filter_min_width: int = 320
-    hard_filter_min_height: int = 320
     hard_filter_max_width: int = 10000
     hard_filter_max_height: int = 10000
-    hard_filter_min_edge_variance: float = 4.0
-    hard_filter_overexposed_ratio: float = 0.98
-    hard_filter_underexposed_ratio: float = 0.98
-    hard_filter_reject_underexposed_ratio: float = 0.85
-    hard_filter_min_visible_content_ratio: float = 0.03
-    hard_filter_min_dark_region_brightness: float = 90.0
-    hard_filter_solid_color_stddev: float = 3.0
+    technical_duplicate_hamming_distance: int = 5
     quality_sharpness_reference: float = 250.0
     quality_contrast_min_stddev: float = 10.0
     quality_contrast_max_stddev: float = 64.0
@@ -56,8 +52,6 @@ class Settings(BaseSettings):
     quality_exposure_clipping_penalty: float = 45.0
     quality_noise_penalty: float = 1.5
     profiles_directory: str = "profiles"
-    default_filter_profile: str = "renovation_submission_v1"
-    default_beautify_profile: str = "renovation_natural_v1"
     image_retention_days: int = 30
 
     ai_tagging_enabled: bool = True

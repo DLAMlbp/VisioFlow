@@ -1,10 +1,10 @@
 id: library_similarity_v1
-version: 1
-description: 使用更高自动确认门槛，不确定结果进入人工复核。
+version: 4
+description: 两项分数都达到 60% 自动匹配，任一分数低于 60% 无法识别并等待人工复核。
 
 similarity_candidate_limit: 20
 similarity_image_weight: 0.70
 similarity_feature_weight: 0.30
-similarity_auto_threshold: 0.80
-similarity_review_threshold: 0.65
-similarity_min_margin: 0.08
+similarity_auto_threshold: 0.60
+similarity_review_threshold: 0.60
+similarity_min_margin: 0.00

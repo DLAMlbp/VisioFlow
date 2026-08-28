@@ -49,7 +49,8 @@ export function rejectCodeLabel(code: string): string {
     CONTRAST_SCORE_TOO_LOW: "对比度偏低，已保留供确认",
     NOISE_SCORE_TOO_LOW: "噪点偏高，已保留供确认",
     SOLID_COLOR: "图片内容过于单一",
-    DUPLICATE_IMAGE: "与同批次其他图片重复或高度相似"
+    DUPLICATE_IMAGE: "与同批次其他图片重复或高度相似",
+    AI_FILTER_REJECTED: "未通过自定义 AI 过滤要求"
   };
   return labels[code] ?? "不符合图片质量标准";
 }

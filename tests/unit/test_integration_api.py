@@ -82,7 +82,12 @@ def test_integration_job_uploads_files_and_creates_async_job() -> None:
             ("files", ("kitchen.jpg", b"one", "image/jpeg")),
             ("files", ("bathroom.png", b"two", "image/png")),
         ],
-        data={"max_selected": "1", "enhance_level": "2"},
+        data={
+            "filter_profile": "flt_user",
+            "beautify_profile": "bty_user",
+            "max_selected": "1",
+            "enhance_level": "2",
+        },
         headers={"X-API-Key": "test-integration-key"},
     )
 
@@ -108,6 +113,7 @@ def test_integration_job_rejects_invalid_file_and_removes_prior_uploads() -> Non
             ("files", ("valid.jpg", b"one", "image/jpeg")),
             ("files", ("invalid.gif", b"two", "image/gif")),
         ],
+        data={"filter_profile": "flt_user", "beautify_profile": "bty_user"},
         headers={"X-API-Key": "test-integration-key"},
     )
 

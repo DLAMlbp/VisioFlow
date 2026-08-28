@@ -1,10 +1,10 @@
 id: library_similarity_v2
-version: 2
-description: 结合图片向量和中文场景特征，自动继承最相似素材的完整标签路径。
+version: 5
+description: 两项分数都达到 60% 自动匹配，任一分数低于 60% 无法识别并等待人工复核。
 
 similarity_candidate_limit: 20
 similarity_image_weight: 0.70
 similarity_feature_weight: 0.30
-similarity_auto_threshold: 0.77
-similarity_review_threshold: 0.65
-similarity_min_margin: 0.08
+similarity_auto_threshold: 0.60
+similarity_review_threshold: 0.60
+similarity_min_margin: 0.00

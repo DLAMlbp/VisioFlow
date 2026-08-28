@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from io import BytesIO
 from math import atan2, ceil, degrees, hypot, radians, sin
@@ -10,7 +9,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageEnhance, ImageOps, ImageStat, UnidentifiedImageError
 
-from src.services.profiles import BeautifyProfile, HardRulesProfile
+from src.services.profiles import BeautifyProfile
 
 
 @dataclass(frozen=True)
@@ -20,7 +19,6 @@ class BeautifyResult:
     local_tone_applied: bool
     glare_reduction_applied: bool
     local_clarity_applied: bool
-    adaptive_adjustments: list[str]
 
 
 @dataclass(frozen=True)
@@ -28,12 +26,6 @@ class OrientationNormalizationResult:
     image_bytes: bytes
     exif_orientation_applied: bool
     straighten_applied: bool
-
-
-@dataclass(frozen=True)
-class BeautifyAssessment:
-    needs_enhancement: bool
-    reasons: list[str]
 
 
 class NaturalBeautifyService:
@@ -44,7 +36,6 @@ class NaturalBeautifyService:
         self,
         image_bytes: bytes,
         profile: BeautifyProfile,
-        quality_scores: Mapping[str, float] | None = None,
     ) -> BeautifyResult:
         try:
             with Image.open(BytesIO(image_bytes)) as image:
@@ -53,28 +44,26 @@ class NaturalBeautifyService:
         except (OSError, UnidentifiedImageError) as exc:
             raise ValueError("原图无法解码，无法美化") from exc
 
-        effective_profile, adaptive_adjustments = self._build_adaptive_profile(profile, quality_scores)
-        enhanced, straighten_applied = self._auto_straighten(enhanced, effective_profile)
-        enhanced = self._apply_white_balance(enhanced, effective_profile)
-        enhanced = self._recover_tonal_detail(enhanced, effective_profile)
-        enhanced, local_tone_applied = self._enhance_local_tone(enhanced, effective_profile)
-        enhanced = self._reduce_noise(enhanced, effective_profile)
-        enhanced, glare_reduction_applied = self._reduce_glare(enhanced, effective_profile)
-        enhanced = ImageEnhance.Brightness(enhanced).enhance(effective_profile.brightness)
-        enhanced = ImageEnhance.Contrast(enhanced).enhance(effective_profile.contrast)
-        enhanced = ImageEnhance.Color(enhanced).enhance(effective_profile.color)
-        enhanced, local_clarity_applied = self._enhance_local_clarity(enhanced, effective_profile)
+        enhanced, straighten_applied = self._auto_straighten(enhanced, profile)
+        enhanced = self._apply_white_balance(enhanced, profile)
+        enhanced = self._recover_tonal_detail(enhanced, profile)
+        enhanced, local_tone_applied = self._enhance_local_tone(enhanced, profile)
+        enhanced = self._reduce_noise(enhanced, profile)
+        enhanced, glare_reduction_applied = self._reduce_glare(enhanced, profile)
+        enhanced = ImageEnhance.Brightness(enhanced).enhance(profile.brightness)
+        enhanced = ImageEnhance.Contrast(enhanced).enhance(profile.contrast)
+        enhanced = ImageEnhance.Color(enhanced).enhance(profile.color)
+        enhanced, local_clarity_applied = self._enhance_local_clarity(enhanced, profile)
 
-        enhanced = self._ensure_minimum_output_size(enhanced, effective_profile)
+        enhanced = self._ensure_minimum_output_size(enhanced, profile)
         output = BytesIO()
-        enhanced.save(output, format="JPEG", quality=effective_profile.jpeg_quality, optimize=True)
+        enhanced.save(output, format="JPEG", quality=profile.jpeg_quality, optimize=True)
         return BeautifyResult(
             image_bytes=output.getvalue(),
             straighten_applied=straighten_applied,
             local_tone_applied=local_tone_applied,
             glare_reduction_applied=glare_reduction_applied,
             local_clarity_applied=local_clarity_applied,
-            adaptive_adjustments=adaptive_adjustments,
         )
 
     def normalize_orientation(
@@ -112,28 +101,6 @@ class NaturalBeautifyService:
         return output.getvalue()
 
     @staticmethod
-    def assess_enhancement_need(
-        *,
-        quality_scores: Mapping[str, float],
-        rules: HardRulesProfile,
-        orientation_result: OrientationNormalizationResult,
-    ) -> BeautifyAssessment:
-        reasons: list[str] = []
-        if orientation_result.exif_orientation_applied or orientation_result.straighten_applied:
-            reasons.append("图片方向或倾斜已校正")
-        if quality_scores["exposure"] < rules.no_enhancement_score:
-            reasons.append("曝光可进一步优化")
-        if not rules.ideal_brightness_min <= quality_scores["brightness_mean"] <= rules.ideal_brightness_max:
-            reasons.append("整体明暗可进一步优化")
-        if quality_scores["contrast"] < rules.no_enhancement_score:
-            reasons.append("对比度可进一步优化")
-        if quality_scores["noise"] < rules.no_enhancement_score:
-            reasons.append("噪点可进一步优化")
-        if quality_scores["sharpness"] < rules.no_enhancement_score:
-            reasons.append("局部清晰度可进一步优化")
-        return BeautifyAssessment(needs_enhancement=bool(reasons), reasons=reasons)
-
-    @staticmethod
     def processing_reasons(profile: BeautifyProfile, result: BeautifyResult) -> list[str]:
         reasons = [
             "已自动校正轻微倾斜"
@@ -152,63 +119,7 @@ class NaturalBeautifyService:
             reasons.append("已压制局部反光和眩光")
         if result.local_clarity_applied:
             reasons.append("已增强门框和材质边缘细节")
-        reasons.extend(result.adaptive_adjustments)
         return reasons
-
-    @staticmethod
-    def _build_adaptive_profile(
-        profile: BeautifyProfile,
-        quality_scores: Mapping[str, float] | None,
-    ) -> tuple[BeautifyProfile, list[str]]:
-        if not quality_scores:
-            return profile, []
-
-        updates: dict[str, float] = {}
-        adjustments: list[str] = []
-        exposure_score = quality_scores.get("exposure")
-        brightness_mean = quality_scores.get("brightness_mean")
-        if exposure_score is not None and exposure_score < 98 and brightness_mean is not None:
-            severity = min((98 - exposure_score) / 20, 1)
-            if brightness_mean < 118:
-                brightness_delta = 0.05 * severity
-                shadow_delta = 0.08 * severity
-                updates["brightness"] = min(1.5, profile.brightness + brightness_delta)
-                updates["shadow_lift"] = min(0.35, profile.shadow_lift + shadow_delta)
-                if brightness_delta >= 0.005:
-                    adjustments.append(f"自动曝光调整：亮度 +{round(brightness_delta * 100)}%")
-            elif brightness_mean > 138:
-                highlight_delta = 0.08 * severity
-                updates["brightness"] = max(0.5, profile.brightness - 0.03 * severity)
-                updates["highlight_recovery"] = min(
-                    0.35, profile.highlight_recovery + highlight_delta
-                )
-                if highlight_delta >= 0.005:
-                    adjustments.append("自动曝光调整：压低高光并保留亮部细节")
-
-        contrast_score = quality_scores.get("contrast")
-        if contrast_score is not None and contrast_score < 98:
-            contrast_delta = min((98 - contrast_score) / 25 * 0.04, 0.04)
-            updates["contrast"] = min(1.5, profile.contrast + contrast_delta)
-            if contrast_delta >= 0.005:
-                adjustments.append(f"自动对比度调整：+{round(contrast_delta * 100)}%")
-
-        noise_score = quality_scores.get("noise")
-        if noise_score is not None and noise_score < 98:
-            denoise_delta = min((98 - noise_score) / 20 * 0.12, 0.12)
-            updates["denoise_strength"] = min(0.5, profile.denoise_strength + denoise_delta)
-            updates["local_clarity_strength"] = max(0.1, profile.local_clarity_strength - denoise_delta / 2)
-            if denoise_delta >= 0.005:
-                adjustments.append(f"自动降噪增强：+{round(denoise_delta * 100)}%")
-
-        sharpness_score = quality_scores.get("sharpness")
-        if sharpness_score is not None and sharpness_score < 98 and noise_score is not None and noise_score >= 95:
-            clarity_delta = min((98 - sharpness_score) / 25 * 0.1, 0.1)
-            base_clarity = updates.get("local_clarity_strength", profile.local_clarity_strength)
-            updates["local_clarity_strength"] = min(0.3, base_clarity + clarity_delta)
-            if clarity_delta >= 0.005:
-                adjustments.append(f"局部清晰度调整：+{round(clarity_delta * 100)}%")
-
-        return profile.model_copy(update=updates), adjustments
 
     @classmethod
     def _auto_straighten(cls, image: Image.Image, profile: BeautifyProfile) -> tuple[Image.Image, bool]:

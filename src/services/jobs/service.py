@@ -26,6 +26,7 @@ from src.schemas.jobs import (
 from src.services.ai_model_config import load_ai_model_settings
 from src.services.jobs.dispatch import JobDispatchTaskPublisher, TaskPublisher
 from src.services.jobs.ids import build_image_id, build_job_id
+from src.services.managed_profiles import ManagedProfileService
 from src.services.profiles import ProfileLoader, ProfileNotFoundError
 
 
@@ -53,10 +54,18 @@ class ImageJobService:
     async def create_job(self, payload: CreateImageJobRequest) -> CreateImageJobResponse:
         if len(payload.images) > self.settings.max_images_per_job:
             raise InvalidJobRequest(f"单个 Job 最多支持 {self.settings.max_images_per_job} 张图片")
+        filter_snapshot = None
+        beautify_snapshot = None
         if self.profile_loader is not None:
             try:
-                self.profile_loader.get_filter_profile(payload.filter_profile)
-                self.profile_loader.get_beautify_profile(payload.beautify_profile)
+                if hasattr(self.repository, "session"):
+                    manager = ManagedProfileService(self.repository.session, self.settings)
+                    _, filter_snapshot = await manager.resolve_filter(payload.filter_profile)
+                    _, beautify_snapshot = await manager.resolve_beautify(
+                        payload.beautify_profile
+                    )
+                else:
+                    raise RuntimeError("托管处理标准需要数据库会话")
                 self.profile_loader.get_similarity_profile(payload.similarity_profile)
             except ProfileNotFoundError as exc:
                 raise InvalidJobRequest(exc.args[0]) from exc
@@ -66,6 +75,8 @@ class ImageJobService:
             status=JobStatus.QUEUED.value,
             filter_profile_id=payload.filter_profile,
             beautify_profile_id=payload.beautify_profile,
+            filter_profile_snapshot=filter_snapshot,
+            beautify_profile_snapshot=beautify_snapshot,
             similarity_profile_id=payload.similarity_profile,
             ai_tagging_model=self.settings.ai_tagging_model if self.settings.ai_tagging_enabled else None,
             enhance_level=payload.enhance_level,

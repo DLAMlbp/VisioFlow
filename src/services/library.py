@@ -25,6 +25,8 @@ from src.schemas.library import (
     TagReviewResponse,
 )
 from src.services.jobs.dispatch import LibraryAssetTaskPublisher
+from src.services.storage.factory import get_storage_provider
+from src.services.storage.interfaces import StorageProvider
 
 
 class LibraryNotFound(AppError):
@@ -40,9 +42,11 @@ class LibraryService:
         self,
         repository: LibraryRepository,
         task_publisher: LibraryAssetTaskPublisher | None = None,
+        storage_provider: StorageProvider | None = None,
     ) -> None:
         self.repository = repository
         self.task_publisher = task_publisher
+        self.storage_provider = storage_provider
 
     async def get_tag_tree(self) -> list[LibraryTagNodeResponse]:
         nodes = await self.repository.list_tag_nodes()
@@ -59,6 +63,10 @@ class LibraryService:
             )
             for node in nodes
         }
+        for node in reversed(nodes):
+            if node.parent_id and node.parent_id in responses:
+                responses[node.parent_id].asset_count += responses[node.id].asset_count
+
         roots: list[LibraryTagNodeResponse] = []
         for node in nodes:
             response = responses[node.id]
@@ -161,6 +169,15 @@ class LibraryService:
             raise InvalidLibraryRequest("素材尚未完成分析，不能启用")
         asset = await self.repository.update_asset(asset, values)
         return await self._asset_response(asset)
+
+    async def delete_asset(self, asset_id: str) -> None:
+        asset = await self.repository.get_asset(asset_id)
+        if asset is None:
+            raise LibraryNotFound("素材不存在")
+        if self.storage_provider is None:
+            raise RuntimeError("素材存储服务未配置")
+        await self.storage_provider.delete(asset.original_object_key)
+        await self.repository.delete_asset(asset)
 
     async def reindex_asset(self, asset_id: str) -> LibraryAssetResponse:
         asset = await self.repository.get_asset(asset_id)
@@ -295,4 +312,8 @@ class LibraryService:
 
 
 def get_library_service(session: Annotated[AsyncSession, Depends(get_db_session)]) -> LibraryService:
-    return LibraryService(LibraryRepository(session), LibraryAssetTaskPublisher())
+    return LibraryService(
+        LibraryRepository(session),
+        LibraryAssetTaskPublisher(),
+        get_storage_provider(),
+    )

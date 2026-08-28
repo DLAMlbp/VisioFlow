@@ -21,6 +21,8 @@ class JobConfig:
     status: str
     filter_profile_id: str
     beautify_profile_id: str
+    filter_profile_snapshot: dict[str, object] | None
+    beautify_profile_snapshot: dict[str, object] | None
     similarity_profile_id: str
     max_selected: int
     total_count: int
@@ -71,6 +73,8 @@ class ImageJobRepository:
                     ImageJob.status,
                     ImageJob.filter_profile_id,
                     ImageJob.beautify_profile_id,
+                    ImageJob.filter_profile_snapshot,
+                    ImageJob.beautify_profile_snapshot,
                     ImageJob.similarity_profile_id,
                     ImageJob.max_selected,
                     ImageJob.total_count,
@@ -171,6 +175,34 @@ class ImageJobRepository:
             return None
         await self.session.commit()
         return await self.get_item(image_id)
+
+    async def claim_analysis_batch(self, image_id: str, *, limit: int) -> list[ImageItem]:
+        job_id = await self.session.scalar(
+            select(ImageItem.job_id).where(ImageItem.id == image_id)
+        )
+        if job_id is None:
+            await self.session.rollback()
+            return []
+        candidates = (
+            select(ImageItem.id)
+            .where(
+                ImageItem.job_id == job_id,
+                ImageItem.status == "tagging",
+                ImageItem.analysis_status == "pending",
+            )
+            .order_by(ImageItem.created_at, ImageItem.id)
+            .limit(max(1, limit))
+            .with_for_update(skip_locked=True)
+        )
+        result = await self.session.execute(
+            update(ImageItem)
+            .where(ImageItem.id.in_(candidates))
+            .values(analysis_status="processing", analysis_started_at=func.now())
+            .returning(ImageItem.id)
+        )
+        claimed_ids = list(result.scalars())
+        await self.session.commit()
+        return [item for item_id in claimed_ids if (item := await self.get_item(item_id))]
 
     async def complete_analysis_stage(self, image_id: str, *, succeeded: bool) -> None:
         await self.session.execute(
@@ -372,7 +404,13 @@ class ImageJobRepository:
         )
         await self.session.commit()
 
-    async def reject_item(self, item: ImageItem, reject_codes: list[str]) -> None:
+    async def reject_item(
+        self,
+        item: ImageItem,
+        reject_codes: list[str],
+        *,
+        reason: str | None = None,
+    ) -> None:
         if not await self._transition_to_terminal(item, "rejected", {"reject_codes": reject_codes}):
             return
         await self._upsert_result(
@@ -380,7 +418,7 @@ class ImageJobRepository:
             {
                 "decision": "rejected",
                 "reject_codes_json": reject_codes,
-                "reasons_json": ["未通过装修照片基础质量标准"],
+                "reasons_json": [reason or "未通过装修照片基础质量标准"],
             },
         )
         await self.session.execute(
@@ -394,6 +432,37 @@ class ImageJobRepository:
         item.preprocess_completed_at = item.preprocess_completed_at or func.now()
         await self.session.commit()
         await self.complete_job_if_finished(item.job_id)
+
+    async def save_ai_processing(
+        self,
+        item: ImageItem,
+        *,
+        status: str,
+        model_name: str,
+        prompt_version: str,
+        duration_ms: int | None = None,
+        payload: Mapping[str, object] | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        await self.session.execute(
+            update(ImageItem)
+            .where(ImageItem.id == item.id)
+            .values(
+                ai_processing_status=status,
+                ai_processing_json=dict(payload) if payload is not None else None,
+                ai_processing_model=model_name,
+                ai_processing_prompt_version=prompt_version,
+                ai_processing_duration_ms=duration_ms,
+                ai_processing_error=error_message,
+            )
+        )
+        await self.session.commit()
+        item.ai_processing_status = status
+        item.ai_processing_json = dict(payload) if payload is not None else None
+        item.ai_processing_model = model_name
+        item.ai_processing_prompt_version = prompt_version
+        item.ai_processing_duration_ms = duration_ms
+        item.ai_processing_error = error_message
 
     async def fail_item(self, item: ImageItem, reason: str) -> None:
         if not await self._transition_to_terminal(item, "failed"):
@@ -892,6 +961,12 @@ class ImageJobRepository:
                 match_status=None,
                 embedding=None,
                 embedding_version=None,
+                ai_processing_status=None,
+                ai_processing_json=None,
+                ai_processing_model=None,
+                ai_processing_prompt_version=None,
+                ai_processing_duration_ms=None,
+                ai_processing_error=None,
                 preprocess_started_at=None,
                 preprocess_completed_at=None,
                 enhance_started_at=None,

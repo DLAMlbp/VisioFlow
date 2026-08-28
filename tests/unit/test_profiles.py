@@ -6,15 +6,11 @@ from src.core.config import Settings
 from src.services.profiles import ProfileLoader, ProfileNotFoundError
 
 
-def test_loads_default_renovation_profiles() -> None:
+def test_project_does_not_ship_fixed_business_processing_profiles() -> None:
     loader = ProfileLoader(Settings(profiles_directory="profiles"))
 
-    filter_profile = loader.get_filter_profile("renovation_submission_v1")
-    beautify_profile = loader.get_beautify_profile("renovation_natural_v1")
-
-    assert filter_profile.hard_rules.min_width == 1280
-    assert beautify_profile.min_output_long_side == 2048
-    assert beautify_profile.jpeg_quality == 95
+    assert loader.list_filter_profiles() == []
+    assert loader.list_beautify_profiles() == []
 
 
 def test_rejects_unknown_profile(tmp_path: Path) -> None:

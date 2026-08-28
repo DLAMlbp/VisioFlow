@@ -1,7 +1,7 @@
 from io import BytesIO
 
 import pytest
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
 from src.core.config import Settings
 from src.services.images.hard_filter import HardFilterService, RejectCode
@@ -34,71 +34,24 @@ def test_hard_filter_accepts_normal_textured_image(service: HardFilterService) -
     assert result.passed
 
 
-def test_hard_filter_early_exits_for_small_image(service: HardFilterService) -> None:
+def test_technical_guard_accepts_small_image_for_ai_decision(service: HardFilterService) -> None:
     result = service.evaluate(encode(Image.new("RGB", (200, 400), "gray")), width=200, height=400)
-
-    assert result.reject_codes == (RejectCode.IMAGE_TOO_SMALL,)
-
-
-def test_hard_filter_rejects_a_blank_overexposed_frame(service: HardFilterService) -> None:
-    result = service.evaluate(encode(Image.new("RGB", (640, 640), "white")), width=640, height=640)
-
-    assert not result.passed
-    assert RejectCode.EXTREME_OVEREXPOSURE in result.warning_codes
-    assert RejectCode.SOLID_COLOR in result.reject_codes
-
-
-def test_hard_filter_rejects_a_blank_solid_color_frame(service: HardFilterService) -> None:
-    result = service.evaluate(encode(Image.new("RGB", (640, 640), "#7f7f7f")), width=640, height=640)
-
-    assert not result.passed
-    assert result.reject_codes == (RejectCode.SOLID_COLOR,)
-
-
-def test_hard_filter_rejects_a_near_black_frame_with_only_a_tiny_bright_area(
-    service: HardFilterService,
-) -> None:
-    image = Image.new("RGB", (640, 640), "black")
-    ImageDraw.Draw(image).rectangle((300, 300, 339, 339), fill="white")
-
-    result = service.evaluate(encode(image), width=640, height=640)
-
-    assert not result.passed
-    assert RejectCode.EXTREME_UNDEREXPOSURE in result.reject_codes
-
-
-def test_hard_filter_retains_a_dark_scene_when_material_detail_is_visible(
-    service: HardFilterService,
-) -> None:
-    image = Image.new("RGB", (640, 640), "black")
-    ImageDraw.Draw(image).rectangle((200, 120, 439, 519), fill="#606060")
-
-    result = service.evaluate(encode(image), width=640, height=640)
 
     assert result.passed
 
 
-def test_hard_filter_rejects_extreme_blur_before_beautification(service: HardFilterService) -> None:
-    image = Image.new("RGB", (640, 640), "white")
-    draw = ImageDraw.Draw(image)
-    draw.rectangle((0, 0, 319, 639), fill="#2d2d2d")
-    draw.rectangle((330, 100, 610, 540), fill="#828282")
-    image = image.filter(ImageFilter.GaussianBlur(radius=20))
-    result = service.evaluate(encode(image), width=640, height=640)
+def test_technical_guard_leaves_blank_frame_to_ai(service: HardFilterService) -> None:
+    result = service.evaluate(encode(Image.new("RGB", (640, 640), "white")), width=640, height=640)
 
-    assert not result.passed
-    assert result.reject_codes == (RejectCode.EXTREME_BLUR,)
+    assert result.passed
+    assert result.warning_codes == ()
 
 
-def test_hard_filter_accepts_an_otherwise_valid_image_with_a_dark_region(
-    service: HardFilterService,
-) -> None:
-    image = Image.new("RGB", (640, 640), "white")
-    ImageDraw.Draw(image).rectangle((480, 480, 639, 639), fill="#202020")
+def test_technical_guard_rejects_oversized_image() -> None:
+    service = HardFilterService(Settings(hard_filter_max_width=1000, hard_filter_max_height=1000))
+    result = service.evaluate(b"already-decoded", width=1001, height=800)
 
-    result = service.evaluate(encode(image), width=640, height=640)
-
-    assert RejectCode.LOCAL_HEAVY_SHADOW not in result.reject_codes
+    assert result.reject_codes == (RejectCode.IMAGE_TOO_LARGE,)
 
 
 def test_hard_filter_accepts_portrait_image_with_a_720_pixel_short_side(
