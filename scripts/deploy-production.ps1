@@ -9,7 +9,7 @@ param(
     [string]$RemoteDirectory = "/opt/image-intelligence",
     [string]$IdentityFile = "",
     [string]$ImageNamespace = "ghcr.io/zuixi01",
-    [int]$WebPort = 18081,
+    [int]$WebPort = 8088,
 
     [switch]$RequireCleanGit,
     [switch]$SkipTests,
@@ -413,7 +413,11 @@ try {
             if (-not $SkipTests) {
                 Write-Host "`n== Backend tests ==" -ForegroundColor Cyan
                 $testsPath = Join-Path $repoRoot "tests"
-                & docker run --rm --volume "${testsPath}:/app/tests:ro" $apiImage sh -c "pip install --no-cache-dir pytest==8.4.2 pytest-asyncio==1.2.0 httpx==0.28.1 && pytest -q"
+                $frontendPath = Join-Path $repoRoot "frontend"
+                & docker run --rm `
+                    --volume "${testsPath}:/app/tests:ro" `
+                    --volume "${frontendPath}:/app/frontend:ro" `
+                    $apiImage sh -c "pip install --no-cache-dir pytest==8.4.2 pytest-asyncio==1.2.0 httpx==0.28.1 && pytest -q"
                 Assert-ExitCode "Backend tests"
             }
             & docker push $apiImage

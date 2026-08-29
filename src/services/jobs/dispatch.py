@@ -49,6 +49,11 @@ class RankingTaskPublisher:
         celery_app.send_task("image.rank_job", args=[job_id], queue="control")
 
 
+class CallbackTaskPublisher:
+    def publish(self, job_id: str) -> None:
+        celery_app.send_task("image.deliver_callback", args=[job_id], queue="control")
+
+
 CeleryMetadataTaskPublisher = MetadataTaskPublisher
 TaggingTaskPublisher = AnalysisTaskPublisher
 EnhancementBatchTaskPublisher = EnhancementTaskPublisher

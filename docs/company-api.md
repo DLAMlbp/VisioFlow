@@ -1,6 +1,6 @@
 # 公司系统接入 API
 
-服务采用异步任务模式，适合图片处理通常需要数秒到数十秒的场景。公司服务端按“创建任务 → 查询进度 → 获取结果”调用。
+服务采用异步任务模式，适合图片处理通常需要数秒到数十秒的场景。公司服务端按“创建任务 → Worker 异步处理 → 结果回调”调用；查询接口仅用于补偿和排障。
 
 ## 配置
 
@@ -26,11 +26,16 @@ Content-Type: multipart/form-data
 X-API-Key: <INTEGRATION_API_KEY>
 ```
 
+创建请求必须包含 `callback_url`。该地址由调用方服务端提供，任务进入终态后由图片服务的 `control` Worker 主动 `POST` 完整结果。
+
 ```bash
 curl -X POST "https://<service-host>/api/v1/integration/jobs" \
   -H "X-API-Key: $INTEGRATION_API_KEY" \
   -F "files=@living-room.jpg;type=image/jpeg" \
   -F "files=@bedroom.png;type=image/png" \
+  -F "filter_profile=<标准管理中的过滤标准 ID>" \
+  -F "beautify_profile=<标准管理中的美化标准 ID>" \
+  -F "callback_url=https://client.example.com/api/image-callback" \
   -F "max_selected=10"
 ```
 
@@ -40,23 +45,54 @@ curl -X POST "https://<service-host>/api/v1/integration/jobs" \
 {"job_id":"job_xxx","status":"queued","total":2}
 ```
 
-## 2. 查询任务进度
+## 2. 接收结果回调
+
+任务进入 `completed`、`partial_failed`、`failed` 或 `cancelled` 后，服务执行：
+
+```http
+POST {callback_url}
+Content-Type: application/json
+X-Callback-Event: image.job.finished
+X-Callback-Id: <event_id>
+```
+
+回调体包含 `event_id`、`job_id`、`status`、`completed_at`、结果计数、限时下载地址和逐图结果。接收方返回任意 HTTP 2xx 即视为成功。非 2xx、连接失败或超时会指数退避重试，默认最多 5 次。回调采用至少一次投递语义，接收方必须按 `event_id` 幂等处理。
+
+```json
+{
+  "event_id": "job_xxx:2026-08-29T08:30:00+00:00",
+  "event": "image.job.finished",
+  "job_id": "job_xxx",
+  "status": "completed",
+  "completed_at": "2026-08-29T08:30:00Z",
+  "total": 2,
+  "selected": 1,
+  "rejected": 1,
+  "not_selected": 0,
+  "result_total": 2,
+  "download_expires_in": 900,
+  "images": [],
+  "error_message": null
+}
+```
+
+## 3. 补偿查询任务进度
 
 ```bash
 curl "https://<service-host>/api/v1/integration/jobs/job_xxx" \
   -H "X-API-Key: $INTEGRATION_API_KEY"
 ```
 
-当 `status` 为 `completed`、`partial_failed`、`failed` 或 `cancelled` 时停止轮询。建议每 2 秒查询一次。
+该接口保留用于回调延迟时排障，不再要求业务方持续轮询。
 
-## 3. 获取结果
+## 4. 补偿获取结果
 
 ```bash
 curl "https://<service-host>/api/v1/integration/jobs/job_xxx/results?limit=50&offset=0" \
   -H "X-API-Key: $INTEGRATION_API_KEY"
 ```
 
-结果包含筛选决定、质量分、美化说明、AI 标签、相似素材匹配，以及 `original_url`、`enhanced_url` 两个限时下载地址。下载地址有效期见响应中的 `download_expires_in`，过期后重新请求结果即可获得新地址。
+结果包含筛选决定、质量分、美化说明、AI 标签、相似素材匹配，以及 `original_url`、`enhanced_url` 两个限时下载地址。下载地址有效期见响应中的 `download_expires_in`，过期后重新请求结果即可获得新地址。回调中的下载地址遵循相同规则。
 
 ## 状态码
 

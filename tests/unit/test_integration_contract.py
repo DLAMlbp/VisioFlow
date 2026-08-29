@@ -1,7 +1,7 @@
 from src.main import app
 
 
-def test_v1_company_api_contract_remains_backward_compatible() -> None:
+def test_v1_company_api_contract_supports_callback_first_delivery() -> None:
     schema = app.openapi()
     paths = schema["paths"]
 
@@ -17,6 +17,11 @@ def test_v1_company_api_contract_remains_backward_compatible() -> None:
     for operation in (create, progress, results):
         parameters = {item["name"].lower(): item for item in operation.get("parameters", [])}
         assert parameters["x-api-key"]["in"] == "header"
+
+    multipart_schema = create["requestBody"]["content"]["multipart/form-data"]["schema"]
+    if "$ref" in multipart_schema:
+        multipart_schema = schema["components"]["schemas"][multipart_schema["$ref"].split("/")[-1]]
+    assert "callback_url" in multipart_schema["required"]
 
     result_schema = schema["components"]["schemas"]["IntegrationJobResultsResponse"]
     result_fields = result_schema["properties"]

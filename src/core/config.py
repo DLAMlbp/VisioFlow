@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     api_key: str = ""
     integration_api_key: str = ""
     integration_max_files: int = 50
+    callback_timeout_seconds: int = 15
+    callback_max_attempts: int = 5
+    callback_retry_base_seconds: int = 5
+    callback_recovery_interval_seconds: int = 5
+    callback_delivery_lease_seconds: int = 120
+    callback_recovery_batch_size: int = 100
 
     database_url: str = "postgresql+asyncpg://user:password@postgres:5432/image_ai"
     redis_url: str = "redis://redis:6379/0"

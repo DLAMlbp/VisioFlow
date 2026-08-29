@@ -13,7 +13,7 @@ services:
       - .env.production
     restart: unless-stopped
     ports:
-      - "${WEB_PORT:-18081}:80"
+      - "${WEB_PORT:-8088}:80"
     depends_on:
       api:
         condition: service_healthy

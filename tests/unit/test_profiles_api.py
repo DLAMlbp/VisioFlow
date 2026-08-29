@@ -9,7 +9,22 @@ from src.main import app
 from src.services.managed_profiles import CompiledProfile
 
 
-def test_list_profiles_returns_only_managed_filter_profiles() -> None:
+def test_list_profiles_returns_only_managed_filter_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_list(_service, profile_type: str):
+        assert profile_type == "filter"
+        return [
+            SimpleNamespace(
+                id="managed-filter",
+                name="Managed filter",
+                description="Managed filter description",
+                version=1,
+                status="active",
+            )
+        ]
+
+    monkeypatch.setattr(profiles_api.ManagedProfileService, "list", fake_list)
     app.dependency_overrides[get_settings] = lambda: Settings(
         api_key="test-api-key",
         profiles_directory="profiles",

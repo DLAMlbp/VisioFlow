@@ -21,6 +21,7 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     imports=(
         "src.workers.control",
+        "src.workers.callbacks",
         "src.workers.preprocess",
         "src.workers.enhance",
         "src.workers.analysis",
@@ -40,6 +41,11 @@ celery_app.conf.beat_schedule = {
         "task": "maintenance.recover_stalled_images",
         "schedule": settings.pipeline_recovery_interval_seconds,
         "options": {"queue": "cleanup"},
+    },
+    "recover-pending-callbacks": {
+        "task": "maintenance.recover_pending_callbacks",
+        "schedule": settings.callback_recovery_interval_seconds,
+        "options": {"queue": "control"},
     },
 }
 

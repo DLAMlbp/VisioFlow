@@ -87,6 +87,7 @@ def test_integration_job_uploads_files_and_creates_async_job() -> None:
             "beautify_profile": "bty_user",
             "max_selected": "1",
             "enhance_level": "2",
+            "callback_url": "https://client.test/api/image-callback",
         },
         headers={"X-API-Key": "test-integration-key"},
     )
@@ -98,6 +99,7 @@ def test_integration_job_uploads_files_and_creates_async_job() -> None:
     assert len(storage.uploaded) == 2
     assert [image.object_key for image in jobs.payload.images] == [item[0] for item in storage.uploaded]
     assert jobs.payload.enhance_level == 2
+    assert str(jobs.payload.callback_url) == "https://client.test/api/image-callback"
 
 
 def test_integration_job_rejects_invalid_file_and_removes_prior_uploads() -> None:
@@ -113,7 +115,11 @@ def test_integration_job_rejects_invalid_file_and_removes_prior_uploads() -> Non
             ("files", ("valid.jpg", b"one", "image/jpeg")),
             ("files", ("invalid.gif", b"two", "image/gif")),
         ],
-        data={"filter_profile": "flt_user", "beautify_profile": "bty_user"},
+        data={
+            "filter_profile": "flt_user",
+            "beautify_profile": "bty_user",
+            "callback_url": "https://client.test/api/image-callback",
+        },
         headers={"X-API-Key": "test-integration-key"},
     )
 
@@ -122,6 +128,27 @@ def test_integration_job_rejects_invalid_file_and_removes_prior_uploads() -> Non
     assert response.status_code == 400
     assert "不支持" in response.json()["detail"]
     assert storage.deleted == [storage.uploaded[0][0]]
+
+
+def test_integration_job_requires_callback_url() -> None:
+    storage = FakeStorageProvider()
+    app.dependency_overrides[get_storage_provider] = lambda: storage
+    app.dependency_overrides[get_job_service] = lambda: FakeJobService()
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        integration_api_key="test-integration-key"
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/integration/jobs",
+        files=[("files", ("kitchen.jpg", b"one", "image/jpeg"))],
+        data={"filter_profile": "flt_user", "beautify_profile": "bty_user"},
+        headers={"X-API-Key": "test-integration-key"},
+    )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 422
 
 
 def test_integration_job_progress_and_results_are_available() -> None:

@@ -1,8 +1,8 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import cast, delete, desc, func, literal, select, update
+from sqlalchemy import cast, delete, desc, func, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import BIT
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -40,6 +40,15 @@ class JobProgressSnapshot:
     rejected_count: int
     not_selected_count: int
     stage_counts: dict[str, int]
+
+
+@dataclass(frozen=True)
+class CallbackJob:
+    id: str
+    callback_url: str
+    status: str
+    completed_at: datetime
+    attempts: int
 
 
 class ImageJobRepository:
@@ -942,6 +951,7 @@ class ImageJobRepository:
             .where(ImageJob.id == job_id)
             .values(processed_count=ImageJob.processed_count + pending_count)
         )
+        await self._mark_callback_pending(job_id)
         await self.session.commit()
         return True
 
@@ -994,6 +1004,12 @@ class ImageJobRepository:
                 status="processing",
                 completed_at=None,
                 processed_count=func.greatest(ImageJob.processed_count - 1, 0),
+                callback_status=None,
+                callback_attempts=0,
+                callback_next_attempt_at=None,
+                callback_last_attempt_at=None,
+                callback_delivered_at=None,
+                callback_last_error=None,
             )
         )
         await self.session.commit()
@@ -1026,7 +1042,7 @@ class ImageJobRepository:
         )
         return result.rowcount == 1
 
-    async def complete_job_if_finished(self, job_id: str) -> None:
+    async def complete_job_if_finished(self, job_id: str) -> bool:
         counters = (
             await self.session.execute(
                 select(ImageJob.processed_count, ImageJob.total_count, ImageJob.status).where(
@@ -1035,14 +1051,14 @@ class ImageJobRepository:
             )
         ).one_or_none()
         if counters is None or counters.processed_count < counters.total_count:
-            return
+            return False
 
         failed_item = await self.session.scalar(
             select(ImageItem.id)
             .where(ImageItem.job_id == job_id, ImageItem.status == "failed")
             .limit(1)
         )
-        await self.session.execute(
+        result = await self.session.execute(
             update(ImageJob)
             .where(
                 ImageJob.id == job_id,
@@ -1054,4 +1070,139 @@ class ImageJobRepository:
                 completed_at=func.now(),
             )
         )
+        if result.rowcount == 1:
+            await self._mark_callback_pending(job_id)
         await self.session.commit()
+        return result.rowcount == 1
+
+    async def list_callback_jobs_due(self, *, limit: int, lease_seconds: int) -> list[str]:
+        now = datetime.now(UTC)
+        lease_expired_at = now - timedelta(seconds=max(1, lease_seconds))
+        result = await self.session.execute(
+            select(ImageJob.id)
+            .where(
+                ImageJob.callback_url.is_not(None),
+                ImageJob.status.in_(("completed", "partial_failed", "failed", "cancelled")),
+                or_(
+                    (
+                        (ImageJob.callback_status == "pending")
+                        & or_(
+                            ImageJob.callback_next_attempt_at.is_(None),
+                            ImageJob.callback_next_attempt_at <= now,
+                        )
+                    ),
+                    (
+                        (ImageJob.callback_status == "delivering")
+                        & or_(
+                            ImageJob.callback_last_attempt_at.is_(None),
+                            ImageJob.callback_last_attempt_at <= lease_expired_at,
+                        )
+                    ),
+                ),
+            )
+            .order_by(ImageJob.callback_next_attempt_at, ImageJob.completed_at, ImageJob.id)
+            .limit(max(1, limit))
+        )
+        return list(result.scalars())
+
+    async def claim_callback_delivery(self, job_id: str, *, lease_seconds: int) -> CallbackJob | None:
+        now = datetime.now(UTC)
+        lease_expired_at = now - timedelta(seconds=max(1, lease_seconds))
+        result = await self.session.execute(
+            update(ImageJob)
+            .where(
+                ImageJob.id == job_id,
+                ImageJob.callback_url.is_not(None),
+                ImageJob.status.in_(("completed", "partial_failed", "failed", "cancelled")),
+                or_(
+                    (
+                        (ImageJob.callback_status == "pending")
+                        & or_(
+                            ImageJob.callback_next_attempt_at.is_(None),
+                            ImageJob.callback_next_attempt_at <= now,
+                        )
+                    ),
+                    (
+                        (ImageJob.callback_status == "delivering")
+                        & or_(
+                            ImageJob.callback_last_attempt_at.is_(None),
+                            ImageJob.callback_last_attempt_at <= lease_expired_at,
+                        )
+                    ),
+                ),
+            )
+            .values(
+                callback_status="delivering",
+                callback_attempts=ImageJob.callback_attempts + 1,
+                callback_last_attempt_at=now,
+                callback_last_error=None,
+            )
+            .returning(
+                ImageJob.id,
+                ImageJob.callback_url,
+                ImageJob.status,
+                ImageJob.completed_at,
+                ImageJob.callback_attempts,
+            )
+        )
+        row = result.one_or_none()
+        if row is None:
+            await self.session.rollback()
+            return None
+        await self.session.commit()
+        return CallbackJob(
+            id=row.id,
+            callback_url=row.callback_url,
+            status=row.status,
+            completed_at=row.completed_at,
+            attempts=row.callback_attempts,
+        )
+
+    async def mark_callback_delivered(self, job_id: str) -> None:
+        await self.session.execute(
+            update(ImageJob)
+            .where(ImageJob.id == job_id, ImageJob.callback_status == "delivering")
+            .values(
+                callback_status="delivered",
+                callback_next_attempt_at=None,
+                callback_delivered_at=func.now(),
+                callback_last_error=None,
+            )
+        )
+        await self.session.commit()
+
+    async def mark_callback_failed(
+        self,
+        job_id: str,
+        *,
+        error: str,
+        retry_at: datetime | None,
+    ) -> None:
+        await self.session.execute(
+            update(ImageJob)
+            .where(ImageJob.id == job_id, ImageJob.callback_status == "delivering")
+            .values(
+                callback_status="pending" if retry_at is not None else "failed",
+                callback_next_attempt_at=retry_at,
+                callback_last_error=error[:1000],
+            )
+        )
+        await self.session.commit()
+
+    async def _mark_callback_pending(self, job_id: str) -> None:
+        await self.session.execute(
+            update(ImageJob)
+            .where(
+                ImageJob.id == job_id,
+                ImageJob.callback_url.is_not(None),
+                ImageJob.callback_url != "",
+            )
+            .values(
+                callback_status="pending",
+                callback_attempts=0,
+                callback_next_attempt_at=func.now(),
+                callback_last_attempt_at=None,
+                callback_delivered_at=None,
+                callback_last_error=None,
+            )
+        )

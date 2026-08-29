@@ -36,7 +36,7 @@ Content-Type: multipart/form-data
 X-API-Key: <服务端 API Key>
 ```
 
-必填字段为 `files`、`filter_profile` 和 `beautify_profile`；`files` 可同时传 1 至 50 个 `image/jpeg`、`image/png` 或 `image/webp` 文件。可选表单字段为 `enhance_level`（0-2）、`max_selected` 和 `callback_url`。成功后立即返回 `201` 及 `job_id`，图片在后台异步筛选和美化。
+必填字段为 `files`、`filter_profile`、`beautify_profile` 和 `callback_url`；`files` 可同时传 1 至 50 个 `image/jpeg`、`image/png` 或 `image/webp` 文件。可选表单字段为 `enhance_level`（0-2）和 `max_selected`。成功后立即返回 `201` 及 `job_id`，图片在后台异步筛选和美化；进入终态后由现有 `control` Worker 主动向 `callback_url` 推送结果。
 
 ```bash
 curl -X POST http://127.0.0.1:18000/api/v1/integration/jobs \
@@ -45,10 +45,11 @@ curl -X POST http://127.0.0.1:18000/api/v1/integration/jobs \
   -F "files=@after.jpg;type=image/jpeg" \
   -F "filter_profile=<标准管理中的过滤标准 ID>" \
   -F "beautify_profile=<标准管理中的美化标准 ID>" \
+  -F "callback_url=https://client.example.com/api/image-callback" \
   -F "max_selected=10"
 ```
 
-使用 `GET /api/v1/integration/jobs/{job_id}` 轮询处理进度；完成后使用 `GET /api/v1/integration/jobs/{job_id}/results` 获取筛选决定、中文淘汰原因、质量指标及美化图片的对象键。所有调用必须由对方平台的服务端发起，不能在浏览器或 App 中暴露 `X-API-Key`。
+任务进入 `completed`、`partial_failed`、`failed` 或 `cancelled` 后，服务会向 `callback_url` 发送 `POST application/json`。回调至少投递一次，接收方应按 `event_id` 或 `job_id + completed_at` 幂等处理；HTTP 2xx 表示接收成功。`GET /api/v1/integration/jobs/{job_id}` 与 `/results` 保留为补偿和排障接口，不再要求客户端持续轮询。所有调用必须由对方平台的服务端发起，不能在浏览器或 App 中暴露 `X-API-Key`。
 
 50 至 500 张的大批量任务使用 `POST /api/v1/upload-batches` 一次登记文件，再将文件并发直传对象存储，最后调用 `POST /api/v1/upload-batches/{batch_id}/complete`。任务内部每 25 张分片投递，用户仍只看到一个任务。结果接口支持 `limit`、`offset` 和 `decision`，默认每页 50 张。
 

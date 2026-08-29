@@ -47,10 +47,10 @@ async def create_integration_job(
     storage: StorageDep,
     filter_profile: Annotated[str, Form(min_length=1)],
     beautify_profile: Annotated[str, Form(min_length=1)],
+    callback_url: Annotated[str, Form(min_length=1)],
     similarity_profile: Annotated[str, Form()] = "library_similarity_v2",
     enhance_level: Annotated[int, Form(ge=0, le=2)] = 1,
     max_selected: Annotated[int, Form(ge=1)] = 10,
-    callback_url: Annotated[str | None, Form()] = None,
 ) -> CreateImageJobResponse:
     """上传图片并创建异步处理任务，供第三方平台直接调用。"""
     if len(files) > settings.integration_max_files:
@@ -82,7 +82,7 @@ async def create_integration_job(
             enhance_level=enhance_level,
             max_selected=max_selected,
             images=[{"object_key": object_key} for object_key in image_keys],
-            callback_url=callback_url or None,
+            callback_url=callback_url,
         )
         return await service.create_job(payload)
     except (InvalidUploadRequest, InvalidJobRequest, ValidationError) as exc:

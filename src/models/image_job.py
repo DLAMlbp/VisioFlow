@@ -38,6 +38,18 @@ class ImageJob(Base):
     dispatch_cursor: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     callback_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    callback_status: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    callback_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    callback_next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    callback_last_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    callback_delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    callback_last_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
