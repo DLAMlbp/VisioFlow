@@ -41,14 +41,22 @@ class IntegrationJobResultsResponse(BaseModel):
 
 @router.post("/jobs", response_model=CreateImageJobResponse, status_code=status.HTTP_201_CREATED)
 async def create_integration_job(
-    files: Annotated[list[UploadFile], File(description="待处理的装修现场图片，1 至 50 张")],
+    files: Annotated[list[UploadFile], File(description="待处理图片，1 至 50 张")],
     service: JobServiceDep,
     settings: SettingsDep,
     storage: StorageDep,
-    filter_profile: Annotated[str, Form(min_length=1)],
-    beautify_profile: Annotated[str, Form(min_length=1)],
     callback_url: Annotated[str, Form(min_length=1)],
+    beautify_profile: Annotated[str | None, Form(min_length=1)] = None,
+    processing_standards: Annotated[
+        str | None, Form(description="逗号分隔的两套互斥且完整覆盖的过滤标准 ID")
+    ] = None,
+    filter_profile: Annotated[str | None, Form()] = None,
+    filter_enabled: Annotated[bool, Form()] = True,
+    beautify_enabled: Annotated[bool, Form()] = True,
+    similarity_enabled: Annotated[bool, Form()] = True,
     similarity_profile: Annotated[str, Form()] = "library_similarity_v2",
+    unmatched_standard_policy: Annotated[str, Form(pattern="^reject$")] = "reject",
+    library_scope_node_id: Annotated[str | None, Form()] = None,
     enhance_level: Annotated[int, Form(ge=0, le=2)] = 1,
     max_selected: Annotated[int, Form(ge=1)] = 10,
 ) -> CreateImageJobResponse:
@@ -76,9 +84,19 @@ async def create_integration_job(
             image_keys.append(object_key)
 
         payload = CreateImageJobRequest(
+            processing_standards=[
+                value.strip()
+                for value in (processing_standards or "").split(",")
+                if value.strip()
+            ],
             filter_profile=filter_profile,
             beautify_profile=beautify_profile,
+            filter_enabled=filter_enabled,
+            beautify_enabled=beautify_enabled,
+            similarity_enabled=similarity_enabled,
             similarity_profile=similarity_profile,
+            unmatched_standard_policy=unmatched_standard_policy,
+            library_scope_node_id=library_scope_node_id,
             enhance_level=enhance_level,
             max_selected=max_selected,
             images=[{"object_key": object_key} for object_key in image_keys],

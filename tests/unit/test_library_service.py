@@ -47,6 +47,7 @@ async def test_delete_asset_removes_object_before_database_record() -> None:
     asset = LibraryAsset(
         id="ast_test",
         original_object_key="uploads/2026/08/28/test.png",
+        thumbnail_object_key="library-thumbnails/ast_test.jpg",
         leaf_tag_node_id="leaf",
         status="active",
     )
@@ -56,7 +57,10 @@ async def test_delete_asset_removes_object_before_database_record() -> None:
 
     await LibraryService(repository, storage_provider=storage).delete_asset(asset.id)
 
-    storage.delete.assert_awaited_once_with(asset.original_object_key)
+    assert storage.delete.await_args_list == [
+        ((asset.thumbnail_object_key,),),
+        ((asset.original_object_key,),),
+    ]
     repository.delete_asset.assert_awaited_once_with(asset)
 
 

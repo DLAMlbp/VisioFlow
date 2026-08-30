@@ -176,6 +176,8 @@ class LibraryService:
             raise LibraryNotFound("素材不存在")
         if self.storage_provider is None:
             raise RuntimeError("素材存储服务未配置")
+        if asset.thumbnail_object_key:
+            await self.storage_provider.delete(asset.thumbnail_object_key)
         await self.storage_provider.delete(asset.original_object_key)
         await self.repository.delete_asset(asset)
 
@@ -245,6 +247,7 @@ class LibraryService:
         return LibraryAssetResponse(
             id=asset.id,
             original_object_key=asset.original_object_key,
+            thumbnail_object_key=asset.thumbnail_object_key,
             original_filename=asset.original_filename,
             leaf_tag_node_id=asset.leaf_tag_node_id,
             tag_path=await self._tag_path(asset.leaf_tag_node_id),
@@ -311,7 +314,9 @@ class LibraryService:
         )
 
 
-def get_library_service(session: Annotated[AsyncSession, Depends(get_db_session)]) -> LibraryService:
+def get_library_service(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> LibraryService:
     return LibraryService(
         LibraryRepository(session),
         LibraryAssetTaskPublisher(),

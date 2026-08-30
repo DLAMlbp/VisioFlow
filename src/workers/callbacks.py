@@ -46,6 +46,8 @@ async def _deliver_job_callback(job_id: str) -> None:
                 callback_job.callback_url,
                 payload,
                 timeout_seconds=settings.callback_timeout_seconds,
+                signing_secret=settings.callback_signing_secret,
+                allowed_hosts=settings.callback_allowed_hosts,
             )
         except Exception as exc:  # noqa: BLE001 - persist and retry every delivery failure
             retry_at = None

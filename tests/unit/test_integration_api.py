@@ -83,7 +83,7 @@ def test_integration_job_uploads_files_and_creates_async_job() -> None:
             ("files", ("bathroom.png", b"two", "image/png")),
         ],
         data={
-            "filter_profile": "flt_user",
+            "processing_standards": "std_finished,std_unfinished",
             "beautify_profile": "bty_user",
             "max_selected": "1",
             "enhance_level": "2",
@@ -102,6 +102,36 @@ def test_integration_job_uploads_files_and_creates_async_job() -> None:
     assert str(jobs.payload.callback_url) == "https://client.test/api/image-callback"
 
 
+def test_integration_job_rejects_disabled_required_stages() -> None:
+    storage = FakeStorageProvider()
+    jobs = FakeJobService()
+    app.dependency_overrides[get_storage_provider] = lambda: storage
+    app.dependency_overrides[get_job_service] = lambda: jobs
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        integration_api_key="test-integration-key"
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/integration/jobs",
+        files=[("files", ("product.jpg", b"one", "image/jpeg"))],
+        data={
+            "processing_standards": "std_finished,std_unfinished",
+            "beautify_profile": "bty_user",
+            "filter_enabled": "false",
+            "beautify_enabled": "false",
+            "similarity_enabled": "false",
+            "callback_url": "https://client.test/api/image-callback",
+        },
+        headers={"X-API-Key": "test-integration-key"},
+    )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    assert "正式模式固定执行" in response.json()["detail"]
+
+
 def test_integration_job_rejects_invalid_file_and_removes_prior_uploads() -> None:
     storage = FakeStorageProvider()
     app.dependency_overrides[get_storage_provider] = lambda: storage
@@ -116,7 +146,7 @@ def test_integration_job_rejects_invalid_file_and_removes_prior_uploads() -> Non
             ("files", ("invalid.gif", b"two", "image/gif")),
         ],
         data={
-            "filter_profile": "flt_user",
+            "processing_standards": "std_finished,std_unfinished",
             "beautify_profile": "bty_user",
             "callback_url": "https://client.test/api/image-callback",
         },
@@ -142,7 +172,10 @@ def test_integration_job_requires_callback_url() -> None:
     response = client.post(
         "/api/v1/integration/jobs",
         files=[("files", ("kitchen.jpg", b"one", "image/jpeg"))],
-        data={"filter_profile": "flt_user", "beautify_profile": "bty_user"},
+        data={
+            "processing_standards": "std_finished,std_unfinished",
+            "beautify_profile": "bty_user",
+        },
         headers={"X-API-Key": "test-integration-key"},
     )
 

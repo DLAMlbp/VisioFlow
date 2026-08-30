@@ -64,6 +64,8 @@ async def update_ai_model_config(
             model=payload.model,
             api_key=payload.api_key.strip() if payload.api_key else None,
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except RedisError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="模型配置服务暂不可用") from exc
     return _response(updated)

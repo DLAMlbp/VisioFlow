@@ -1,3 +1,5 @@
+name: image-intelligence
+
 x-app: &app
   image: ${API_IMAGE:?API_IMAGE must be a versioned image reference}
   env_file:
@@ -5,6 +7,27 @@ x-app: &app
   restart: unless-stopped
   networks:
     - app
+  init: true
+  stop_grace_period: 30s
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "5"
+
+x-worker: &worker
+  <<: *app
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    redis:
+      condition: service_healthy
+    minio:
+      condition: service_healthy
 
 services:
   web:
@@ -26,44 +49,86 @@ services:
     <<: *app
     command: uvicorn src.main:app --host 0.0.0.0 --port 8000
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       minio:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5)"]
+      # Container health is liveness. Deployment gates must call /health/ready
+      # separately so a missing AI credential cannot lock users out of settings.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
       interval: 15s
       timeout: 8s
       retries: 8
     mem_limit: 640m
     cpus: 0.75
 
-  worker:
-    <<: *app
-    command: >-
-      celery -A src.workers.celery_app worker
-      -Q control,preprocess,enhance,analysis,embedding,library,cleanup
-      --pool=solo --concurrency=1 -l info
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      minio:
-        condition: service_started
+  worker-control:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q control -l info --concurrency=1
+    mem_limit: 384m
+    cpus: 0.5
+
+  worker-preprocess:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q preprocess -l info --concurrency=2
+    mem_limit: 768m
+    cpus: 1.0
+
+  worker-enhance:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q enhance -l info --concurrency=2
+    mem_limit: 768m
+    cpus: 1.0
+
+  worker-analysis:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q analysis -l info --concurrency=2
+    mem_limit: 768m
+    cpus: 1.0
+
+  worker-embedding:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q embedding -l info --concurrency=1
+    environment:
+      WORKER_ROLE: embedding
     mem_limit: 2048m
     cpus: 1.5
+
+  worker-library:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q library -l info --concurrency=1
+    mem_limit: 2048m
+    cpus: 1.5
+
+  worker-cleanup:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q cleanup -l info --concurrency=1
+    mem_limit: 384m
+    cpus: 0.25
 
   celery-beat:
     <<: *app
     command: celery -A src.workers.celery_app beat -l info
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     mem_limit: 256m
     cpus: 0.25
+
+  migrate:
+    <<: *app
+    command: alembic upgrade head
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 512m
+    cpus: 0.5
 
   postgres:
     image: pgvector/pgvector:0.8.1-pg16
@@ -81,9 +146,15 @@ services:
       - app
     mem_limit: 512m
     cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
   redis:
     image: redis:7.4.5-alpine
+    command: redis-server --appendonly yes --appendfsync everysec
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -92,8 +163,15 @@ services:
       retries: 8
     networks:
       - app
+    volumes:
+      - redis-data:/data
     mem_limit: 128m
     cpus: 0.25
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
@@ -105,10 +183,20 @@ services:
       - "${MINIO_PORT:-19001}:9000"
     volumes:
       - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     networks:
       - app
     mem_limit: 384m
     cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
   minio-init:
     image: minio/mc:RELEASE.2025-04-16T18-13-26Z
@@ -134,3 +222,4 @@ networks:
 volumes:
   postgres-data:
   minio-data:
+  redis-data:

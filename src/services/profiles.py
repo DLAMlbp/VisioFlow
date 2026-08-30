@@ -71,6 +71,18 @@ class BeautifyProfile(BaseModel):
     jpeg_quality: int = Field(ge=60, le=100)
 
 
+class ProcessingStandard(BaseModel):
+    """One conditional filter standard evaluated independently for every image."""
+
+    id: str
+    name: str = ""
+    version: int = Field(ge=1)
+    description: str
+    activation_rule: str = Field(min_length=3, max_length=2000)
+    filter_rule: str = Field(min_length=3, max_length=2000)
+    priority: int = Field(default=100, ge=0, le=10000)
+
+
 class SimilarityProfile(BaseModel):
     id: str
     version: int = Field(ge=1)

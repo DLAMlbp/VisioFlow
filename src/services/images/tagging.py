@@ -11,15 +11,17 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from PIL import Image
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from src.core.config import Settings
 
-PROMPT_VERSION = "renovation_auto_generic_v2"
+PROMPT_VERSION = "generic_visual_analysis_v1"
 
 
 class TagPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # Provider-specific descriptive fields are harmless. Keep the stable
+    # business fields and ignore extras instead of failing the whole image.
+    model_config = ConfigDict(extra="ignore")
 
     summary: str = Field(default="", max_length=80)
     scene: str = Field(default="", max_length=80)
@@ -27,12 +29,76 @@ class TagPayload(BaseModel):
     condition: str = Field(default="", max_length=80)
     content_type: str = Field(default="", max_length=80)
     subjects: list[str] = Field(default_factory=list, max_length=12)
+    objects: list[str] = Field(default_factory=list, max_length=20)
+    attributes: dict[str, list[str]] = Field(default_factory=dict)
+    features: dict[str, list[str]] = Field(default_factory=dict)
+    ocr_text: list[str] = Field(default_factory=list, max_length=20)
     view: str = Field(default="", max_length=80)
     tags: list[str] = Field(default_factory=list, max_length=8)
     categories: dict[str, list[str]] = Field(default_factory=dict)
     candidate_tags: list[str] = Field(default_factory=list, max_length=8)
-    confidence: float = Field(ge=0, le=1)
+    confidence: float = Field(default=0.0, ge=0, le=1)
     risks: list[str] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_descriptive_fields(cls, value: object) -> object:
+        """Normalize harmless provider variations without weakening decisions.
+
+        Vision models commonly express attributes as either a scalar or a list.
+        These fields are descriptive labels, so converting scalars to string
+        lists is lossless for downstream display and matching. Filter and
+        beautify decisions remain strictly validated by their own models.
+        """
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        for field_name in ("summary", "scene", "space", "condition", "content_type", "view"):
+            field_value = normalized.get(field_name)
+            normalized[field_name] = "" if field_value is None else str(field_value)[:80]
+        for field_name, limit in {
+            "subjects": 12,
+            "objects": 20,
+            "ocr_text": 20,
+            "tags": 8,
+            "candidate_tags": 8,
+            "risks": 8,
+        }.items():
+            normalized[field_name] = _normalize_string_list(
+                normalized.get(field_name), limit=limit
+            )
+        for field_name in ("attributes", "features", "categories"):
+            normalized[field_name] = _normalize_string_list_mapping(
+                normalized.get(field_name)
+            )
+        return normalized
+
+
+def _normalize_string_list(value: object, *, limit: int | None = None) -> list[str]:
+    if value is None:
+        return []
+    items = value if isinstance(value, (list, tuple, set)) else [value]
+    result: list[str] = []
+    for item in items:
+        if item is None:
+            continue
+        text = str(item).strip()
+        if text and text not in result:
+            result.append(text)
+        if limit is not None and len(result) >= limit:
+            break
+    return result
+
+
+def _normalize_string_list_mapping(value: object) -> dict[str, list[str]]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, list[str]] = {}
+    for key, item in value.items():
+        normalized_key = str(key).strip()
+        if normalized_key:
+            result[normalized_key] = _normalize_string_list(item)
+    return result
 
 
 class TagBatchPayload(BaseModel):
@@ -262,26 +328,30 @@ def _chat_completions_url(base_url: str) -> str:
     return f"{base_url.rstrip('/')}/chat/completions"
 
 
-_SYSTEM_PROMPT = """你是装修图片内容分析助手。只输出 JSON，不要 Markdown 或额外说明。
-必须返回 summary、scene、space、condition、content_type、subjects、view、confidence、risks、tags、categories、candidate_tags。
+_SYSTEM_PROMPT = """你是通用图片内容分析助手。只输出 JSON，不要 Markdown 或额外说明。
+必须返回 summary、scene、space、condition、content_type、subjects、objects、attributes、features、ocr_text、view、confidence、risks、tags、categories、candidate_tags。
 只描述图片中能够观察到的内容，不要根据预设业务标签猜测。
-summary 不超过 40 个字；subjects 最多 12 个。
-scene 优先使用：住宅室内、住宅室外、商业空间、施工现场、人物工作。
-space 优先使用：客厅、餐厅、客餐厅、玄关、厨房、卧室、书房、阳台、卫生间、过道；存在多个空间时选择画面主体。
-condition 优先使用：装修前、施工中、装修完成。content_type 优先使用：环境展示、人物工作、材料展示、细节展示、文档截图。
-view 优先使用：空间全景、中景、细节特写。
+summary 不超过 40 个字；subjects 最多 12 个；objects 最多 20 个。
+scene 描述整体场景；space 描述主要空间或区域；condition 描述可见状态；无法判断时留空。
+content_type 描述照片、文档、截图、插画等内容形态；view 描述整体、局部、特写等视角。
+objects 返回主要可见对象；attributes 返回通用视觉属性；features 返回图片自身可见的领域特征，键名不得预设业务标签。
+ocr_text 只返回清晰可辨的少量关键文字，不推测被遮挡内容。
 tags、candidate_tags 保留为空数组，categories 保留为空对象。无法判断时使用空字符串并降低 confidence。
 risks 可包含人脸、证件、手机号或地址、二维码、聊天截图、纯文字、严重遮挡。"""
 
-_USER_PROMPT = """请分析这张已经自然美化后的装修图片，并按以下 JSON 返回：
+_USER_PROMPT = """请分析这张图片，并按以下 JSON 返回：
 {
-  "summary":"老旧住宅装修前的厨房",
-  "scene":"住宅室内",
-  "space":"厨房",
-  "condition":"装修前",
-  "content_type":"环境展示",
-  "subjects":["灶台","墙砖","橱柜"],
-  "view":"空间全景",
+  "summary":"图片可见内容的简短描述",
+  "scene":"整体场景",
+  "space":"主要空间或区域",
+  "condition":"可见状态",
+  "content_type":"内容形态",
+  "subjects":["主要主体"],
+  "objects":["可见对象"],
+  "attributes":{"颜色":["可见颜色"]},
+  "features":{"领域特征":["仅限可见事实"]},
+  "ocr_text":[],
+  "view":"拍摄视角",
   "tags":[],
   "categories":{},
   "candidate_tags":[],
@@ -295,17 +365,21 @@ _BATCH_SYSTEM_PROMPT = _SYSTEM_PROMPT + """
 
 
 def _batch_user_prompt(image_count: int) -> str:
-    return f"""请依次分析下面 {image_count} 张已经自然美化后的装修图片，并返回：
+    return f"""请依次分析下面 {image_count} 张图片，并返回：
 {{
   "images":[
     {{
-      "summary":"老旧住宅装修前的厨房",
-      "scene":"住宅室内",
-      "space":"厨房",
-      "condition":"装修前",
-      "content_type":"环境展示",
-      "subjects":["灶台","墙砖","橱柜"],
-      "view":"空间全景",
+      "summary":"图片可见内容的简短描述",
+      "scene":"整体场景",
+      "space":"主要空间或区域",
+      "condition":"可见状态",
+      "content_type":"内容形态",
+      "subjects":["主要主体"],
+      "objects":["可见对象"],
+      "attributes":{{"颜色":["可见颜色"]}},
+      "features":{{"领域特征":["仅限可见事实"]}},
+      "ocr_text":[],
+      "view":"拍摄视角",
       "tags":[],
       "categories":{{}},
       "candidate_tags":[],

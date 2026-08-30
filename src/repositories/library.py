@@ -154,16 +154,17 @@ class LibraryRepository:
         return int(total or 0), list(result.scalars())
 
     async def find_similar_assets(
-        self, embedding: list[float], limit: int
+        self, embedding: list[float], limit: int, scope_node_id: str | None = None
     ) -> list[tuple[LibraryAsset, float]]:
-        active_nodes = (
-            select(LibraryTagNode.id)
-            .where(
-                LibraryTagNode.parent_id.is_(None),
-                LibraryTagNode.status == "active",
-            )
-            .cte("active_library_tag_nodes", recursive=True)
+        root_filter = (
+            LibraryTagNode.id == scope_node_id
+            if scope_node_id
+            else LibraryTagNode.parent_id.is_(None)
         )
+        active_nodes = select(LibraryTagNode.id).where(
+            root_filter,
+            LibraryTagNode.status == "active",
+        ).cte("active_library_tag_nodes", recursive=True)
         active_nodes = active_nodes.union_all(
             select(LibraryTagNode.id)
             .join(active_nodes, LibraryTagNode.parent_id == active_nodes.c.id)

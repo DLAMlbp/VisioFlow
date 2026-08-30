@@ -54,9 +54,14 @@ export interface PresignResponse {
 }
 
 export interface CreateJobRequest {
-  filter_profile: string;
-  beautify_profile: string;
+  processing_standards: string[];
+  beautify_profile?: string;
+  filter_enabled: boolean;
+  beautify_enabled: boolean;
+  similarity_enabled: boolean;
   similarity_profile: string;
+  unmatched_standard_policy: "reject";
+  library_scope_node_id?: string;
   enhance_level: number;
   max_selected: number;
   images: Array<{ object_key: string }>;
@@ -157,6 +162,8 @@ export interface ResultImage {
   decision: Decision;
   original_url?: string;
   enhanced_url?: string;
+  original_download_url?: string;
+  enhanced_download_url?: string;
   files_expired?: boolean;
   metrics: ImageMetrics;
   enhanced_metrics?: ImageMetrics;
@@ -166,6 +173,14 @@ export interface ResultImage {
   duplicate_group_id?: string;
   ai_tags?: AIImageTags;
   tagging_result?: SimilarityTaggingResult;
+  processing_standard_id?: string | null;
+  processing_standard_name?: string | null;
+  activation_reason?: string | null;
+  audit_dimensions?: Array<{
+    dimension: string;
+    passed: boolean;
+    reason: string;
+  }>;
 }
 
 export interface JobResults {
@@ -214,6 +229,23 @@ export interface ProcessingProfile extends ProfileOption {
   version: number;
 }
 
+export interface ProcessingStandard extends ProfileOption {
+  profile_type: "standard";
+  activation_rule: string;
+  filter_rule: string;
+  priority: number;
+  version: number;
+}
+
+export interface SaveProcessingStandard {
+  name: string;
+  activation_rule: string;
+  filter_rule: string;
+  priority: number;
+  description: string;
+  expected_version?: number;
+}
+
 export interface ProfilePreview {
   description: string;
   config: Record<string, unknown>;
@@ -231,11 +263,15 @@ export interface SaveProcessingProfile {
 
 export interface AIModelConfig {
   enabled: boolean;
+  provider: string;
+  base_url: string;
+  model: string;
   api_key_configured: boolean;
 }
 
 export interface UpdateAIModelConfig {
   enabled: boolean;
+  model?: string;
   api_key?: string;
 }
 
@@ -253,6 +289,7 @@ export interface LibraryTagNode {
 export interface LibraryAsset {
   id: string;
   original_object_key: string;
+  thumbnail_object_key?: string | null;
   original_filename?: string | null;
   leaf_tag_node_id: string;
   tag_path: string[];

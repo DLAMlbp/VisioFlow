@@ -8,10 +8,12 @@ from src.core.exceptions import AppError
 from src.db.session import get_db_session
 from src.models.image_item import ImageItem
 from src.models.image_job import ImageJob
+from src.models.library_tag_node import LibraryTagNode
 from src.repositories.jobs import ImageJobRepository
 from src.schemas.jobs import (
     CreateImageJobRequest,
     CreateImageJobResponse,
+    ImageAuditDimensionResponse,
     ImageAITagsResponse,
     ImageItemStatus,
     ImageJobHistoryItemResponse,
@@ -24,9 +26,21 @@ from src.schemas.jobs import (
     JobStatus,
 )
 from src.services.ai_model_config import load_ai_model_settings
+from src.services.images.processing_vision import (
+    filter_dimensions_from_processing_json,
+    selected_standard_from_processing_json,
+)
+from src.services.jobs.callback_security import (
+    CallbackConfigurationError,
+    validate_callback_destination,
+)
 from src.services.jobs.dispatch import JobDispatchTaskPublisher, TaskPublisher
 from src.services.jobs.ids import build_image_id, build_job_id
-from src.services.managed_profiles import ManagedProfileService
+from src.services.managed_profiles import (
+    ManagedProfileService,
+    neutral_beautify_snapshot,
+    standards_from_snapshots,
+)
 from src.services.profiles import ProfileLoader, ProfileNotFoundError
 
 
@@ -54,30 +68,68 @@ class ImageJobService:
     async def create_job(self, payload: CreateImageJobRequest) -> CreateImageJobResponse:
         if len(payload.images) > self.settings.max_images_per_job:
             raise InvalidJobRequest(f"单个 Job 最多支持 {self.settings.max_images_per_job} 张图片")
+        if payload.callback_url:
+            try:
+                validate_callback_destination(
+                    str(payload.callback_url),
+                    production=self.settings.app_env == "production",
+                    allowed_hosts=self.settings.callback_allowed_hosts,
+                )
+            except CallbackConfigurationError as exc:
+                raise InvalidJobRequest(str(exc)) from exc
         filter_snapshot = None
-        beautify_snapshot = None
+        beautify_snapshot = (
+            None if payload.beautify_enabled else neutral_beautify_snapshot()
+        )
+        standard_snapshots = None
         if self.profile_loader is not None:
             try:
                 if hasattr(self.repository, "session"):
                     manager = ManagedProfileService(self.repository.session, self.settings)
-                    _, filter_snapshot = await manager.resolve_filter(payload.filter_profile)
-                    _, beautify_snapshot = await manager.resolve_beautify(
-                        payload.beautify_profile
-                    )
+                    if payload.filter_enabled and payload.processing_standards:
+                        resolved = await manager.resolve_standards(payload.processing_standards)
+                        standard_snapshots = [snapshot for _, snapshot in resolved]
+                    elif payload.filter_enabled:
+                        _, filter_snapshot = await manager.resolve_filter(payload.filter_profile or "")
+                    if payload.beautify_enabled:
+                        _, beautify_snapshot = await manager.resolve_beautify(
+                            payload.beautify_profile or ""
+                        )
+                    else:
+                        beautify_snapshot = neutral_beautify_snapshot()
                 else:
                     raise RuntimeError("托管处理标准需要数据库会话")
-                self.profile_loader.get_similarity_profile(payload.similarity_profile)
+                if payload.similarity_enabled:
+                    self.profile_loader.get_similarity_profile(payload.similarity_profile)
+                if payload.similarity_enabled and payload.library_scope_node_id:
+                    scope = await self.repository.session.get(
+                        LibraryTagNode, payload.library_scope_node_id
+                    )
+                    if scope is None or scope.status != "active":
+                        raise ProfileNotFoundError("素材匹配范围不存在或已停用")
             except ProfileNotFoundError as exc:
                 raise InvalidJobRequest(exc.args[0]) from exc
 
         job = ImageJob(
             id=build_job_id(),
             status=JobStatus.QUEUED.value,
-            filter_profile_id=payload.filter_profile,
-            beautify_profile_id=payload.beautify_profile,
+            filter_profile_id=(
+                payload.filter_profile or ("conditional_standard_v1" if payload.filter_enabled else "system_passthrough")
+            ),
+            beautify_profile_id=(
+                payload.beautify_profile or ("conditional_standard_v1" if payload.beautify_enabled else "system_delivery")
+            ),
             filter_profile_snapshot=filter_snapshot,
             beautify_profile_snapshot=beautify_snapshot,
+            processing_standard_snapshots=standard_snapshots,
+            filter_enabled=payload.filter_enabled,
+            beautify_enabled=payload.beautify_enabled,
+            similarity_enabled=payload.similarity_enabled,
             similarity_profile_id=payload.similarity_profile,
+            unmatched_standard_policy=payload.unmatched_standard_policy,
+            library_scope_node_id=(
+                payload.library_scope_node_id if payload.similarity_enabled else None
+            ),
             ai_tagging_model=self.settings.ai_tagging_model if self.settings.ai_tagging_enabled else None,
             enhance_level=payload.enhance_level,
             max_selected=payload.max_selected,
@@ -173,12 +225,29 @@ class ImageJobService:
         result_total, result_items = await self.repository.list_result_items(
             job_id, limit=limit, offset=offset, decision=decision
         )
+        job_config = (
+            await self.repository.get_config(job_id)
+            if hasattr(self.repository, "get_config")
+            else None
+        )
+        standard_names = {
+            standard.id: standard.name or standard.description
+            for standard in standards_from_snapshots(
+                job_config.processing_standard_snapshots if job_config else None
+            )
+        }
         images = []
         for item in result_items:
             result = item.result
             metric = item.metric
             if result is None:
                 continue
+            selected_standard_id, activation_reason = selected_standard_from_processing_json(
+                item.ai_processing_json
+            )
+            audit_dimensions = filter_dimensions_from_processing_json(
+                item.ai_processing_json
+            )
             images.append(
                 ImageJobResultItemResponse(
                     image_id=item.id,
@@ -186,6 +255,8 @@ class ImageJobService:
                     score=result.final_score,
                     original_object_key=item.object_key,
                     enhanced_object_key=result.enhanced_object_key,
+                    original_preview_object_key=getattr(item, "thumbnail_object_key", None),
+                    enhanced_preview_object_key=getattr(item, "analysis_object_key", None),
                     files_expired=item.purged_at is not None,
                     reject_codes=result.reject_codes_json or [],
                     reasons=result.reasons_json or [],
@@ -231,6 +302,17 @@ class ImageJobService:
                         if item.similarity_match is not None
                         else None
                     ),
+                    processing_standard_id=selected_standard_id,
+                    processing_standard_name=standard_names.get(selected_standard_id or ""),
+                    activation_reason=activation_reason,
+                    audit_dimensions=[
+                        ImageAuditDimensionResponse(
+                            dimension=dimension.dimension,
+                            passed=dimension.passed,
+                            reason=dimension.reason,
+                        )
+                        for dimension in audit_dimensions
+                    ],
                 )
             )
         return ImageJobResultsResponse(

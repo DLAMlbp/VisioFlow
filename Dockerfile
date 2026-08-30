@@ -18,9 +18,14 @@ RUN pip install --no-cache-dir \
     && pip install --no-cache-dir . \
     && python -c "import open_clip; open_clip.create_model_and_transforms('ViT-B-32', pretrained='laion2b_s34b_b79k', device='cpu')"
 
+RUN groupadd --system app && useradd --system --gid app --home-dir /app app \
+    && chown -R app:app /app /opt/model-cache
+
 # Runtime containers are intentionally offline for model loading. The immutable
 # image must contain all weights so a processing job never blocks on a download.
 ENV HF_HUB_OFFLINE=1
+
+USER app
 
 EXPOSE 8000
 

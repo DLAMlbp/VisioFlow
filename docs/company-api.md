@@ -10,11 +10,18 @@
 API_KEY=
 INTEGRATION_API_KEY=
 AI_TAGGING_API_KEY=
+AI_CONFIG_ENCRYPTION_KEY=
+CALLBACK_SIGNING_SECRET=
+CALLBACK_ALLOWED_HOSTS=client.example.com
 ```
 
 - `API_KEY`：内部管理接口密钥，不提供给业务调用方。
 - `INTEGRATION_API_KEY`：公司业务服务调用本接口时使用。
 - `AI_TAGGING_API_KEY`：AI 中转站密钥，也可在管理前端中配置。
+
+- `AI_CONFIG_ENCRYPTION_KEY`：用于加密保存在 Redis 中的运行时 AI 密钥。
+- `CALLBACK_SIGNING_SECRET`：回调 HMAC-SHA256 签名密钥，至少 32 个字符。
+- `CALLBACK_ALLOWED_HOSTS`：允许接收回调的主机名白名单，多个值以逗号分隔。
 
 三个密钥不得复用，不得写入浏览器、App 或公开代码仓库。外部调用必须使用 HTTPS；当前 HTTP 地址只适合受控网络内联调。
 
@@ -28,12 +35,14 @@ X-API-Key: <INTEGRATION_API_KEY>
 
 创建请求必须包含 `callback_url`。该地址由调用方服务端提供，任务进入终态后由图片服务的 `control` Worker 主动 `POST` 完整结果。
 
+正式模式固定执行原图一次 AI 识别、逐项筛选、美化、首次识别标签绑定和素材匹配，不会对美化图再次调用视觉大模型。`processing_standards` 必须恰好传入两套互斥且完整覆盖的过滤标准 ID（逗号分隔），`beautify_profile` 必填。历史阶段开关字段仍保留在 v1，但传 `false` 会返回参数错误；`filter_profile` 不再用于创建正式任务。
+
 ```bash
 curl -X POST "https://<service-host>/api/v1/integration/jobs" \
   -H "X-API-Key: $INTEGRATION_API_KEY" \
-  -F "files=@living-room.jpg;type=image/jpeg" \
-  -F "files=@bedroom.png;type=image/png" \
-  -F "filter_profile=<标准管理中的过滤标准 ID>" \
+  -F "files=@product-front.jpg;type=image/jpeg" \
+  -F "files=@product-side.png;type=image/png" \
+  -F "processing_standards=<条件标准 ID 1>,<条件标准 ID 2>" \
   -F "beautify_profile=<标准管理中的美化标准 ID>" \
   -F "callback_url=https://client.example.com/api/image-callback" \
   -F "max_selected=10"
@@ -54,9 +63,11 @@ POST {callback_url}
 Content-Type: application/json
 X-Callback-Event: image.job.finished
 X-Callback-Id: <event_id>
+X-Callback-Timestamp: <Unix 秒时间戳>
+X-Callback-Signature: sha256=<HMAC 十六进制摘要>
 ```
 
-回调体包含 `event_id`、`job_id`、`status`、`completed_at`、结果计数、限时下载地址和逐图结果。接收方返回任意 HTTP 2xx 即视为成功。非 2xx、连接失败或超时会指数退避重试，默认最多 5 次。回调采用至少一次投递语义，接收方必须按 `event_id` 幂等处理。
+回调体包含 `event_id`、`job_id`、`status`、`completed_at`、结果计数、限时下载地址和逐图结果。签名原文为 UTF-8 字节串 `<timestamp>.<raw_request_body>`，使用双方共享密钥计算 HMAC-SHA256；接收方应使用常量时间比较，并拒绝时间戳偏差过大的请求。接收方返回任意 HTTP 2xx 即视为成功。非 2xx、连接失败或超时会指数退避重试，默认最多 5 次。回调采用至少一次投递语义，接收方必须按 `event_id` 幂等处理。
 
 ```json
 {

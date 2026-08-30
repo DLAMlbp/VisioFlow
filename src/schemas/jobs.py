@@ -1,7 +1,8 @@
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 from src.services.storage.keys import validate_object_key
 
@@ -49,13 +50,31 @@ class CreateJobImage(BaseModel):
 
 
 class CreateImageJobRequest(BaseModel):
-    filter_profile: str = Field(min_length=1, max_length=80)
-    beautify_profile: str = Field(min_length=1, max_length=80)
+    processing_standards: list[str] = Field(default_factory=list, max_length=2)
+    filter_profile: str | None = Field(default=None, min_length=1, max_length=80)
+    beautify_profile: str | None = Field(default=None, min_length=1, max_length=80)
+    filter_enabled: bool = True
+    beautify_enabled: bool = True
+    similarity_enabled: bool = True
     similarity_profile: str = Field(default="library_similarity_v2", min_length=1, max_length=80)
+    unmatched_standard_policy: Literal["reject"] = "reject"
+    library_scope_node_id: str | None = Field(default=None, min_length=1, max_length=40)
     enhance_level: int = Field(default=1, ge=0, le=2)
     max_selected: int = Field(default=10, ge=1)
     images: list[CreateJobImage] = Field(min_length=1)
     callback_url: HttpUrl | None = None
+
+    @model_validator(mode="after")
+    def require_processing_configuration(self):
+        if not (self.filter_enabled and self.beautify_enabled and self.similarity_enabled):
+            raise ValueError("正式模式固定执行一次识别、条件筛选、美化、标签绑定和素材匹配")
+        if len(self.processing_standards) != 2:
+            raise ValueError("必须选择两套互斥且完整覆盖的过滤标准")
+        if len(set(self.processing_standards)) != 2:
+            raise ValueError("条件过滤标准不能重复")
+        if not self.beautify_profile:
+            raise ValueError("请选择独立的美化标准")
+        return self
 
 
 class CreateImageJobResponse(BaseModel):
@@ -125,12 +144,20 @@ class ImageSimilarityResultResponse(BaseModel):
     message: str
 
 
+class ImageAuditDimensionResponse(BaseModel):
+    dimension: str
+    passed: bool
+    reason: str
+
+
 class ImageJobResultItemResponse(BaseModel):
     image_id: str
     decision: ImageItemStatus
     score: float | None = None
     original_object_key: str
     enhanced_object_key: str | None = None
+    original_preview_object_key: str | None = None
+    enhanced_preview_object_key: str | None = None
     files_expired: bool = False
     reject_codes: list[str] = Field(default_factory=list)
     reasons: list[str] = Field(default_factory=list)
@@ -138,6 +165,10 @@ class ImageJobResultItemResponse(BaseModel):
     enhanced_metrics: ImageMetricsResponse | None = None
     ai_tags: ImageAITagsResponse | None = None
     tagging_result: ImageSimilarityResultResponse | None = None
+    processing_standard_id: str | None = None
+    processing_standard_name: str | None = None
+    activation_reason: str | None = None
+    audit_dimensions: list[ImageAuditDimensionResponse] = Field(default_factory=list)
 
 
 class ImageJobResultsResponse(BaseModel):

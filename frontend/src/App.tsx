@@ -32,6 +32,7 @@ import type {
   JobHistoryResponse,
   JobProgress,
   JobResults,
+  LibraryTagNode,
   ProfileOption,
   ResultImage,
   ResultFilter,
@@ -50,13 +51,8 @@ const PAGE_SIZE = 50;
 const fallbackSimilarityProfiles: ProfileOption[] = [
   {
     id: "library_similarity_v2",
-    name: "装修场景智能匹配（推荐）",
-    description: "两项分数都达到 60% 自动匹配，任一分数低于 60% 无法识别并等待人工复核。"
-  },
-  {
-    id: "library_similarity_v1",
-    name: "装修场景严格匹配",
-    description: "两项分数都达到 60% 自动匹配，任一分数低于 60% 无法识别并等待人工复核。"
+    name: "素材库智能匹配",
+    description: "图片相似度和综合分都达到 60% 时自动继承参考素材标签，否则进入人工复核。"
   }
 ];
 
@@ -65,12 +61,17 @@ function App() {
   const itemsRef = useRef<UploadItem[]>([]);
   const operationVersionRef = useRef(0);
   const [items, setItems] = useState<UploadItem[]>([]);
-  const [filterProfiles, setFilterProfiles] = useState<ProfileOption[]>([]);
+  const [processingStandards, setProcessingStandards] = useState<ProfileOption[]>([]);
   const [beautifyProfiles, setBeautifyProfiles] = useState<ProfileOption[]>([]);
   const [similarityProfiles, setSimilarityProfiles] = useState<ProfileOption[]>(fallbackSimilarityProfiles);
-  const [filterProfile, setFilterProfile] = useState("");
+  const [selectedStandardIds, setSelectedStandardIds] = useState<string[]>([]);
   const [beautifyProfile, setBeautifyProfile] = useState("");
   const [similarityProfile, setSimilarityProfile] = useState("library_similarity_v2");
+  const [libraryScopes, setLibraryScopes] = useState<LibraryTagNode[]>([]);
+  const [libraryScopeNodeId, setLibraryScopeNodeId] = useState("");
+  const filterEnabled = true;
+  const beautifyEnabled = true;
+  const similarityEnabled = true;
   const [job, setJob] = useState<JobProgress | null>(null);
   const [results, setResults] = useState<JobResults | null>(null);
   const [selectedImage, setSelectedImage] = useState<ResultImage | null>(null);
@@ -92,7 +93,10 @@ function App() {
 
   const uploadedCount = items.filter((item) => item.status === "uploaded").length;
   const failedCount = items.filter((item) => item.status === "failed").length;
-  const canCreateJob = items.some((item) => item.file) && Boolean(filterProfile) && Boolean(beautifyProfile) && !busy;
+  const canCreateJob = items.some((item) => item.file)
+    && (!filterEnabled || selectedStandardIds.length === 2)
+    && (!beautifyEnabled || Boolean(beautifyProfile))
+    && !busy;
   const currentStep = results
     ? 4
     : job?.status === "tagging"
@@ -135,16 +139,36 @@ function App() {
   }
 
   async function reloadProcessingProfiles() {
-    const [filters, beautify] = await Promise.all([api.getFilterProfiles(), api.getBeautifyProfiles()]);
-    setFilterProfiles(filters);
+    const [standards, beautify] = await Promise.all([
+      api.getProcessingStandards(),
+      api.getBeautifyProfiles()
+    ]);
+    setProcessingStandards(standards);
     setBeautifyProfiles(beautify);
-    setFilterProfile((current) => filters.some((item) => item.id === current) ? current : filters[0]?.id ?? "");
-    setBeautifyProfile((current) => beautify.some((item) => item.id === current) ? current : beautify[0]?.id ?? "");
+    setSelectedStandardIds((current) => {
+      const retained = current.filter((id) => standards.some((item) => item.id === id));
+      return retained.length === 2 ? retained : standards.slice(0, 2).map((item) => item.id);
+    });
+    setBeautifyProfile((current) => (
+      beautify.some((item) => item.id === current) ? current : (beautify[0]?.id ?? "")
+    ));
+  }
+
+  function toggleProcessingStandard(standardId: string) {
+    setSelectedStandardIds((current) => current.includes(standardId)
+      ? current.filter((id) => id !== standardId)
+      : current.length < 2 ? [...current, standardId] : current);
   }
 
   useEffect(() => {
-    void reloadProcessingProfiles().catch(() => undefined);
-    api.getSimilarityProfiles().then(setSimilarityProfiles).catch(() => undefined);
+    const reportStartupError = (error: unknown) => {
+      setMessage(error instanceof Error ? error.message : "正式后端初始化失败");
+    };
+    void reloadProcessingProfiles().catch(reportStartupError);
+    api.getSimilarityProfiles().then(setSimilarityProfiles).catch(reportStartupError);
+    api.getLibraryTagTree().then((nodes) => {
+      setLibraryScopes(nodes.filter((node) => node.status === "active"));
+    }).catch(reportStartupError);
   }, []);
 
   useEffect(() => {
@@ -224,6 +248,21 @@ function App() {
     );
     if (!isCurrentOperation(operationVersion)) return;
     setResults(nextResults);
+    setJob((current) => current?.job_id === jobId ? {
+      ...current,
+      selected: nextResults.summary.selected,
+      rejected: nextResults.summary.rejected,
+      not_selected: nextResults.summary.not_selected
+    } : current);
+    setHistory((current) => current ? {
+      ...current,
+      items: current.items.map((entry) => entry.job_id === jobId ? {
+        ...entry,
+        selected: nextResults.summary.selected,
+        rejected: nextResults.summary.rejected,
+        not_selected: nextResults.summary.not_selected
+      } : entry)
+    } : current);
     setSelectedImage((current) =>
       nextResults.images.find((image) => image.image_id === current?.image_id)
       ?? nextResults.images.find((image) => image.decision === "selected")
@@ -356,6 +395,7 @@ function App() {
     try {
       const updated = await api.updateAIModelConfig({
         enabled: modelConfig.enabled,
+        model: modelConfig.model.trim(),
         ...(modelApiKey.trim() ? { api_key: modelApiKey.trim() } : {})
       });
       setModelConfig(updated);
@@ -432,9 +472,14 @@ function App() {
       const uploadable = items.filter((item) => item.file);
       uploadable.forEach((item) => updateItem(item.id, { status: "presigning", error: undefined }, operationVersion));
       const batch = await api.createUploadBatch({
-        filter_profile: filterProfile,
-        beautify_profile: beautifyProfile,
+        processing_standards: selectedStandardIds,
+        beautify_profile: beautifyEnabled ? beautifyProfile : undefined,
+        filter_enabled: filterEnabled,
+        beautify_enabled: beautifyEnabled,
+        similarity_enabled: similarityEnabled,
         similarity_profile: similarityProfile,
+        unmatched_standard_policy: "reject",
+        library_scope_node_id: similarityEnabled && libraryScopeNodeId ? libraryScopeNodeId : undefined,
         enhance_level: 1,
         max_selected: uploadable.length,
         files: uploadable.map((item) => ({
@@ -528,7 +573,7 @@ function App() {
           <button className={activeWorkspace === "profiles" ? "active" : ""} type="button" aria-current={activeWorkspace === "profiles" ? "page" : undefined} onClick={() => setActiveWorkspace("profiles")}><SlidersHorizontal size={16} aria-hidden="true" />标准管理</button>
         </nav>
         <div className="topbar-actions">
-          <span className="mode-pill">{import.meta.env.VITE_USE_MOCK_API === "false" ? "真实处理" : "模拟演示"}</span>
+          <span className="mode-pill">正式模式</span>
           <button className="model-config-button" type="button" aria-label="配置 AI" title="配置 AI" onClick={() => void openModelConfig()}>
             <SlidersHorizontal size={17} aria-hidden="true" />
             <span>AI 配置</span>
@@ -579,11 +624,13 @@ function App() {
               <button className="icon-button" type="button" aria-label="关闭 AI 配置" onClick={() => setModelConfigOpen(false)} disabled={modelConfigSaving}><X size={17} aria-hidden="true" /></button>
             </div>
             {modelConfigLoading || !modelConfig ? <div className="model-config-loading"><Loader2 className="spin" size={20} aria-hidden="true" />正在读取配置</div> : <>
-              <label className="config-toggle"><input type="checkbox" checked={modelConfig.enabled} onChange={(event) => setModelConfig({ ...modelConfig, enabled: event.target.checked })} /><span>启用 AI 标签</span></label>
+              <label className="config-toggle"><input type="checkbox" checked={modelConfig.enabled} onChange={(event) => setModelConfig({ ...modelConfig, enabled: event.target.checked })} /><span>启用原图 AI 识别、过滤与美化规划</span></label>
+              <label className="config-field">模型<input value={modelConfig.model} maxLength={120} onChange={(event) => setModelConfig({ ...modelConfig, model: event.target.value })} /></label>
+              <label className="config-field">接口地址<input value={modelConfig.base_url} readOnly /></label>
               <label className="config-field">API Key<input type="password" value={modelApiKey} onChange={(event) => setModelApiKey(event.target.value)} placeholder={modelConfig.api_key_configured ? "已配置，留空则保持不变" : "请输入 API Key"} autoComplete="new-password" /></label>
               <a className="config-key-link" href="https://router.keenlight.ai/home" target="_blank" rel="noreferrer">获取</a>
-              <p className="config-note">API Key 仅保存在服务端且不会在页面回显；接口地址和模型由服务端统一配置。</p>
-              <div className="model-config-actions"><button className="ghost-button" type="button" onClick={() => setModelConfigOpen(false)} disabled={modelConfigSaving}>取消</button><button className="primary-button" type="button" onClick={() => void saveModelConfig()} disabled={modelConfigSaving}>{modelConfigSaving && <Loader2 className="spin" size={16} aria-hidden="true" />}{modelConfigSaving ? "保存中" : "保存配置"}</button></div>
+              <p className="config-note">API Key 仅保存在服务端且不会在页面回显；模型配置会冻结到新任务记录中。</p>
+              <div className="model-config-actions"><button className="ghost-button" type="button" onClick={() => setModelConfigOpen(false)} disabled={modelConfigSaving}>取消</button><button className="primary-button" type="button" onClick={() => void saveModelConfig()} disabled={modelConfigSaving || !modelConfig.model.trim()}>{modelConfigSaving && <Loader2 className="spin" size={16} aria-hidden="true" />}{modelConfigSaving ? "保存中" : "保存配置"}</button></div>
             </>}
           </section>
         </div>
@@ -596,12 +643,12 @@ function App() {
             <span className="panel-kicker">BATCH ENHANCE</span>
             <div>
               <h2>图片处理</h2>
-              <p>批量筛选装修照片，并自然优化可用图片。</p>
+              <p>按自定义规则批量筛选、优化并标记各类图片。</p>
             </div>
           </div>
 
           <div className="step-section">
-            <div className="step-heading"><span>1</span><div><h3>上传图片</h3><p>支持一次导入多张现场照片</p></div></div>
+            <div className="step-heading"><span>1</span><div><h3>上传图片</h3><p>支持一次导入多张不同类型的图片</p></div></div>
             <section
               className={`upload-zone ${dragActive ? "is-dragging" : ""}`}
               onDragEnter={(event) => { event.preventDefault(); setDragActive(true); }}
@@ -611,7 +658,7 @@ function App() {
             >
               <div className="drop-target">
                 <UploadCloud size={26} aria-hidden="true" />
-                <div><strong>上传装修照片</strong><span>点击选择或拖入图片</span></div>
+                <div><strong>上传图片</strong><span>点击选择或拖入图片</span></div>
                 <input ref={fileInputRef} id="filePicker" type="file" accept="image/*" multiple onChange={onFileChange} />
                 <button className="secondary-button" type="button" onClick={() => fileInputRef.current?.click()}><FileImage size={16} aria-hidden="true" />选择图片</button>
               </div>
@@ -626,32 +673,43 @@ function App() {
           </div>
 
           <div className="step-section">
-            <div className="step-heading"><span>2</span><div><h3>处理标准</h3><p>为本次任务选择质量筛选和美化方案</p></div></div>
-            <div className="field-stack">
-              <label htmlFor="filterProfile">筛选标准</label>
-            <select id="filterProfile" value={filterProfile} onChange={(event) => setFilterProfile(event.target.value)}>
-              {!filterProfiles.length && <option value="">请先在标准管理中新建过滤标准</option>}
-              {filterProfiles.map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {profile.name}
-                </option>
+            <div className="step-heading"><span>2</span><div><h3>处理与匹配设置</h3><p>固定执行一次 AI 识别、条件筛选、独立美化、标签绑定和素材匹配</p></div></div>
+            <div className="field-stack standard-choice-list">
+              <label>正式处理流水线</label>
+              <p>原图一次 AI 识别 → 二选一启动标准 → 逐项过滤 → 独立美化 → 将首次识别标签绑定到美化图 → 素材库匹配，不重复调用视觉大模型。</p>
+            </div>
+            <div className="field-stack standard-choice-list">
+              <label>条件过滤标准（必须选择两套）</label>
+              {processingStandards.length !== 2 && <p>请在标准管理中配置且仅启用两套互斥、完整覆盖的过滤标准。</p>}
+              {processingStandards.map((standard) => (
+                <label className="standard-choice" key={standard.id}>
+                  <input type="checkbox" checked={selectedStandardIds.includes(standard.id)} onChange={() => toggleProcessingStandard(standard.id)} />
+                  <span><strong>{standard.name}</strong><small>{standard.description}</small></span>
+                </label>
               ))}
-            </select>
-            <p>{filterProfiles.find((profile) => profile.id === filterProfile)?.description}</p>
+              {processingStandards.length > 0 && selectedStandardIds.length !== 2 && <p>每个任务必须且只能选择两套标准。</p>}
             </div>
             <div className="field-stack">
-              <label htmlFor="beautifyProfile">美化标准</label>
-            <select id="beautifyProfile" value={beautifyProfile} onChange={(event) => setBeautifyProfile(event.target.value)}>
-              {!beautifyProfiles.length && <option value="">请先在标准管理中新建美化标准</option>}
-              {beautifyProfiles.map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {profile.name}
-                </option>
-              ))}
-            </select>
-            <p>{beautifyProfiles.find((profile) => profile.id === beautifyProfile)?.description}</p>
+              <label htmlFor="beautifyProfile">美化标准{beautifyEnabled ? "" : "（已跳过）"}</label>
+              <select id="beautifyProfile" disabled={!beautifyEnabled} value={beautifyProfile} onChange={(event) => setBeautifyProfile(event.target.value)}>
+                <option value="" disabled>请选择美化标准</option>
+                {beautifyProfiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name}
+                  </option>
+                ))}
+              </select>
+              <p>{beautifyEnabled ? beautifyProfiles.find((profile) => profile.id === beautifyProfile)?.description ?? "过滤通过后，统一按这套独立标准生成美化图。" : "关闭后保持原始画面，仅校正方向并生成标准交付文件。"}</p>
             </div>
-            <div className="field-stack">
+            {similarityEnabled && <div className="field-stack">
+              <label htmlFor="libraryScope">素材匹配范围</label>
+              <select id="libraryScope" value={libraryScopeNodeId} onChange={(event) => setLibraryScopeNodeId(event.target.value)}>
+                <option value="">全部启用素材</option>
+                {libraryScopes.map((node) => <option key={node.id} value={node.id}>{node.name}</option>)}
+              </select>
+              <p>选择一个标签树根节点后，只会在该业务素材范围内检索，避免跨场景误匹配。</p>
+            </div>}
+            {similarityEnabled && <div className="field-stack">
               <label htmlFor="similarityProfile">相似匹配标准</label>
               <select id="similarityProfile" value={similarityProfile} onChange={(event) => setSimilarityProfile(event.target.value)}>
                 {similarityProfiles.map((profile) => (
@@ -661,7 +719,7 @@ function App() {
                 ))}
               </select>
               <p>{similarityProfiles.find((profile) => profile.id === similarityProfile)?.description}</p>
-            </div>
+            </div>}
           </div>
 
           <button className="primary-button" type="button" onClick={startJob} disabled={!canCreateJob}>
@@ -672,7 +730,7 @@ function App() {
 
         <section className="result-stage" aria-label="生成结果">
           <div className="result-stage-heading"><div><h2>生成结果</h2><p>{results ? "结果会按处理顺序排列" : "完成上传并处理后，结果将在这里出现"}</p></div></div>
-          {!results && <div className="result-empty"><span><Sparkles size={25} aria-hidden="true" /></span><strong>从一组现场照片，整理出可用成果</strong><p>在左侧上传照片并选择处理标准。每张图片都会独立筛选、美化和打标签。</p></div>}
+          {!results && <div className="result-empty"><span><Sparkles size={25} aria-hidden="true" /></span><strong>从一组图片中整理出可用结果</strong><p>在左侧上传图片并配置处理阶段，平台会按本次任务设置逐张处理。</p></div>}
           {results && <ResultsPanel results={results} averageScore={averageScore} resultFilter={resultFilter} visibleResults={visibleResults} selectedImage={selectedImage} page={resultPage} onFilterChange={(filter) => void changeResultPage(0, filter)} onPageChange={(page) => void changeResultPage(page)} onSelectImage={setSelectedImage} onReviewResolved={applyReviewResult} onRetry={(imageId) => void retryImage(imageId)} />}
         </section>
       </div>
@@ -684,7 +742,7 @@ function App() {
             <div>
               <h2>{statusLabel(job.status)}</h2>
               <p>
-                {job.processed}/{job.total} 已处理，{job.selected} 已保留，{job.rejected} 未通过
+                {job.processed}/{job.total} 已处理，{job.selected} 已保留，{job.rejected} 未通过，{job.not_selected} 合格未入选
               </p>
               <div className="stage-counts">
                 {Object.entries(job.stage_counts).filter(([, count]) => count > 0).map(([stage, count]) => <span key={stage}>{stageCountLabel(stage)} {count}</span>)}
@@ -801,7 +859,7 @@ function HistoryPanel({
               <span>{formatHistoryDate(entry.created_at)}</span>
               <span>{formatProcessingDuration(entry.created_at, entry.completed_at)}</span>
               <span>{entry.processed}/{entry.total} 已处理</span>
-              <span>{entry.selected} 保留，{entry.rejected} 淘汰</span>
+              <span>{entry.selected} 保留，{entry.rejected} 淘汰，{entry.not_selected} 合格未入选</span>
               <ChevronRight size={18} aria-hidden="true" />
             </button>
           ))}
@@ -876,7 +934,7 @@ function ResultCard({ image, active, onOpen }: { image: ResultImage; active: boo
     <article className={`result-card ${active ? "active" : ""}`}>
       <button type="button" onClick={onOpen} aria-label={`查看 ${image.image_id} 详情`}>
         {previewUrl ? (
-          <img src={previewUrl} alt={`${image.image_id} 预览`} loading="lazy" />
+          <img src={previewUrl} alt={`${image.image_id} 预览`} loading="lazy" decoding="async" />
         ) : (
           <span>预览暂不可用</span>
         )}
@@ -890,6 +948,7 @@ function ResultCard({ image, active, onOpen }: { image: ResultImage; active: boo
         <SimilarityScore similarity={image.tagging_result?.similarity} />
       </div>
       <p>{primaryReason}</p>
+      {image.processing_standard_name && <p className="standard-match-note">处理标准：{image.processing_standard_name}</p>}
       {image.tagging_result?.decision === "matched" && image.tagging_result.tag_path.length ? (
         <div className="tag-row" aria-label="AI 自动标签">
           {image.tagging_result.tag_path.slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}
@@ -904,18 +963,20 @@ function ImageDetail({ image, onReviewResolved, onRetry }: { image: ResultImage;
   const [showEnhanced, setShowEnhanced] = useState(true);
   const [compare, setCompare] = useState(50);
   const imageUrl = showEnhanced && image.enhanced_url ? image.enhanced_url : image.original_url;
-  const openUrl = image.enhanced_url ?? image.original_url;
+  const openUrl = image.enhanced_download_url ?? image.original_download_url
+    ?? image.enhanced_url ?? image.original_url;
 
   return (
     <>
       <div className="detail-preview">
         {image.original_url && image.enhanced_url && showEnhanced ? (
           <div className="compare-viewer">
-            <img src={image.original_url} alt={`${image.image_id} 原图`} />
+            <img src={image.original_url} alt={`${image.image_id} 原图`} decoding="async" />
             <img
               className="compare-enhanced"
               src={image.enhanced_url}
               alt={`${image.image_id} 美化图`}
+              decoding="async"
               style={{ clipPath: `inset(0 ${100 - compare}% 0 0)` }}
             />
             <span className="compare-line" style={{ left: `${compare}%` }} />
@@ -929,7 +990,7 @@ function ImageDetail({ image, onReviewResolved, onRetry }: { image: ResultImage;
             />
           </div>
         ) : imageUrl ? (
-          <img src={imageUrl} alt={`${image.image_id} 大图预览`} />
+          <img src={imageUrl} alt={`${image.image_id} 大图预览`} decoding="async" />
         ) : image.files_expired ? (
           <p>图片文件已过期，处理记录和标签仍保留。</p>
         ) : (
@@ -961,6 +1022,20 @@ function ImageDetail({ image, onReviewResolved, onRetry }: { image: ResultImage;
         <SimilarityScore similarity={image.tagging_result?.similarity} />
       </div>
       {image.decision === "failed" && <button className="retry-image-button" type="button" onClick={() => onRetry(image.image_id)}><RefreshCw size={15} aria-hidden="true" />重试这张图片</button>}
+      {image.processing_standard_name && <div className="standard-match-detail"><strong>已启用标准：{image.processing_standard_name}</strong><p>{image.activation_reason}</p></div>}
+      {(image.audit_dimensions?.length ?? 0) > 0 && (
+        <section className="audit-dimensions" aria-label="过滤审核明细">
+          <h3>过滤审核明细</h3>
+          <div className="audit-dimension-list">
+            {image.audit_dimensions?.map((dimension, index) => (
+              <div className={`audit-dimension ${dimension.passed ? "passed" : "failed"}`} key={`${dimension.dimension}-${index}`}>
+                <span>{dimension.passed ? "合格" : "不合格"}</span>
+                <div><strong>{dimension.dimension}</strong><p>{dimension.reason}</p></div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <div className="metrics-compare">
         <MetricList title="美化前" metrics={image.metrics} />
@@ -1164,7 +1239,7 @@ function stageCountLabel(stage: string): string {
     waiting: "等待",
     filtering: "过滤",
     beautifying: "美化",
-    content_analysis: "内容分析",
+    content_analysis: "标签绑定",
     matching: "匹配",
     completed: "完成",
     rejected: "淘汰",
@@ -1176,7 +1251,8 @@ function stageCountLabel(stage: string): string {
 
 function downloadCurrentPage(images: ResultImage[]) {
   images.forEach((image, index) => {
-    const url = image.enhanced_url ?? image.original_url;
+    const url = image.enhanced_download_url ?? image.original_download_url
+      ?? image.enhanced_url ?? image.original_url;
     if (!url) return;
     window.setTimeout(() => {
       const link = document.createElement("a");

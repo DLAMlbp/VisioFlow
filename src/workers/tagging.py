@@ -59,7 +59,6 @@ async def _generate_image_tags(image_id: str) -> None:
         job = await repository.get(item.job_id)
         if job is None:
             return
-
         settings = load_ai_model_settings(get_settings())
         similarity_profile = ProfileLoader(settings).get_similarity_profile(
             job.similarity_profile_id
@@ -82,7 +81,9 @@ async def _generate_image_tags(image_id: str) -> None:
             try:
                 embedding = await OpenClipImageEmbedder(settings).embed(image_bytes)
                 similar_assets = await library_repository.find_similar_assets(
-                    embedding, similarity_profile.similarity_candidate_limit
+                    embedding,
+                    similarity_profile.similarity_candidate_limit,
+                    job.library_scope_node_id,
                 )
                 nodes = {node.id: node for node in await library_repository.list_tag_nodes()}
                 scored: list[ScoredCandidate] = []

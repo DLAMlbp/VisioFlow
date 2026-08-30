@@ -18,7 +18,9 @@ def _files(count: int) -> list[dict[str, object]]:
 
 def test_upload_batch_accepts_500_images() -> None:
     payload = CreateUploadBatchRequest(
-        filter_profile="flt_user", beautify_profile="bty_user", files=_files(500)
+        processing_standards=["std_finished", "std_unfinished"],
+        beautify_profile="bty_user",
+        files=_files(500),
     )
 
     assert len(payload.files) == 500
@@ -27,7 +29,9 @@ def test_upload_batch_accepts_500_images() -> None:
 def test_upload_batch_rejects_more_than_500_images() -> None:
     with pytest.raises(ValidationError):
         CreateUploadBatchRequest(
-            filter_profile="flt_user", beautify_profile="bty_user", files=_files(501)
+            processing_standards=["std_finished", "std_unfinished"],
+            beautify_profile="bty_user",
+            files=_files(501),
         )
 
 
@@ -38,3 +42,12 @@ def test_batch_pipeline_defaults_are_server_ready() -> None:
     assert settings.job_dispatch_chunk_size == 25
     assert settings.image_retention_days == 30
     assert settings.inference_device == "auto"
+
+
+def test_upload_batch_requires_exactly_two_standards() -> None:
+    with pytest.raises(ValidationError):
+        CreateUploadBatchRequest(
+            processing_standards=["std_finished"],
+            beautify_profile="bty_user",
+            files=_files(1),
+        )

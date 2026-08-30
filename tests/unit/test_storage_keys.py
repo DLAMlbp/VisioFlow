@@ -7,6 +7,7 @@ from src.core.exceptions import InvalidUploadRequest
 from src.schemas.uploads import PresignedUploadRequest
 from src.services.storage.keys import (
     build_enhanced_object_key,
+    build_library_thumbnail_object_key,
     build_upload_object_key,
     validate_object_key,
     validate_upload_request,
@@ -15,6 +16,10 @@ from src.services.storage.keys import (
 
 def test_build_enhanced_object_key() -> None:
     assert build_enhanced_object_key("job_test", "img_test") == "enhanced/job_test/img_test.jpg"
+
+
+def test_build_library_thumbnail_object_key() -> None:
+    assert build_library_thumbnail_object_key("ast_test") == "library-thumbnails/ast_test.jpg"
 
 
 def make_settings() -> Settings:

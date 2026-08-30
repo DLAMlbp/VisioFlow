@@ -26,7 +26,12 @@ from src.services.images.processing_vision import (
 from src.services.images.quality import QualityEngine
 from src.services.images.vision_rate_limit import acquire_vision_rate_slot
 from src.services.jobs.dispatch import EnhancementTaskPublisher, RankingTaskPublisher
-from src.services.managed_profiles import beautify_from_snapshot, filter_from_snapshot
+from src.services.managed_profiles import (
+    beautify_from_snapshot,
+    legacy_standard_from_snapshots,
+    passthrough_standard,
+    standards_from_snapshots,
+)
 from src.services.storage.factory import get_storage_provider
 from src.workers.celery_app import celery_app
 
@@ -84,9 +89,18 @@ async def _preprocess_image_metadata(image_id: str) -> None:
         job = await repository.get_config(item.job_id)
         if job is None:
             return
-        filter_profile = filter_from_snapshot(
-            job.filter_profile_snapshot, job.filter_profile_id, settings
-        )
+        standards = standards_from_snapshots(job.processing_standard_snapshots)
+        if not job.filter_enabled:
+            standards = [passthrough_standard()]
+        elif not standards:
+            standards = [
+                legacy_standard_from_snapshots(
+                    job.filter_profile_snapshot,
+                    job.beautify_profile_snapshot,
+                    job.filter_profile_id,
+                    job.beautify_profile_id,
+                )
+            ]
         beautify_profile = beautify_from_snapshot(
             job.beautify_profile_snapshot, job.beautify_profile_id, settings
         )
@@ -105,7 +119,9 @@ async def _preprocess_image_metadata(image_id: str) -> None:
             return
 
         beautify_service = NaturalBeautifyService()
-        neutral_beautify_profile = neutralize_beautify_profile(beautify_profile)
+        neutral_beautify_profile = neutralize_beautify_profile(
+            beautify_profile
+        )
         orientation_result = beautify_service.normalize_orientation(
             metadata.original_bytes,
             neutral_beautify_profile,
@@ -164,12 +180,13 @@ async def _preprocess_image_metadata(image_id: str) -> None:
             await acquire_vision_rate_slot(settings)
         ai_outcome = await ProcessingVisionService(settings).analyze(
             orientation_result.image_bytes,
-            filter_instruction=_profile_instruction(
-                job.filter_profile_snapshot, filter_profile.description
+            standards=standards,
+            beautify_instruction=(
+                _profile_instruction(job.beautify_profile_snapshot, beautify_profile.description)
+                if job.beautify_enabled
+                else "保持原始画面，不进行美化调整"
             ),
-            beautify_instruction=_profile_instruction(
-                job.beautify_profile_snapshot, beautify_profile.description
-            ),
+            unmatched_standard_policy=job.unmatched_standard_policy,
             image_context={
                 "width": normalized_width,
                 "height": normalized_height,
@@ -200,9 +217,27 @@ async def _preprocess_image_metadata(image_id: str) -> None:
             )
             await _advance_after_preprocess(repository, item)
             return
+        selection = ai_outcome.payload.standard_selection
+        if selection is None:
+            await repository.fail_item(
+                item,
+                "AI 未返回条件处理标准评估结果",
+            )
+            await _advance_after_preprocess(repository, item)
+            return
+        selected_standard = next(
+            (
+                standard
+                for standard in standards
+                if standard.id == selection.selected_standard_id
+            ),
+            None,
+        )
         if (
+            job.filter_enabled
+            and
             ai_outcome.status == "completed"
-            and ai_outcome.payload.filter.decision == "reject"
+            and ai_outcome.payload.filter.rejected
         ):
             await repository.reject_item(
                 item,
@@ -211,7 +246,17 @@ async def _preprocess_image_metadata(image_id: str) -> None:
             )
             await _advance_after_preprocess(repository, item)
             return
-        warnings.append(f"AI 筛选：{ai_outcome.payload.filter.reason}")
+        if not job.filter_enabled:
+            warnings.append("已跳过条件筛选")
+        elif selected_standard is not None:
+            warnings.append(
+                f"已启用处理标准：{selected_standard.name or selected_standard.description}；"
+                f"{selection.reason}"
+            )
+        else:
+            warnings.append(f"未命中条件处理标准；{selection.reason}")
+        if job.filter_enabled:
+            warnings.append(f"AI 筛选：{ai_outcome.payload.filter.reason}")
 
         await repository.complete_filter(
             item,

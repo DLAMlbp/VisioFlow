@@ -11,8 +11,10 @@ import type {
   ProfileOption,
   ProcessingProfile,
   ProcessingProfileType,
+  ProcessingStandard,
   ProfilePreview,
   SaveProcessingProfile,
+  SaveProcessingStandard,
   LibraryAsset,
   LibraryAssetList,
   LibraryTagNode,
@@ -20,10 +22,9 @@ import type {
   UpdateAIModelConfig,
   UploadBatchRegistration
 } from "../types";
-import { mockApi } from "./mockApi";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
-const USE_MOCK_API = import.meta.env.VITE_USE_MOCK_API !== "false";
+const REQUEST_TIMEOUT_MS = 30_000;
 
 interface BackendResultImage {
   image_id: string;
@@ -31,6 +32,8 @@ interface BackendResultImage {
   score: number | null;
   original_object_key: string;
   enhanced_object_key: string | null;
+  original_preview_object_key?: string | null;
+  enhanced_preview_object_key?: string | null;
   files_expired: boolean;
   reject_codes: string[];
   reasons: string[];
@@ -38,6 +41,14 @@ interface BackendResultImage {
   enhanced_metrics: JobResults["images"][number]["metrics"] | null;
   ai_tags: JobResults["images"][number]["ai_tags"] | null;
   tagging_result: JobResults["images"][number]["tagging_result"] | null;
+  processing_standard_id: string | null;
+  processing_standard_name: string | null;
+  activation_reason: string | null;
+  audit_dimensions: Array<{
+    dimension: string;
+    passed: boolean;
+    reason: string;
+  }>;
 }
 
 interface BackendJobResults {
@@ -54,14 +65,34 @@ interface BackendJobResults {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
-  headers.set("Content-Type", "application/json");
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers
-  });
+  if (init?.body) headers.set("Content-Type", "application/json");
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      headers,
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("服务响应超时，请稍后重试");
+    }
+    throw new Error("无法连接服务，请确认正式后端已启动");
+  } finally {
+    window.clearTimeout(timeout);
+  }
 
   if (!response.ok) {
-    const detail = await response.text();
+    const raw = await response.text();
+    let detail = raw;
+    try {
+      const payload = JSON.parse(raw) as { detail?: string; message?: string };
+      detail = payload.detail ?? payload.message ?? raw;
+    } catch {
+      // Keep the plain-text response when the server did not return JSON.
+    }
     throw new Error(detail || `请求失败：${response.status}`);
   }
 
@@ -69,9 +100,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export const api = USE_MOCK_API
-  ? mockApi
-  : {
+export const api = {
       presignUpload(payload: PresignRequest): Promise<PresignResponse> {
         return request<PresignResponse>("/api/v1/uploads/presign", {
           method: "POST",
@@ -91,9 +120,14 @@ export const api = USE_MOCK_API
         });
       },
       createUploadBatch(payload: {
-        filter_profile: string;
-        beautify_profile: string;
+        processing_standards: string[];
+        beautify_profile?: string;
+        filter_enabled: boolean;
+        beautify_enabled: boolean;
+        similarity_enabled: boolean;
         similarity_profile: string;
+        unmatched_standard_policy: "reject";
+        library_scope_node_id?: string;
         enhance_level: number;
         max_selected: number;
         files: PresignRequest[];
@@ -120,8 +154,14 @@ export const api = USE_MOCK_API
         if (decision) params.set("decision", decision);
         const result = await request<BackendJobResults>(`/api/v1/image/jobs/${jobId}/results?${params}`);
         const objectKeys = result.images.flatMap((image) => [
-          ...(image.files_expired ? [] : [image.original_object_key]),
-          ...(image.files_expired || !image.enhanced_object_key ? [] : [image.enhanced_object_key])
+          ...(image.files_expired ? [] : [
+            image.original_object_key,
+            image.original_preview_object_key ?? image.original_object_key
+          ]),
+          ...(image.files_expired || !image.enhanced_object_key ? [] : [
+            image.enhanced_object_key,
+            image.enhanced_preview_object_key ?? image.enhanced_object_key
+          ])
         ]);
         const downloadUrls = await getDownloadUrlsSafely(objectKeys);
         const images = result.images.map((image) => ({
@@ -129,8 +169,16 @@ export const api = USE_MOCK_API
             rank: null,
             score: image.score ?? 0,
             decision: image.decision,
-            original_url: downloadUrls.get(image.original_object_key),
+            original_url: downloadUrls.get(
+              image.original_preview_object_key ?? image.original_object_key
+            ),
             enhanced_url: image.enhanced_object_key
+              ? downloadUrls.get(
+                  image.enhanced_preview_object_key ?? image.enhanced_object_key
+                )
+              : undefined,
+            original_download_url: downloadUrls.get(image.original_object_key),
+            enhanced_download_url: image.enhanced_object_key
               ? downloadUrls.get(image.enhanced_object_key)
               : undefined,
             files_expired: image.files_expired,
@@ -140,7 +188,11 @@ export const api = USE_MOCK_API
             warnings: [],
             reject_codes: image.reject_codes,
             ai_tags: image.ai_tags ?? undefined,
-            tagging_result: image.tagging_result ?? undefined
+            tagging_result: image.tagging_result ?? undefined,
+            processing_standard_id: image.processing_standard_id,
+            processing_standard_name: image.processing_standard_name,
+            activation_reason: image.activation_reason,
+            audit_dimensions: image.audit_dimensions ?? []
           }));
         return {
           job_id: result.job_id,
@@ -167,6 +219,31 @@ export const api = USE_MOCK_API
       },
       getBeautifyProfiles(): Promise<ProfileOption[]> {
         return request<ProfileOption[]>("/api/v1/beautify-profiles");
+      },
+      getProcessingStandards(): Promise<ProfileOption[]> {
+        return request<ProfileOption[]>("/api/v1/processing-standards");
+      },
+      getProcessingStandard(profileId: string): Promise<ProcessingStandard> {
+        return request<ProcessingStandard>(`/api/v1/processing-standards/${profileId}`);
+      },
+      previewProcessingStandard(payload: {
+        activation_rule: string;
+        filter_rule: string;
+        priority: number;
+      }): Promise<ProfilePreview> {
+        return request<ProfilePreview>("/api/v1/processing-standards/preview", {
+          method: "POST",
+          body: JSON.stringify(payload)
+        });
+      },
+      saveProcessingStandard(profileId: string | null, payload: SaveProcessingStandard): Promise<ProcessingStandard> {
+        return request<ProcessingStandard>(
+          profileId ? `/api/v1/processing-standards/${profileId}` : "/api/v1/processing-standards",
+          { method: profileId ? "PUT" : "POST", body: JSON.stringify(payload) }
+        );
+      },
+      async deleteProcessingStandard(profileId: string): Promise<void> {
+        await request<void>(`/api/v1/processing-standards/${profileId}`, { method: "DELETE" });
       },
       getSimilarityProfiles(): Promise<ProfileOption[]> {
         return request<ProfileOption[]>("/api/v1/similarity-profiles");
@@ -209,7 +286,9 @@ export const api = USE_MOCK_API
         const result = await request<LibraryAssetList>(`/api/v1/library/assets${query}`);
         const items = await Promise.all(result.items.map(async (asset) => ({
           ...asset,
-          preview_url: await getDownloadUrlSafely(asset.original_object_key)
+          preview_url: await getDownloadUrlSafely(
+            asset.thumbnail_object_key ?? asset.original_object_key
+          )
         })));
         return { ...result, items };
       },
@@ -263,25 +342,66 @@ async function getDownloadUrl(objectKey: string): Promise<string> {
   return response.download_url;
 }
 
+const DOWNLOAD_URL_CACHE_TTL_MS = 10 * 60 * 1000;
+const downloadUrlCache = new Map<string, { url: string; expiresAt: number }>();
+
+function getCachedDownloadUrl(objectKey: string): string | undefined {
+  const cached = downloadUrlCache.get(objectKey);
+  if (!cached) return undefined;
+  if (cached.expiresAt <= Date.now()) {
+    downloadUrlCache.delete(objectKey);
+    return undefined;
+  }
+  return cached.url;
+}
+
+function cacheDownloadUrl(objectKey: string, url: string): void {
+  downloadUrlCache.set(objectKey, {
+    url,
+    expiresAt: Date.now() + DOWNLOAD_URL_CACHE_TTL_MS
+  });
+}
+
 async function getDownloadUrlSafely(objectKey: string): Promise<string | undefined> {
+  const cached = getCachedDownloadUrl(objectKey);
+  if (cached) return cached;
   try {
-    return await getDownloadUrl(objectKey);
+    const url = await getDownloadUrl(objectKey);
+    cacheDownloadUrl(objectKey, url);
+    return url;
   } catch {
     return undefined;
   }
 }
 
 async function getDownloadUrlsSafely(objectKeys: string[]): Promise<Map<string, string>> {
-  const uniqueKeys = Array.from(new Set(objectKeys)).slice(0, 100);
+  const uniqueKeys = Array.from(new Set(objectKeys));
   if (!uniqueKeys.length) return new Map();
+  const urls = new Map<string, string>();
+  const missingKeys: string[] = [];
+  uniqueKeys.forEach((objectKey) => {
+    const cached = getCachedDownloadUrl(objectKey);
+    if (cached) urls.set(objectKey, cached);
+    else missingKeys.push(objectKey);
+  });
+  if (!missingKeys.length) return urls;
   try {
-    const response = await request<{ items: Array<{ object_key: string; download_url: string }> }>(
-      "/api/v1/uploads/presign-download-batch",
-      { method: "POST", body: JSON.stringify({ object_keys: uniqueKeys }) }
-    );
-    return new Map(response.items.map((item) => [item.object_key, item.download_url]));
+    for (let index = 0; index < missingKeys.length; index += 100) {
+      const response = await request<{ items: Array<{ object_key: string; download_url: string }> }>(
+        "/api/v1/uploads/presign-download-batch",
+        {
+          method: "POST",
+          body: JSON.stringify({ object_keys: missingKeys.slice(index, index + 100) })
+        }
+      );
+      response.items.forEach((item) => {
+        cacheDownloadUrl(item.object_key, item.download_url);
+        urls.set(item.object_key, item.download_url);
+      });
+    }
+    return urls;
   } catch {
-    return new Map();
+    return urls;
   }
 }
 

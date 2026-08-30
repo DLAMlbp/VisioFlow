@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.db.base import Base
@@ -21,7 +21,19 @@ class UploadBatch(Base):
     beautify_profile_id: Mapped[str] = mapped_column(String(80), nullable=False)
     filter_profile_snapshot: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     beautify_profile_snapshot: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    processing_standard_snapshots: Mapped[list[dict[str, object]] | None] = mapped_column(
+        JSON, nullable=True
+    )
+    filter_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    beautify_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    similarity_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     similarity_profile_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    unmatched_standard_policy: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="reject"
+    )
+    library_scope_node_id: Mapped[str | None] = mapped_column(
+        ForeignKey("library_tag_nodes.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     enhance_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     max_selected: Mapped[int] = mapped_column(Integer, nullable=False)
     callback_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)

@@ -43,22 +43,24 @@ def test_feature_similarity_compares_scene_fields_and_subjects() -> None:
     assert 0.8 < feature_similarity(query, candidate) < 1.0
 
 
-def test_feature_similarity_normalizes_equivalent_chinese_scene_phrases() -> None:
+def test_feature_similarity_compares_generic_objects_attributes_and_features() -> None:
     query = {
-        "scene": "住宅室内",
-        "space": "餐厅及玄关",
-        "condition": "装修完成且整洁",
-        "content_type": "环境展示",
-        "subjects": ["餐桌", "餐椅", "定制柜", "咖啡机", "鞋柜", "入户门", "吊灯"],
-        "view": "室内空间全景",
+        "scene": "摄影棚",
+        "condition": "全新完好",
+        "content_type": "商品照片",
+        "objects": ["运动鞋", "鞋盒"],
+        "attributes": {"颜色": ["黑色"], "材质": ["织物", "橡胶"]},
+        "features": {"商品品类": ["鞋靴"], "背景": ["纯白"]},
+        "view": "整体展示",
     }
     candidate = {
-        "scene": "住宅室内",
-        "space": "客餐厅",
-        "condition": "装修完成",
-        "content_type": "环境展示",
-        "subjects": ["餐桌", "餐椅", "电视", "电视柜", "沙发", "茶几", "落地窗", "吊灯", "绿植"],
-        "view": "空间全景",
+        "scene": "摄影棚",
+        "condition": "完好",
+        "content_type": "商品照片",
+        "objects": ["黑色运动鞋", "鞋盒"],
+        "attributes": {"颜色": ["黑色"], "材质": ["织物", "橡胶"]},
+        "features": {"商品品类": ["鞋靴"], "背景": ["白色"]},
+        "view": "整体展示",
     }
 
     assert feature_similarity(query, candidate) > 0.8

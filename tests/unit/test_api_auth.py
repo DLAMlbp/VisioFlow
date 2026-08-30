@@ -30,3 +30,12 @@ def test_health_check_does_not_require_api_key() -> None:
     response = client.get("/health")
 
     assert response.status_code == 200
+
+
+def test_response_contains_request_id() -> None:
+    client = TestClient(app)
+
+    response = client.get("/health", headers={"X-Request-ID": "trace-test-001"})
+
+    assert response.status_code == 200
+    assert response.headers["X-Request-ID"] == "trace-test-001"

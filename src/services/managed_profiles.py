@@ -17,10 +17,11 @@ from src.services.ai_model_config import load_ai_model_settings
 from src.services.profiles import (
     BeautifyProfile,
     FilterProfile,
+    ProcessingStandard,
     ProfileNotFoundError,
 )
 
-ProfileType = Literal["filter", "beautify"]
+ProfileType = Literal["filter", "beautify", "standard"]
 
 
 class ManagedProfileError(Exception):
@@ -29,6 +30,13 @@ class ManagedProfileError(Exception):
 
 @dataclass(frozen=True)
 class CompiledProfile:
+    description: str
+    config: dict[str, object]
+    unsupported: list[str]
+
+
+@dataclass(frozen=True)
+class CompiledStandard:
     description: str
     config: dict[str, object]
     unsupported: list[str]
@@ -69,6 +77,30 @@ class ManagedProfileService:
         profile = BeautifyProfile.model_validate(row.config_json)
         return profile, self._snapshot(row)
 
+    async def resolve_standards(
+        self, profile_ids: list[str] | None = None
+    ) -> list[tuple[ProcessingStandard, dict[str, object]]]:
+        if profile_ids:
+            if len(profile_ids) != 2:
+                raise ProfileNotFoundError("每个任务必须选择两套互斥且完整覆盖的条件过滤标准")
+            if len(set(profile_ids)) != len(profile_ids):
+                raise ProfileNotFoundError("条件处理标准不能重复")
+            rows: list[ProcessingProfile] = []
+            for profile_id in profile_ids:
+                row = await self.get("standard", profile_id)
+                if row is None or row.status != "active":
+                    raise ProfileNotFoundError(f"条件处理标准不存在或已停用: {profile_id}")
+                rows.append(row)
+        else:
+            rows = await self.list("standard")
+        if len(rows) != 2:
+            raise ProfileNotFoundError("请先配置且仅启用两套互斥、完整覆盖的条件过滤标准")
+        resolved = [
+            (ProcessingStandard.model_validate(row.config_json), self._snapshot(row))
+            for row in rows
+        ]
+        return sorted(resolved, key=lambda entry: (-entry[0].priority, entry[0].id))
+
     async def create(
         self,
         profile_type: ProfileType,
@@ -78,7 +110,9 @@ class ManagedProfileService:
         description: str,
         config: dict[str, object],
     ) -> ProcessingProfile:
-        prefix = "flt" if profile_type == "filter" else "bty"
+        if profile_type == "standard" and len(await self.list("standard")) >= 2:
+            raise ManagedProfileError("正式流程只允许启用两套条件过滤标准；请编辑或停用现有标准")
+        prefix = {"filter": "flt", "beautify": "bty", "standard": "std"}[profile_type]
         profile_id = f"{prefix}_{uuid4().hex}"
         candidate = {**config, "id": profile_id, "version": 1, "description": description.strip()}
         validated = self._validate(profile_type, candidate)
@@ -145,6 +179,8 @@ class ManagedProfileService:
         await self.session.commit()
 
     async def compile(self, profile_type: ProfileType, instruction: str) -> CompiledProfile:
+        if profile_type == "standard":
+            raise ManagedProfileError("条件过滤标准需要分别填写启动规则和过滤规则")
         settings = load_ai_model_settings(self.settings)
         if not settings.ai_tagging_enabled or not settings.ai_tagging_api_key:
             raise ManagedProfileError("请先在 AI 配置中启用模型并填写 API Key")
@@ -167,10 +203,38 @@ class ManagedProfileService:
         unsupported = [str(value)[:120] for value in response.get("unsupported", []) if str(value).strip()]
         return CompiledProfile(description, validated.model_dump(mode="json"), unsupported)
 
+    def compile_standard(
+        self,
+        *,
+        activation_rule: str,
+        filter_rule: str,
+        priority: int,
+    ) -> CompiledStandard:
+        description = (
+            f"当{activation_rule.strip()}时启用，并按对应过滤规则判断。"
+        )[:500]
+        candidate = ProcessingStandard(
+            id="preview",
+            version=1,
+            description=description,
+            activation_rule=activation_rule.strip(),
+            filter_rule=filter_rule.strip(),
+            priority=priority,
+        )
+        return CompiledStandard(
+            description=description,
+            config=candidate.model_dump(mode="json"),
+            unsupported=[],
+        )
+
     @staticmethod
     def _validate(profile_type: ProfileType, config: dict[str, object]):
         try:
-            return FilterProfile.model_validate(config) if profile_type == "filter" else BeautifyProfile.model_validate(config)
+            if profile_type == "filter":
+                return FilterProfile.model_validate(config)
+            if profile_type == "beautify":
+                return BeautifyProfile.model_validate(config)
+            return ProcessingStandard.model_validate(config)
         except ValidationError as exc:
             raise ManagedProfileError("标准参数超出允许范围") from exc
 
@@ -195,6 +259,78 @@ def beautify_from_snapshot(snapshot: dict[str, object] | None, fallback_id: str,
     if snapshot and isinstance(snapshot.get("config"), dict):
         return BeautifyProfile.model_validate(snapshot["config"])
     raise ProfileNotFoundError(f"任务缺少美化标准快照: {fallback_id}")
+
+
+def standards_from_snapshots(
+    snapshots: list[dict[str, object]] | None,
+) -> list[ProcessingStandard]:
+    standards: list[ProcessingStandard] = []
+    for snapshot in snapshots or []:
+        config = snapshot.get("config")
+        if isinstance(config, dict):
+            standards.append(
+                ProcessingStandard.model_validate(
+                    {
+                        **config,
+                        "name": str(
+                            snapshot.get("name") or config.get("description") or ""
+                        ),
+                    }
+                )
+            )
+    return sorted(standards, key=lambda standard: (-standard.priority, standard.id))
+
+
+def legacy_standard_from_snapshots(
+    filter_snapshot: dict[str, object] | None,
+    beautify_snapshot: dict[str, object] | None,
+    filter_fallback: str,
+    beautify_fallback: str,
+) -> ProcessingStandard:
+    del beautify_snapshot, beautify_fallback
+    filter_config = filter_snapshot.get("config") if filter_snapshot else None
+    filter_description = (
+        str(filter_config.get("description", "保留有效、可辨认的图片"))
+        if isinstance(filter_config, dict)
+        else "保留有效、可辨认的图片"
+    )
+    filter_rule = str((filter_snapshot or {}).get("instruction") or filter_description)
+    return ProcessingStandard(
+        id="legacy_standard",
+        version=1,
+        description="历史任务兼容标准",
+        activation_rule="始终启用这套历史处理标准",
+        filter_rule=filter_rule,
+    )
+
+
+def passthrough_standard() -> ProcessingStandard:
+    """System rule used when business filtering is disabled for a job."""
+    return ProcessingStandard(
+        id="system_passthrough",
+        name="不执行条件筛选",
+        version=1,
+        description="跳过业务条件筛选",
+        activation_rule="始终启用",
+        filter_rule="保留图片并继续后续处理",
+        priority=10000,
+    )
+
+
+def neutral_beautify_snapshot() -> dict[str, object]:
+    """Immutable delivery profile used when visual enhancement is disabled."""
+    config = {
+        **_neutral_profile("beautify"),
+        "id": "system_delivery",
+        "description": "保持原始画面，仅校正方向并生成标准交付文件",
+    }
+    return {
+        "id": "system_delivery",
+        "name": "保持原图",
+        "version": 1,
+        "instruction": "不要调整画面内容、色彩、明暗或清晰度，只校正 EXIF 方向并规范输出格式",
+        "config": config,
+    }
 
 
 def _neutral_profile(profile_type: ProfileType) -> dict[str, object]:

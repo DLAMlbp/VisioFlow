@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,6 +16,7 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5174,http://localhost:5174,"
         "http://127.0.0.1:5175,http://localhost:5175"
     )
+    trusted_hosts: str = "127.0.0.1,localhost,testserver"
     api_key: str = ""
     integration_api_key: str = ""
     integration_max_files: int = 50
@@ -25,6 +26,8 @@ class Settings(BaseSettings):
     callback_recovery_interval_seconds: int = 5
     callback_delivery_lease_seconds: int = 120
     callback_recovery_batch_size: int = 100
+    callback_signing_secret: str = ""
+    callback_allowed_hosts: str = ""
 
     database_url: str = "postgresql+asyncpg://user:password@postgres:5432/image_ai"
     redis_url: str = "redis://redis:6379/0"
@@ -67,12 +70,13 @@ class Settings(BaseSettings):
     )
     ai_tagging_model: str = "gpt-5.6-sol"
     ai_tagging_api_key: str = ""
-    ai_tagging_timeout_seconds: int = 30
+    ai_tagging_timeout_seconds: int = 90
     ai_tagging_max_retries: int = 2
     ai_tagging_image_long_side: int = 1024
     ai_tagging_concurrency: int = 4
     ai_tagging_rate_limit_per_minute: int = 24
     ai_tagging_store_raw_response: bool = False
+    ai_config_encryption_key: str = ""
 
     image_embedding_model: str = "ViT-B-32"
     image_embedding_pretrained: str = "laion2b_s34b_b79k"
@@ -83,6 +87,35 @@ class Settings(BaseSettings):
     cleanup_interval_seconds: int = 3600
     pipeline_recovery_interval_seconds: int = 300
     pipeline_stale_seconds: int = 900
+
+    @model_validator(mode="after")
+    def validate_production_configuration(self):
+        if self.app_env != "production":
+            return self
+        problems: list[str] = []
+        if len(self.api_key) < 32:
+            problems.append("API_KEY 必须至少 32 个字符")
+        if len(self.integration_api_key) < 32:
+            problems.append("INTEGRATION_API_KEY 必须至少 32 个字符")
+        if len(self.callback_signing_secret) < 32:
+            problems.append("CALLBACK_SIGNING_SECRET 必须至少 32 个字符")
+        callback_hosts = {
+            host.strip() for host in self.callback_allowed_hosts.split(",") if host.strip()
+        }
+        if not callback_hosts or "*" in callback_hosts:
+            problems.append("CALLBACK_ALLOWED_HOSTS 必须显式配置，不能使用通配符")
+        if self.ai_tagging_enabled and not self.ai_tagging_api_key:
+            problems.append("启用 AI 图片处理时必须配置 AI_TAGGING_API_KEY")
+        if len(self.ai_config_encryption_key) < 32:
+            problems.append("AI_CONFIG_ENCRYPTION_KEY 必须至少 32 个字符")
+        if self.s3_access_key == "minio" or self.s3_secret_key == "minio123":
+            problems.append("生产环境禁止使用默认对象存储凭据")
+        trusted_hosts = {host.strip() for host in self.trusted_hosts.split(",") if host.strip()}
+        if not trusted_hosts or "*" in trusted_hosts:
+            problems.append("TRUSTED_HOSTS 必须显式配置，不能使用通配符")
+        if problems:
+            raise ValueError("生产配置无效：" + "；".join(problems))
+        return self
 
 
 

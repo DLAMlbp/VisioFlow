@@ -19,6 +19,7 @@ class LibraryAsset(Base):
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True)
     original_object_key: Mapped[str] = mapped_column(String(1024), unique=True, nullable=False)
+    thumbnail_object_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     original_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
     leaf_tag_node_id: Mapped[str] = mapped_column(
         ForeignKey("library_tag_nodes.id", ondelete="RESTRICT"), nullable=False, index=True

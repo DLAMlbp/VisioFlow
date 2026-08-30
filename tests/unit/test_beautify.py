@@ -43,12 +43,12 @@ def test_natural_beautify_reports_only_non_destructive_processing_steps() -> Non
     result = NaturalBeautifyService().enhance_with_details(source.getvalue(), profile)
 
     assert NaturalBeautifyService.processing_reasons(profile, result) == [
-        "已保留原始构图与空间比例",
+        "已保留原始构图与画面比例",
         "已完成白平衡和色温微调",
         "已平衡高光和阴影细节",
-        "已增强暗角和材质区域的局部层次",
+        "已增强暗部和纹理区域的局部层次",
         "已进行轻度降噪",
-        "已增强门框和材质边缘细节",
+        "已增强主体与纹理边缘细节",
     ]
 
 

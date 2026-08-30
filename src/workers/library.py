@@ -22,6 +22,7 @@ from src.services.images.metadata import (
 )
 from src.services.images.tagging import get_tag_provider
 from src.services.storage.factory import get_storage_provider
+from src.services.storage.keys import build_library_thumbnail_object_key
 from src.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,12 @@ async def _process_library_asset(asset_id: str) -> None:
             if outcome.status != "completed" or outcome.payload is None:
                 raise ValueError(outcome.error_message or "素材内容分析失败")
             embedding = await OpenClipImageEmbedder(settings).embed(prepared.normalized_bytes)
+            thumbnail_object_key = build_library_thumbnail_object_key(asset.id)
+            await storage.upload(
+                thumbnail_object_key,
+                prepared.normalized_bytes,
+                "image/jpeg",
+            )
             await repository.update_asset(
                 asset,
                 {
@@ -81,6 +88,7 @@ async def _process_library_asset(asset_id: str) -> None:
                     "height": prepared.height,
                     "sha256": prepared.sha256,
                     "phash": prepared.phash,
+                    "thumbnail_object_key": thumbnail_object_key,
                     "analysis_json": outcome.payload.model_dump(),
                     "embedding": embedding,
                     "embedding_version": settings.image_embedding_version,

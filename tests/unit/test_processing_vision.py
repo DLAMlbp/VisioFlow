@@ -57,6 +57,13 @@ def _payload(*, decision: str = "pass", brightness: float = 1.05) -> dict[str, o
             "decision": decision,
             "reason": "符合客户填写的过滤要求",
             "confidence": 0.92,
+            "dimensions": [
+                {
+                    "dimension": "画面清晰度",
+                    "passed": decision == "pass",
+                    "reason": "主体和装修细节可辨认",
+                }
+            ],
         },
         "beautify": {
             "needed": True,
@@ -126,12 +133,14 @@ async def test_invalid_ai_parameter_falls_back_as_failed(monkeypatch: pytest.Mon
 
     assert outcome.status == "failed"
     assert outcome.payload is None
-    assert outcome.error_message == "AI 图片处理响应格式不合法"
+    assert outcome.error_message is not None
+    assert "beautify.parameters.brightness" in outcome.error_message
 
 
 def test_ai_filter_reject_and_beautify_plan_are_strict_and_bounded() -> None:
     payload = ProcessingVisionPayload.model_validate(_payload(decision="reject"))
     assert payload.filter.decision == "reject"
+    assert payload.filter.rejected is True
 
     with pytest.raises(ValidationError):
         ProcessingVisionPayload.model_validate(_payload(decision="review"))
@@ -145,6 +154,13 @@ def test_ai_filter_reject_and_beautify_plan_are_strict_and_bounded() -> None:
     assert merged.jpeg_quality == 90
 
 
+def test_any_failed_dimension_rejects_even_when_model_summary_says_pass() -> None:
+    payload = ProcessingVisionPayload.model_validate(_payload(decision="pass"))
+    payload.filter.dimensions[0].passed = False
+
+    assert payload.filter.rejected is True
+
+
 def test_processing_json_helpers_support_reuse_and_old_jobs() -> None:
     payload = _payload()
     assert content_from_processing_json(payload).summary == "施工中的厨房"
@@ -153,12 +169,33 @@ def test_processing_json_helpers_support_reuse_and_old_jobs() -> None:
     assert beautify_from_processing_json({"legacy": True}) is None
     payload["beautify"]["parameters"] = {}
     assert content_from_processing_json(payload).summary == "施工中的厨房"
-    assert beautify_from_processing_json(payload) is None
+    assert beautify_from_processing_json(payload).parameters.brightness == 1.0
 
 
-def test_incomplete_beautify_plan_is_rejected() -> None:
-    with pytest.raises(ValidationError):
-        BeautifyDecision(needed=False, reason="无需调整", parameters={})
+def test_missing_beautify_parameters_use_safe_neutral_values() -> None:
+    decision = BeautifyDecision(needed=False, reason="无需调整", parameters={})
+
+    assert decision.parameters.brightness == 1.0
+    assert decision.parameters.auto_white_balance is False
+
+
+@pytest.mark.asyncio
+async def test_markdown_fenced_json_and_extra_fields_are_tolerated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ProcessingVisionService(Settings(ai_tagging_api_key="test-key"))
+    payload = _payload()
+    payload["provider_note"] = "ignored"
+    content = f"```json\n{json.dumps(payload, ensure_ascii=False)}\n```"
+    monkeypatch.setattr(
+        service,
+        "_request",
+        lambda *_args: {"choices": [{"message": {"content": content}}]},
+    )
+
+    outcome = await service.analyze(b"image", filter_instruction="保留有效图片")
+
+    assert outcome.status == "completed"
 
 
 def test_managed_profile_snapshot_contains_original_instruction() -> None:

@@ -23,7 +23,13 @@ class JobConfig:
     beautify_profile_id: str
     filter_profile_snapshot: dict[str, object] | None
     beautify_profile_snapshot: dict[str, object] | None
+    processing_standard_snapshots: list[dict[str, object]] | None
+    filter_enabled: bool
+    beautify_enabled: bool
+    similarity_enabled: bool
     similarity_profile_id: str
+    unmatched_standard_policy: str
+    library_scope_node_id: str | None
     max_selected: int
     total_count: int
     dispatch_cursor: int
@@ -84,7 +90,13 @@ class ImageJobRepository:
                     ImageJob.beautify_profile_id,
                     ImageJob.filter_profile_snapshot,
                     ImageJob.beautify_profile_snapshot,
+                    ImageJob.processing_standard_snapshots,
+                    ImageJob.filter_enabled,
+                    ImageJob.beautify_enabled,
+                    ImageJob.similarity_enabled,
                     ImageJob.similarity_profile_id,
+                    ImageJob.unmatched_standard_policy,
+                    ImageJob.library_scope_node_id,
                     ImageJob.max_selected,
                     ImageJob.total_count,
                     ImageJob.dispatch_cursor,
@@ -427,7 +439,7 @@ class ImageJobRepository:
             {
                 "decision": "rejected",
                 "reject_codes_json": reject_codes,
-                "reasons_json": [reason or "未通过装修照片基础质量标准"],
+                "reasons_json": [reason or "未通过图片处理标准"],
             },
         )
         await self.session.execute(
@@ -627,7 +639,7 @@ class ImageJobRepository:
                 "final_score": final_score,
                 "enhanced_object_key": enhanced_object_key,
                 "enhanced_metrics_json": dict(enhanced_metrics) if enhanced_metrics else None,
-                "reasons_json": reasons or ["通过装修照片基础质量标准并完成自然美化"],
+                "reasons_json": reasons or ["通过图片处理标准并完成图像优化"],
             },
         )
         await self.session.execute(

@@ -6,7 +6,11 @@ from fastapi.testclient import TestClient
 from src.api import profiles as profiles_api
 from src.core.config import Settings, get_settings
 from src.main import app
-from src.services.managed_profiles import CompiledProfile
+from src.services.managed_profiles import (
+    CompiledProfile,
+    ManagedProfileError,
+    ManagedProfileService,
+)
 
 
 def test_list_profiles_returns_only_managed_filter_profiles(
@@ -53,10 +57,7 @@ def test_list_similarity_profiles_only_returns_matching_profiles() -> None:
 
     app.dependency_overrides.clear()
     assert response.status_code == 200
-    assert [profile["id"] for profile in response.json()] == [
-        "library_similarity_v1",
-        "library_similarity_v2",
-    ]
+    assert [profile["id"] for profile in response.json()] == ["library_similarity_v2"]
 
 
 @pytest.mark.asyncio
@@ -80,3 +81,26 @@ async def test_successful_natural_language_preview_can_always_be_saved(
     )
 
     assert result.can_save is True
+
+
+@pytest.mark.asyncio
+async def test_only_two_active_processing_standards_can_be_created(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def two_active_standards(*_args, **_kwargs):
+        return [SimpleNamespace(id="one"), SimpleNamespace(id="two")]
+
+    monkeypatch.setattr(ManagedProfileService, "list", two_active_standards)
+    service = ManagedProfileService(SimpleNamespace(), Settings())
+
+    with pytest.raises(ManagedProfileError, match="只允许启用两套"):
+        await service.create(
+            "standard",
+            name="第三套",
+            instruction="第三套启动规则",
+            description="不应保存",
+            config={
+                "activation_rule": "第三套启动规则",
+                "filter_rule": "第三套过滤规则",
+            },
+        )

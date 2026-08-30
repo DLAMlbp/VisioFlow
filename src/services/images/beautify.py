@@ -105,20 +105,20 @@ class NaturalBeautifyService:
         reasons = [
             "已自动校正轻微倾斜"
             if result.straighten_applied
-            else "已保留原始构图与空间比例"
+            else "已保留原始构图与画面比例"
         ]
         if profile.auto_white_balance and profile.white_balance_strength > 0:
             reasons.append("已完成白平衡和色温微调")
         if profile.shadow_lift > 0 or profile.highlight_recovery > 0:
             reasons.append("已平衡高光和阴影细节")
         if result.local_tone_applied:
-            reasons.append("已增强暗角和材质区域的局部层次")
+            reasons.append("已增强暗部和纹理区域的局部层次")
         if profile.denoise_strength > 0:
             reasons.append("已进行轻度降噪")
         if result.glare_reduction_applied:
             reasons.append("已压制局部反光和眩光")
         if result.local_clarity_applied:
-            reasons.append("已增强门框和材质边缘细节")
+            reasons.append("已增强主体与纹理边缘细节")
         return reasons
 
     @classmethod

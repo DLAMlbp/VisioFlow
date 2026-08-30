@@ -2,7 +2,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.core.config import Settings
 from src.workers import analysis
 
 
@@ -21,7 +20,7 @@ class _Repository:
         pass
 
     async def claim_analysis_batch(self, _image_id: str, *, limit: int):
-        assert limit == 4
+        assert limit == 50
         return [_item()]
 
     async def get_config(self, _job_id: str):
@@ -45,7 +44,8 @@ def _item():
         analysis_object_key="analysis/enhanced.jpg",
         ai_processing_status="completed",
         ai_processing_model="gpt-5.6-sol",
-        ai_processing_prompt_version="managed_filter_beautify_content_v2",
+        ai_processing_prompt_version="single_recognition_processing_v5",
+        ai_processing_duration_ms=1200,
         ai_processing_json={
             "filter": {"decision": "pass", "reason": "符合要求", "confidence": 0.9},
             "beautify": {
@@ -83,29 +83,27 @@ def _item():
                 "risks": [],
             },
         },
-        ai_tag=None,
+        ai_tag=SimpleNamespace(
+            provider="openai",
+            model_name="gpt-5.6-sol",
+            prompt_version="single_recognition_processing_v5",
+        ),
     )
 
 
 @pytest.mark.asyncio
-async def test_analysis_reuses_combined_content_without_second_model_call(
+async def test_analysis_reuses_original_recognition_without_second_model_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _Repository.saved = None
     monkeypatch.setattr(analysis, "AsyncSessionLocal", lambda: _SessionContext())
     monkeypatch.setattr(analysis, "ImageJobRepository", _Repository)
-    monkeypatch.setattr(analysis, "get_settings", lambda: Settings(ai_tagging_api_key="key"))
-    monkeypatch.setattr(analysis, "load_ai_model_settings", lambda settings: settings)
-    monkeypatch.setattr(analysis, "get_storage_provider", lambda: object())
-    monkeypatch.setattr(
-        analysis,
-        "get_tag_provider",
-        lambda _settings: pytest.fail("复用内容识别时不应再次调用标签模型"),
-    )
 
     await analysis._analyze_image_content("img_test")
 
     assert _Repository.saved is not None
-    assert _Repository.saved["source_object_key"] == "uploads/source.jpg"
+    assert _Repository.saved["source_object_key"] == "analysis/enhanced.jpg"
     assert _Repository.saved["tag_json"]["summary"] == "施工中的厨房"
-    assert _Repository.saved["duration_ms"] == 0
+    assert _Repository.saved["model_name"] == "gpt-5.6-sol"
+    assert _Repository.saved["prompt_version"] == "single_recognition_processing_v5"
+    assert _Repository.saved["duration_ms"] == 1200

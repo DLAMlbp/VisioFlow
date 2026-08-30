@@ -12,6 +12,7 @@ from src.core.exceptions import AppError, InvalidUploadRequest
 from src.db.session import get_db_session
 from src.models.image_item import ImageItem
 from src.models.image_job import ImageJob
+from src.models.library_tag_node import LibraryTagNode
 from src.models.upload_batch import UploadBatch, UploadBatchItem
 from src.repositories.upload_batches import UploadBatchRepository
 from src.schemas.jobs import JobStatus
@@ -24,6 +25,10 @@ from src.schemas.upload_batches import (
 )
 from src.schemas.uploads import PresignedUploadRequest
 from src.services.ai_model_config import load_ai_model_settings
+from src.services.jobs.callback_security import (
+    CallbackConfigurationError,
+    validate_callback_destination,
+)
 from src.services.jobs.dispatch import JobDispatchTaskPublisher
 from src.services.jobs.ids import (
     build_image_id,
@@ -31,7 +36,7 @@ from src.services.jobs.ids import (
     build_upload_batch_id,
     build_upload_batch_item_id,
 )
-from src.services.managed_profiles import ManagedProfileService
+from src.services.managed_profiles import ManagedProfileService, neutral_beautify_snapshot
 from src.services.profiles import ProfileLoader, ProfileNotFoundError
 from src.services.storage.factory import get_storage_provider
 from src.services.storage.keys import build_upload_object_key, validate_upload_request
@@ -57,12 +62,40 @@ class UploadBatchService:
             raise InvalidUploadBatch(
                 f"单个上传批次最多支持 {self.settings.max_upload_batch_size} 张图片"
             )
+        if payload.callback_url:
+            try:
+                validate_callback_destination(
+                    str(payload.callback_url),
+                    production=self.settings.app_env == "production",
+                    allowed_hosts=self.settings.callback_allowed_hosts,
+                )
+            except CallbackConfigurationError as exc:
+                raise InvalidUploadBatch(str(exc)) from exc
         try:
             loader = ProfileLoader(self.settings)
             manager = ManagedProfileService(self.session, self.settings)
-            _, filter_snapshot = await manager.resolve_filter(payload.filter_profile)
-            _, beautify_snapshot = await manager.resolve_beautify(payload.beautify_profile)
-            loader.get_similarity_profile(payload.similarity_profile)
+            filter_snapshot = None
+            beautify_snapshot = None
+            standard_snapshots = None
+            if payload.filter_enabled and payload.processing_standards:
+                resolved = await manager.resolve_standards(payload.processing_standards)
+                standard_snapshots = [snapshot for _, snapshot in resolved]
+            elif payload.filter_enabled:
+                _, filter_snapshot = await manager.resolve_filter(payload.filter_profile or "")
+            if payload.beautify_enabled:
+                _, beautify_snapshot = await manager.resolve_beautify(
+                    payload.beautify_profile or ""
+                )
+            else:
+                beautify_snapshot = neutral_beautify_snapshot()
+            if payload.similarity_enabled:
+                loader.get_similarity_profile(payload.similarity_profile)
+            if payload.similarity_enabled and payload.library_scope_node_id:
+                scope = await self.session.get(
+                    LibraryTagNode, payload.library_scope_node_id
+                )
+                if scope is None or scope.status != "active":
+                    raise ProfileNotFoundError("素材匹配范围不存在或已停用")
         except ProfileNotFoundError as exc:
             raise InvalidUploadBatch(exc.args[0]) from exc
 
@@ -70,11 +103,23 @@ class UploadBatchService:
         batch = UploadBatch(
             id=build_upload_batch_id(),
             status="registered",
-            filter_profile_id=payload.filter_profile,
-            beautify_profile_id=payload.beautify_profile,
+            filter_profile_id=(
+                payload.filter_profile or ("conditional_standard_v1" if payload.filter_enabled else "system_passthrough")
+            ),
+            beautify_profile_id=(
+                payload.beautify_profile or ("conditional_standard_v1" if payload.beautify_enabled else "system_delivery")
+            ),
             filter_profile_snapshot=filter_snapshot,
             beautify_profile_snapshot=beautify_snapshot,
+            processing_standard_snapshots=standard_snapshots,
+            filter_enabled=payload.filter_enabled,
+            beautify_enabled=payload.beautify_enabled,
+            similarity_enabled=payload.similarity_enabled,
             similarity_profile_id=payload.similarity_profile,
+            unmatched_standard_policy=payload.unmatched_standard_policy,
+            library_scope_node_id=(
+                payload.library_scope_node_id if payload.similarity_enabled else None
+            ),
             enhance_level=payload.enhance_level,
             max_selected=payload.max_selected or len(payload.files),
             callback_url=str(payload.callback_url) if payload.callback_url else None,
@@ -171,7 +216,13 @@ class UploadBatchService:
             beautify_profile_id=batch.beautify_profile_id,
             filter_profile_snapshot=batch.filter_profile_snapshot,
             beautify_profile_snapshot=batch.beautify_profile_snapshot,
+            processing_standard_snapshots=batch.processing_standard_snapshots,
+            filter_enabled=batch.filter_enabled,
+            beautify_enabled=batch.beautify_enabled,
+            similarity_enabled=batch.similarity_enabled,
             similarity_profile_id=batch.similarity_profile_id,
+            unmatched_standard_policy=batch.unmatched_standard_policy,
+            library_scope_node_id=batch.library_scope_node_id,
             ai_tagging_model=(
                 self.settings.ai_tagging_model if self.settings.ai_tagging_enabled else None
             ),

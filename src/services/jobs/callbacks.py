@@ -1,4 +1,7 @@
 import asyncio
+import hashlib
+import hmac
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime
@@ -9,6 +12,10 @@ from pydantic import BaseModel, Field
 from src.core.config import Settings
 from src.repositories.jobs import CallbackJob, ImageJobRepository
 from src.schemas.jobs import ImageJobResultItemResponse
+from src.services.jobs.callback_security import (
+    CallbackConfigurationError,
+    validate_callback_destination,
+)
 from src.services.jobs.service import ImageJobService
 from src.services.storage.interfaces import StorageProvider
 
@@ -89,11 +96,20 @@ async def post_job_callback(
     payload: ImageJobCallbackPayload,
     *,
     timeout_seconds: int,
+    signing_secret: str = "",
+    allowed_hosts: str = "",
 ) -> None:
-    parsed = urlsplit(callback_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise CallbackDeliveryError("callback_url 必须是有效的 http/https URL")
+    try:
+        validate_callback_destination(
+            callback_url,
+            production=False,
+            allowed_hosts=allowed_hosts,
+        )
+    except CallbackConfigurationError as exc:
+        raise CallbackDeliveryError(str(exc)) from exc
     body = payload.model_dump_json(exclude_none=False).encode("utf-8")
+    timestamp = str(int(time.time()))
+    signature = _callback_signature(signing_secret, timestamp, body)
     await asyncio.to_thread(
         _post_json,
         callback_url,
@@ -101,6 +117,8 @@ async def post_job_callback(
         payload.event,
         payload.event_id,
         max(1, timeout_seconds),
+        timestamp,
+        signature,
     )
 
 
@@ -115,17 +133,23 @@ def _post_json(
     event: str,
     event_id: str,
     timeout_seconds: int,
+    timestamp: str,
+    signature: str | None,
 ) -> None:
+    headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        "User-Agent": "image-intelligence-service/1.0",
+        "X-Callback-Event": event,
+        "X-Callback-Id": event_id,
+        "X-Callback-Timestamp": timestamp,
+    }
+    if signature:
+        headers["X-Callback-Signature"] = signature
     request = urllib.request.Request(
         callback_url,
         data=body,
         method="POST",
-        headers={
-            "Content-Type": "application/json; charset=utf-8",
-            "User-Agent": "image-intelligence-service/1.0",
-            "X-Callback-Event": event,
-            "X-Callback-Id": event_id,
-        },
+        headers=headers,
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
@@ -136,6 +160,17 @@ def _post_json(
         raise CallbackDeliveryError(f"回调连接失败：{exc.reason if hasattr(exc, 'reason') else exc}") from exc
     if status < 200 or status >= 300:
         raise CallbackDeliveryError(f"回调返回 HTTP {status}")
+
+
+def _callback_signature(secret: str, timestamp: str, body: bytes) -> str | None:
+    if not secret:
+        return None
+    digest = hmac.new(
+        secret.encode("utf-8"),
+        timestamp.encode("ascii") + b"." + body,
+        hashlib.sha256,
+    ).hexdigest()
+    return f"sha256={digest}"
 
 
 async def _safe_presign(

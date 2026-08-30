@@ -57,6 +57,7 @@ class LibraryAssetUpdate(BaseModel):
 class LibraryAssetResponse(BaseModel):
     id: str
     original_object_key: str
+    thumbnail_object_key: str | None
     original_filename: str | None
     leaf_tag_node_id: str
     tag_path: list[str]

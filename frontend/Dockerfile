@@ -1,4 +1,4 @@
-FROM node:22.21.0-alpine AS build
+FROM node:22.22.2-alpine AS build
 
 WORKDIR /app
 
@@ -6,7 +6,6 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY . .
-ENV VITE_USE_MOCK_API=false
 RUN npm run build
 
 FROM nginx:1.29.1-alpine

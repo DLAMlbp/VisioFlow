@@ -66,7 +66,7 @@ def test_create_image_job_returns_201_and_job_id() -> None:
     response = client.post(
         "/api/v1/image/jobs",
         json={
-            "filter_profile": "business_event_v1",
+                "processing_standards": ["std_finished", "std_unfinished"],
             "beautify_profile": "natural_v1",
             "enhance_level": 1,
             "max_selected": 10,
@@ -92,7 +92,7 @@ def test_create_image_job_rejects_empty_images() -> None:
     response = client.post(
         "/api/v1/image/jobs",
         json={
-            "filter_profile": "business_event_v1",
+            "processing_standards": ["std_finished", "std_unfinished"],
             "beautify_profile": "natural_v1",
             "enhance_level": 1,
             "max_selected": 10,

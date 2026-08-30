@@ -1,6 +1,6 @@
 id: auto_generic_v1
 version: 1
-description: 美化后装修图片自动标签的过渡规则。正式业务标签标准发布后新增版本，不修改历史记录。
+description: 通用图片内容分析与自动标签的兼容配置。业务特征由素材集合和用户规则定义。
 
 max_tags: 8
 confidence_thresholds:

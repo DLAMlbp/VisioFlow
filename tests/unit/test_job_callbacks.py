@@ -7,6 +7,10 @@ from src.models.image_item import ImageItem
 from src.models.image_job import ImageJob
 from src.models.image_result import ImageResult
 from src.repositories.jobs import CallbackJob, JobProgressSnapshot
+from src.services.jobs.callback_security import (
+    CallbackConfigurationError,
+    validate_callback_destination,
+)
 from src.services.jobs.callbacks import (
     CallbackDeliveryError,
     ImageJobCallbackPayload,
@@ -151,10 +155,14 @@ async def test_post_callback_accepts_any_2xx_response(monkeypatch: pytest.Monkey
         "https://client.test/callback",
         payload,
         timeout_seconds=15,
+        signing_secret="test-callback-signing-secret",
+        allowed_hosts="client.test",
     )
 
     assert captured["timeout"] == 15
     assert captured["request"].get_header("X-callback-id") == "job_test:1"
+    assert captured["request"].get_header("X-callback-timestamp")
+    assert captured["request"].get_header("X-callback-signature").startswith("sha256=")
 
 
 @pytest.mark.asyncio
@@ -173,3 +181,35 @@ async def test_post_callback_rejects_non_http_url() -> None:
 
     with pytest.raises(CallbackDeliveryError, match="http/https"):
         await post_job_callback("file:///tmp/callback", payload, timeout_seconds=15)
+
+
+@pytest.mark.asyncio
+async def test_post_callback_rejects_host_outside_allowlist() -> None:
+    payload = ImageJobCallbackPayload(
+        event_id="job_test:1",
+        job_id="job_test",
+        status="completed",
+        completed_at=datetime(2026, 8, 29, tzinfo=UTC),
+        total=0,
+        selected=0,
+        rejected=0,
+        download_expires_in=900,
+        images=[],
+    )
+
+    with pytest.raises(CallbackDeliveryError, match="允许列表"):
+        await post_job_callback(
+            "https://untrusted.test/callback",
+            payload,
+            timeout_seconds=15,
+            allowed_hosts="client.test",
+        )
+
+
+def test_production_callback_requires_https() -> None:
+    with pytest.raises(CallbackConfigurationError, match="HTTPS"):
+        validate_callback_destination(
+            "http://client.test/callback",
+            production=True,
+            allowed_hosts="client.test",
+        )

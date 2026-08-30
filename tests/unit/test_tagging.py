@@ -30,14 +30,40 @@ def test_tagging_image_is_resized_before_external_request() -> None:
         assert image.size == (1024, 576)
 
 
-def test_tag_payload_limits_tags_and_confidence() -> None:
+def test_tag_payload_validates_confidence() -> None:
     payload = TagPayload.model_validate(
         {"summary": "客厅施工", "tags": ["装修"], "confidence": 0.8}
     )
     assert payload.tags == ["装修"]
 
     with pytest.raises(ValidationError):
-        TagPayload.model_validate({"tags": [str(index) for index in range(9)], "confidence": 0.8})
+        TagPayload.model_validate({"tags": ["装修"], "confidence": 1.2})
+
+
+def test_tag_payload_normalizes_provider_scalar_attributes_and_tag_overflow() -> None:
+    payload = TagPayload.model_validate(
+        {
+            "summary": None,
+            "attributes": {
+                "orientation": "portrait",
+                "aspect_ratio": 0.75,
+                "people_count": 0,
+            },
+            "features": {"lighting": ["natural", 2]},
+            "categories": {"场景": "客厅"},
+            "tags": [f"标签{index}" for index in range(12)],
+        }
+    )
+
+    assert payload.summary == ""
+    assert payload.attributes == {
+        "orientation": ["portrait"],
+        "aspect_ratio": ["0.75"],
+        "people_count": ["0"],
+    }
+    assert payload.features == {"lighting": ["natural", "2"]}
+    assert payload.categories == {"场景": ["客厅"]}
+    assert len(payload.tags) == 8
 
 
 @pytest.mark.asyncio

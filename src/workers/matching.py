@@ -85,7 +85,9 @@ async def _match_image_library(image_id: str) -> None:
         else:
             try:
                 similar_assets = await library_repository.find_similar_assets(
-                    list(item.embedding), similarity_profile.similarity_candidate_limit
+                    list(item.embedding),
+                    similarity_profile.similarity_candidate_limit,
+                    job.library_scope_node_id,
                 )
                 nodes = {node.id: node for node in await library_repository.list_tag_nodes()}
                 scored: list[ScoredCandidate] = []
@@ -123,12 +125,26 @@ async def _match_image_library(image_id: str) -> None:
                 "candidate_json": decision.candidates,
             },
         )
-        tag_json["tags"] = decision.tag_path if decision.decision == "matched" else []
-        tag_json["categories"] = (
-            {"path": decision.tag_path} if decision.decision == "matched" else {}
-        )
+        recognized_tags = [str(value) for value in (tag_json.get("tags") or [])]
+        recognized_categories = dict(tag_json.get("categories") or {})
+        recognized_candidates = [
+            str(value) for value in (tag_json.get("candidate_tags") or [])
+        ]
+        if decision.decision == "matched":
+            tag_json["tags"] = list(
+                dict.fromkeys([*decision.tag_path, *recognized_tags])
+            )[:8]
+            tag_json["categories"] = {
+                **recognized_categories,
+                "path": decision.tag_path,
+            }
+        else:
+            tag_json["tags"] = recognized_tags[:8]
+            tag_json["categories"] = recognized_categories
         tag_json["candidate_tags"] = (
-            decision.tag_path if decision.decision == "pending_review" else []
+            list(dict.fromkeys([*decision.tag_path, *recognized_candidates]))[:8]
+            if decision.decision == "pending_review"
+            else recognized_candidates[:8]
         )
         if item.ai_tag is not None:
             await repository.upsert_ai_tag(

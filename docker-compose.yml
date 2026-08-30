@@ -1,4 +1,7 @@
+name: image-intelligence
+
 x-worker: &worker
+  image: image-intelligence-api:${IMAGE_VERSION:-development}
   build: .
   env_file:
     - .env
@@ -6,13 +9,28 @@ x-worker: &worker
   depends_on:
     postgres:
       condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
     redis:
       condition: service_healthy
     minio:
       condition: service_started
 
 services:
+  web:
+    image: image-intelligence-web:${IMAGE_VERSION:-development}
+    build: ./frontend
+    env_file:
+      - .env
+    restart: unless-stopped
+    ports:
+      - "5174:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
   api:
+    image: image-intelligence-api:${IMAGE_VERSION:-development}
     build: .
     command: uvicorn src.main:app --host 0.0.0.0 --port 8000
     env_file:
@@ -21,14 +39,17 @@ services:
     ports:
       - "18000:8000"
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       minio:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5)"]
+      # Docker health represents process liveness.  The stricter /health/ready
+      # endpoint remains available to deployment gates and reports missing AI
+      # configuration without preventing access to the configuration UI.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
       interval: 15s
       timeout: 8s
       retries: 5
@@ -67,8 +88,18 @@ services:
     <<: *worker
     command: celery -A src.workers.celery_app beat -l info
 
+  migrate:
+    image: image-intelligence-api:${IMAGE_VERSION:-development}
+    command: alembic upgrade head
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   postgres:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
     restart: unless-stopped
     environment:
       POSTGRES_USER: user
@@ -83,16 +114,19 @@ services:
       retries: 5
 
   redis:
-    image: redis:7
+    image: redis@sha256:71da9275c5f3fcb97d0fa0c8c5b36cc995327265420f17a04bfd544f458059f7
+    command: redis-server --appendonly yes --appendfsync everysec
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+    volumes:
+      - redis-data:/data
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     command: server /data --console-address ":9001"
     restart: unless-stopped
     environment:
@@ -103,9 +137,14 @@ services:
       - "19000:9000"
     volumes:
       - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   minio-init:
-    image: minio/mc:latest
+    image: minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     depends_on:
       - minio
     entrypoint: >
@@ -119,3 +158,4 @@ services:
 volumes:
   postgres-data:
   minio-data:
+  redis-data:

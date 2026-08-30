@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 import pytest
+from pydantic import ValidationError
 
 from src.core.config import Settings
 from src.models.image_item import ImageItem
@@ -72,7 +73,7 @@ class FakeTaskPublisher:
 
 def make_payload(image_count: int = 2) -> CreateImageJobRequest:
     return CreateImageJobRequest(
-        filter_profile="business_event_v1",
+        processing_standards=["std_finished", "std_unfinished"],
         beautify_profile="natural_v1",
         enhance_level=1,
         max_selected=10,
@@ -102,18 +103,32 @@ async def test_create_job_persists_job_and_image_items() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_job_rejects_disabled_required_stage_configuration() -> None:
+    with pytest.raises(ValidationError, match="正式模式固定执行"):
+        CreateImageJobRequest(
+            processing_standards=["std_finished", "std_unfinished"],
+            beautify_profile="natural_v1",
+            filter_enabled=False,
+            images=[{"object_key": "uploads/2026/08/19/image.jpg"}],
+        )
+
+
+@pytest.mark.asyncio
 async def test_create_job_snapshots_managed_profiles(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository = FakeJobRepository()
     repository.session = object()
-    async def resolve_filter(_self, profile_id: str):
-        return object(), {"id": profile_id, "instruction": "只保留厨房", "config": {}}
+    async def resolve_standards(_self, profile_ids: list[str]):
+        return [
+            (object(), {"id": profile_id, "instruction": f"standard-{profile_id}", "config": {}})
+            for profile_id in profile_ids
+        ]
 
     async def resolve_beautify(_self, profile_id: str):
         return object(), {"id": profile_id, "instruction": "自然提亮", "config": {}}
 
-    monkeypatch.setattr(ManagedProfileService, "resolve_filter", resolve_filter)
+    monkeypatch.setattr(ManagedProfileService, "resolve_standards", resolve_standards)
     monkeypatch.setattr(ManagedProfileService, "resolve_beautify", resolve_beautify)
     monkeypatch.setattr(ProfileLoader, "get_similarity_profile", lambda *_args: object())
     service = ImageJobService(
@@ -122,7 +137,7 @@ async def test_create_job_snapshots_managed_profiles(
         profile_loader=ProfileLoader(Settings(profiles_directory="profiles")),
     )
     payload = make_payload()
-    payload.filter_profile = "flt_user"
+    payload.processing_standards = ["std_finished", "std_unfinished"]
     payload.beautify_profile = "bty_user"
     payload.similarity_profile = "library_similarity_v1"
 
@@ -130,8 +145,11 @@ async def test_create_job_snapshots_managed_profiles(
 
     stored = repository.jobs[response.job_id]
     assert stored.similarity_profile_id == "library_similarity_v1"
-    assert stored.filter_profile_snapshot is not None
-    assert stored.filter_profile_snapshot["id"] == "flt_user"
+    assert stored.processing_standard_snapshots is not None
+    assert [item["id"] for item in stored.processing_standard_snapshots] == [
+        "std_finished",
+        "std_unfinished",
+    ]
     assert stored.beautify_profile_snapshot is not None
     assert stored.beautify_profile_snapshot["id"] == "bty_user"
 
@@ -235,17 +253,17 @@ async def test_create_job_rejects_missing_managed_profile(
     repository = FakeJobRepository()
     repository.session = object()
 
-    async def missing_filter(*_args):
+    async def missing_standards(*_args):
         raise ProfileNotFoundError("筛选标准不存在或已停用: missing")
 
-    monkeypatch.setattr(ManagedProfileService, "resolve_filter", missing_filter)
+    monkeypatch.setattr(ManagedProfileService, "resolve_standards", missing_standards)
     service = ImageJobService(
         repository=repository,
         settings=Settings(max_images_per_job=50, profiles_directory="profiles"),
         profile_loader=ProfileLoader(Settings(profiles_directory="profiles")),
     )
     payload = make_payload()
-    payload.filter_profile = "missing"
+    payload.processing_standards = ["missing", "std_unfinished"]
 
     with pytest.raises(InvalidJobRequest, match="筛选标准不存在"):
         await service.create_job(payload)
@@ -257,6 +275,8 @@ async def test_get_results_returns_decision_metrics_and_enhanced_key() -> None:
         id="img_test",
         job_id="job_test",
         object_key="uploads/source.jpg",
+        thumbnail_object_key="thumbnails/job_test/img_test.jpg",
+        analysis_object_key="analysis/job_test/img_test.jpg",
         status="selected",
     )
     item.metric = ImageMetric(
@@ -277,6 +297,18 @@ async def test_get_results_returns_decision_metrics_and_enhanced_key() -> None:
         enhanced_metrics_json={"sharpness": 82, "exposure": 92, "contrast": 75, "noise": 88},
         reasons_json=["通过装修照片基础质量标准并完成自然美化"],
     )
+    item.ai_processing_json = {
+        "filter": {
+            "decision": "pass",
+            "reason": "全部审核维度合格",
+            "confidence": 0.95,
+            "dimensions": [
+                {"dimension": "画面清晰度", "passed": True, "reason": "主体清晰"}
+            ],
+        },
+        "beautify": {"needed": False, "reason": "无需调整", "parameters": {}},
+        "content": {"summary": "完工客厅", "confidence": 0.9},
+    }
     job = ImageJob(
         id="job_test",
         status="completed",
@@ -298,7 +330,11 @@ async def test_get_results_returns_decision_metrics_and_enhanced_key() -> None:
 
     assert response.selected == 1
     assert response.images[0].enhanced_object_key == "enhanced/job_test/img_test.jpg"
+    assert response.images[0].original_preview_object_key == "thumbnails/job_test/img_test.jpg"
+    assert response.images[0].enhanced_preview_object_key == "analysis/job_test/img_test.jpg"
     assert response.images[0].metrics is not None
     assert response.images[0].metrics.sharpness == 80
     assert response.images[0].enhanced_metrics is not None
     assert response.images[0].enhanced_metrics.exposure == 92
+    assert response.images[0].audit_dimensions[0].dimension == "画面清晰度"
+    assert response.images[0].audit_dimensions[0].passed is True

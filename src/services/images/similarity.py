@@ -44,12 +44,16 @@ def feature_similarity(
         right = _normalized_text(candidate.get(field))
         if left and right:
             scores.append(_field_similarity(field, left, right))
-    left_subjects = {_normalized_text(value) for value in _string_list(query.get("subjects"))}
-    right_subjects = {_normalized_text(value) for value in _string_list(candidate.get("subjects"))}
-    left_subjects.discard("")
-    right_subjects.discard("")
-    if left_subjects and right_subjects:
-        scores.append(len(left_subjects & right_subjects) / min(len(left_subjects), len(right_subjects)))
+    for field in ("subjects", "objects", "ocr_text"):
+        list_score = _list_similarity(
+            _string_list(query.get(field)), _string_list(candidate.get(field))
+        )
+        if list_score is not None:
+            scores.append(list_score)
+    for field in ("attributes", "features"):
+        mapping_score = _mapping_similarity(query.get(field), candidate.get(field))
+        if mapping_score is not None:
+            scores.append(mapping_score)
     return sum(scores) / len(scores) if scores else 0.0
 
 
@@ -130,25 +134,9 @@ def _normalized_text(value: object) -> str:
 
 
 def _field_similarity(field: str, left: str, right: str) -> float:
+    del field
     if left == right:
         return 1.0
-    if field == "condition":
-        left_stage = _condition_stage(left)
-        right_stage = _condition_stage(right)
-        if left_stage and right_stage:
-            return 1.0 if left_stage == right_stage else 0.0
-    if field == "view":
-        left_view = _view_type(left)
-        right_view = _view_type(right)
-        if left_view and right_view:
-            return 1.0 if left_view == right_view else 0.0
-    if field == "space":
-        left_spaces = _space_types(left)
-        right_spaces = _space_types(right)
-        if left_spaces and right_spaces:
-            overlap = len(left_spaces & right_spaces) / min(len(left_spaces), len(right_spaces))
-            if overlap:
-                return max(overlap, _phrase_similarity(left, right))
     return _phrase_similarity(left, right)
 
 
@@ -173,57 +161,38 @@ def _longest_common_substring_length(left: str, right: str) -> int:
     return longest
 
 
-def _condition_stage(value: str) -> str:
-    groups = {
-        "before": ("装修前", "施工前", "待装修", "毛坯"),
-        "during": ("施工中", "装修中", "施工现场", "改造中"),
-        "completed": ("装修完成", "已装修", "完工", "竣工", "精装"),
-    }
-    for stage, aliases in groups.items():
-        if any(alias in value for alias in aliases):
-            return stage
-    return ""
+def _list_similarity(left_values: list[str], right_values: list[str]) -> float | None:
+    left = [_normalized_text(value) for value in left_values]
+    right = [_normalized_text(value) for value in right_values]
+    left = [value for value in left if value]
+    right = [value for value in right if value]
+    if not left or not right:
+        return None
+    source, target = (left, right) if len(left) <= len(right) else (right, left)
+    return sum(max(_phrase_similarity(value, other) for other in target) for value in source) / len(source)
 
 
-def _view_type(value: str) -> str:
-    groups = {
-        "panorama": ("全景", "整体"),
-        "medium": ("中景",),
-        "closeup": ("特写", "近景", "细节", "局部"),
-    }
-    for view_type, aliases in groups.items():
-        if any(alias in value for alias in aliases):
-            return view_type
-    return ""
-
-
-def _space_types(value: str) -> set[str]:
-    spaces = {
-        name
-        for name in (
-            "客厅",
-            "餐厅",
-            "玄关",
-            "厨房",
-            "卧室",
-            "书房",
-            "阳台",
-            "卫生间",
-            "厕所",
-            "过道",
-            "楼梯",
-            "外立面",
-        )
-        if name in value
-    }
-    if "客餐厅" in value:
-        spaces.update({"客厅", "餐厅"})
-    if "卫浴" in value:
-        spaces.add("卫生间")
-    return spaces
+def _mapping_similarity(left_value: object, right_value: object) -> float | None:
+    if not isinstance(left_value, dict) or not isinstance(right_value, dict):
+        return None
+    left = {_normalized_text(key): _string_values(value) for key, value in left_value.items()}
+    right = {_normalized_text(key): _string_values(value) for key, value in right_value.items()}
+    common_keys = (set(left) & set(right)) - {""}
+    scores = [
+        score
+        for key in common_keys
+        if (score := _list_similarity(left[key], right[key])) is not None
+    ]
+    return sum(scores) / len(scores) if scores else None
 
 
 def _string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str)]
+
+
+def _string_values(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    return _string_list(value)

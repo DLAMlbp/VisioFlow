@@ -1,6 +1,6 @@
 id: library_similarity_v2
 version: 5
-description: 两项分数都达到 60% 自动匹配，任一分数低于 60% 无法识别并等待人工复核。
+description: 图片相似度和综合分都达到 60% 时自动继承参考素材标签，否则进入人工复核。
 
 similarity_candidate_limit: 20
 similarity_image_weight: 0.70

@@ -1,19 +1,23 @@
 import { Copy, Loader2, Plus, Save, Trash2, WandSparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "./services/api";
-import type { ProcessingProfile, ProcessingProfileType, ProfileOption, ProfilePreview } from "./types";
+import type { ProcessingProfile, ProcessingStandard, ProfileOption, ProfilePreview } from "./types";
 
-interface ProfileWorkspaceProps {
+interface Props {
   onMessage: (message: string) => void;
   onProfilesChanged: () => Promise<void>;
 }
 
-export function ProfileWorkspace({ onMessage, onProfilesChanged }: ProfileWorkspaceProps) {
-  const [type, setType] = useState<ProcessingProfileType>("filter");
+type EditorType = "filter" | "beautify";
+
+export function ProfileWorkspace({ onMessage, onProfilesChanged }: Props) {
+  const [type, setType] = useState<EditorType>("filter");
   const [profiles, setProfiles] = useState<ProfileOption[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [name, setName] = useState("");
+  const [activationRule, setActivationRule] = useState("");
   const [instruction, setInstruction] = useState("");
+  const [priority, setPriority] = useState(100);
   const [version, setVersion] = useState<number | null>(null);
   const [preview, setPreview] = useState<ProfilePreview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -22,7 +26,9 @@ export function ProfileWorkspace({ onMessage, onProfilesChanged }: ProfileWorksp
   async function loadList(nextType = type, preferredId?: string | null) {
     setLoading(true);
     try {
-      const items = nextType === "filter" ? await api.getFilterProfiles() : await api.getBeautifyProfiles();
+      const items = nextType === "filter"
+        ? await api.getProcessingStandards()
+        : await api.getBeautifyProfiles();
       setProfiles(items);
       const nextId = preferredId === null ? null : preferredId ?? items[0]?.id ?? null;
       if (nextId) await openProfile(nextType, nextId);
@@ -34,15 +40,28 @@ export function ProfileWorkspace({ onMessage, onProfilesChanged }: ProfileWorksp
     }
   }
 
-  async function openProfile(nextType: ProcessingProfileType, profileId: string) {
+  async function openProfile(nextType: EditorType, profileId: string) {
     setBusy(true);
     try {
-      const detail = await api.getProcessingProfile(nextType, profileId);
-      setSelectedId(detail.id);
-      setName(detail.name);
-      setInstruction(detail.instruction);
-      setVersion(detail.version);
-      setPreview({ description: detail.description, config: detail.config, unsupported: [], can_save: true });
+      if (nextType === "filter") {
+        const detail = await api.getProcessingStandard(profileId);
+        setSelectedId(detail.id);
+        setName(detail.name);
+        setActivationRule(detail.activation_rule);
+        setInstruction(detail.filter_rule);
+        setPriority(detail.priority);
+        setVersion(detail.version);
+        setPreview({ description: detail.description, config: {}, unsupported: [], can_save: true });
+      } else {
+        const detail = await api.getProcessingProfile("beautify", profileId);
+        setSelectedId(detail.id);
+        setName(detail.name);
+        setActivationRule("");
+        setInstruction(detail.instruction);
+        setPriority(100);
+        setVersion(detail.version);
+        setPreview({ description: detail.description, config: detail.config, unsupported: [], can_save: true });
+      }
     } catch (error) {
       onMessage(error instanceof Error ? error.message : "读取标准详情失败");
     } finally {
@@ -50,34 +69,44 @@ export function ProfileWorkspace({ onMessage, onProfilesChanged }: ProfileWorksp
     }
   }
 
-  function startNew(copy?: ProcessingProfile) {
+  function startNew(copy?: ProcessingStandard | ProcessingProfile) {
     setSelectedId(null);
     setName(copy ? `${copy.name} 副本` : "");
-    setInstruction(copy?.instruction ?? "");
+    if (copy && "activation_rule" in copy) {
+      setActivationRule(copy.activation_rule);
+      setInstruction(copy.filter_rule);
+      setPriority(copy.priority);
+    } else {
+      setActivationRule("");
+      setInstruction(copy?.instruction ?? "");
+      setPriority(100);
+    }
     setVersion(null);
-    setPreview(copy ? { description: copy.description, config: copy.config, unsupported: [], can_save: true } : null);
+    setPreview(copy ? { description: copy.description, config: "config" in copy ? copy.config : {}, unsupported: [], can_save: true } : null);
   }
 
   async function copyCurrent() {
     if (!selectedId) return;
-    try {
-      startNew(await api.getProcessingProfile(type, selectedId));
-    } catch (error) {
-      onMessage(error instanceof Error ? error.message : "复制标准失败");
-    }
+    const detail = type === "filter"
+      ? await api.getProcessingStandard(selectedId)
+      : await api.getProcessingProfile("beautify", selectedId);
+    startNew(detail);
   }
 
   async function generatePreview() {
-    if (instruction.trim().length < 3) {
-      onMessage("请先输入至少 3 个字的处理要求");
+    if (instruction.trim().length < 3 || (type === "filter" && activationRule.trim().length < 3)) {
+      onMessage(type === "filter" ? "启动规则和过滤规则都至少需要 3 个字" : "美化要求至少需要 3 个字");
       return;
     }
     setBusy(true);
     try {
-      setPreview(await api.previewProcessingProfile(type, instruction.trim()));
-      onMessage("处理要求已解析，可以保存");
+      const result = type === "filter"
+        ? await api.previewProcessingStandard({ activation_rule: activationRule.trim(), filter_rule: instruction.trim(), priority })
+        : await api.previewProcessingProfile("beautify", instruction.trim());
+      setPreview(result);
+      onMessage("标准已校验，可以保存");
     } catch (error) {
-      onMessage(error instanceof Error ? error.message : "解析处理要求失败");
+      onMessage(error instanceof Error ? error.message : "校验标准失败");
     } finally {
       setBusy(false);
     }
@@ -85,18 +114,20 @@ export function ProfileWorkspace({ onMessage, onProfilesChanged }: ProfileWorksp
 
   async function save() {
     if (!name.trim() || !preview) {
-      onMessage("请填写名称并解析处理要求");
+      onMessage("请填写名称并先校验规则");
       return;
     }
     setBusy(true);
     try {
-      const saved = await api.saveProcessingProfile(type, selectedId, {
-        name: name.trim(),
-        instruction: instruction.trim(),
-        description: preview.description,
-        config: preview.config,
-        expected_version: version ?? undefined
-      });
+      const saved = type === "filter"
+        ? await api.saveProcessingStandard(selectedId, {
+            name: name.trim(), activation_rule: activationRule.trim(), filter_rule: instruction.trim(),
+            priority, description: preview.description, expected_version: version ?? undefined
+          })
+        : await api.saveProcessingProfile("beautify", selectedId, {
+            name: name.trim(), instruction: instruction.trim(), description: preview.description,
+            config: preview.config, expected_version: version ?? undefined
+          });
       await onProfilesChanged();
       await loadList(type, saved.id);
       onMessage(selectedId ? "标准已更新，新任务将使用新版本" : "标准已创建");
@@ -111,12 +142,11 @@ export function ProfileWorkspace({ onMessage, onProfilesChanged }: ProfileWorksp
     if (!selectedId || !window.confirm(`确认停用“${name}”？历史任务不会受影响。`)) return;
     setBusy(true);
     try {
-      await api.deleteProcessingProfile(type, selectedId);
+      if (type === "filter") await api.deleteProcessingStandard(selectedId);
+      else await api.deleteProcessingProfile("beautify", selectedId);
       await onProfilesChanged();
       await loadList(type);
       onMessage("标准已停用");
-    } catch (error) {
-      onMessage(error instanceof Error ? error.message : "停用标准失败");
     } finally {
       setBusy(false);
     }
@@ -124,40 +154,22 @@ export function ProfileWorkspace({ onMessage, onProfilesChanged }: ProfileWorksp
 
   useEffect(() => { void loadList(type); }, [type]);
 
-  return (
-    <section className="profile-workspace" id="mainWorkspace" aria-label="标准管理">
-      <header className="profile-heading">
-        <div><span className="panel-kicker">PROCESSING RULES</span><h2>标准管理</h2><p>用自然语言创建可复用的过滤和美化标准。</p></div>
-        <button className="primary-button" type="button" onClick={() => startNew()}><Plus size={16} />新增标准</button>
-      </header>
-
-      <div className="profile-tabs" role="tablist" aria-label="标准类型">
-        <button role="tab" aria-selected={type === "filter"} className={type === "filter" ? "active" : ""} onClick={() => setType("filter")}>过滤标准</button>
-        <button role="tab" aria-selected={type === "beautify"} className={type === "beautify" ? "active" : ""} onClick={() => setType("beautify")}>美化标准</button>
-      </div>
-
-      <div className="profile-layout">
-        <aside className="profile-list" aria-label={`${type === "filter" ? "过滤" : "美化"}标准列表`}>
-          {loading ? <p className="profile-muted"><Loader2 className="spin" size={16} />正在读取</p> : profiles.length ? profiles.map((item) => (
-            <button key={item.id} type="button" className={selectedId === item.id ? "active" : ""} onClick={() => void openProfile(type, item.id)}>
-              <strong>{item.name}</strong><span>版本 {item.version ?? 1}</span><p>{item.description}</p>
-            </button>
-          )) : <p className="profile-empty">暂无标准，请新建后再处理图片。</p>}
-        </aside>
-
-        <section className="profile-editor" aria-label="标准编辑器">
-          <div className="profile-editor-heading">
-            <div><h3>{selectedId ? "编辑标准" : "新建标准"}</h3><p>{type === "filter" ? "用自然语言设置 AI 图片过滤要求" : "用自然语言设置 AI 图片美化要求"}</p></div>
-            {selectedId && <div className="profile-icon-actions"><button type="button" title="复制" aria-label="复制标准" onClick={() => void copyCurrent()}><Copy size={16} /></button><button type="button" title="停用" aria-label="停用标准" onClick={() => void remove()}><Trash2 size={16} /></button></div>}
-          </div>
-
-          <label className="profile-field">标准名称<input value={name} maxLength={120} onChange={(event) => setName(event.target.value)} placeholder={type === "filter" ? "例如：工地照片严格筛选" : "例如：室内照片明亮增强"} /></label>
-          <label className="profile-field">处理要求<textarea value={instruction} maxLength={2000} rows={6} onChange={(event) => { setInstruction(event.target.value); setPreview(null); }} placeholder={type === "filter" ? "例如：过滤宽度小于 1280、严重模糊和大面积过暗的图片" : "例如：适度提亮，压低高光，轻微降噪，保持颜色自然"} /></label>
-          <button className="profile-generate" type="button" disabled={busy} onClick={() => void generatePreview()}>{busy ? <Loader2 className="spin" size={16} /> : <WandSparkles size={16} />}{busy ? "正在解析" : "解析处理要求"}</button>
-
-          <div className="profile-save-row"><button className="primary-button" type="button" disabled={busy || !preview} onClick={() => void save()}><Save size={16} />保存标准</button></div>
-        </section>
-      </div>
-    </section>
-  );
+  return <section className="profile-workspace" id="mainWorkspace" aria-label="标准管理">
+    <header className="profile-heading"><div><span className="panel-kicker">PROCESSING RULES</span><h2>标准管理</h2><p>过滤标准固定两套且必须完整覆盖图片；美化标准独立维护。</p></div><button className="primary-button" type="button" disabled={type === "filter" && profiles.length >= 2} onClick={() => startNew()}><Plus size={16} />新增标准</button></header>
+    <div className="profile-tabs" role="tablist"><button role="tab" aria-selected={type === "filter"} className={type === "filter" ? "active" : ""} onClick={() => setType("filter")}>条件过滤标准</button><button role="tab" aria-selected={type === "beautify"} className={type === "beautify" ? "active" : ""} onClick={() => setType("beautify")}>美化标准</button></div>
+    <div className="profile-layout">
+      <aside className="profile-list">{loading ? <p className="profile-muted"><Loader2 className="spin" size={16} />正在读取</p> : profiles.length ? profiles.map((item) => <button key={item.id} type="button" className={selectedId === item.id ? "active" : ""} onClick={() => void openProfile(type, item.id)}><strong>{item.name}</strong><span>版本 {item.version ?? 1}</span><p>{item.description}</p></button>) : <p className="profile-empty">暂无标准，请先新建。</p>}</aside>
+      <section className="profile-editor">
+        <div className="profile-editor-heading"><div><h3>{selectedId ? "编辑标准" : "新建标准"}</h3><p>{type === "filter" ? "两套启动规则必须互斥并完整覆盖，每张图片只允许命中一套" : "过滤通过后执行独立美化标准"}</p></div>{selectedId && <div className="profile-icon-actions">{type !== "filter" && <button type="button" aria-label="复制标准" onClick={() => void copyCurrent()}><Copy size={16} /></button>}<button type="button" aria-label="停用标准" onClick={() => void remove()}><Trash2 size={16} /></button></div>}</div>
+        <label className="profile-field">标准名称<input value={name} maxLength={120} onChange={(event) => setName(event.target.value)} /></label>
+        {type === "filter" && <>
+          <label className="profile-field">启动规则<textarea value={activationRule} rows={4} maxLength={2000} onChange={(event) => { setActivationRule(event.target.value); setPreview(null); }} placeholder="例如：图片主体是商品，且背景接近纯白" /></label>
+        </>}
+        <label className="profile-field">{type === "filter" ? "过滤规则" : "美化要求"}<textarea value={instruction} rows={5} maxLength={2000} onChange={(event) => { setInstruction(event.target.value); setPreview(null); }} /></label>
+        <button className="profile-generate" type="button" disabled={busy} onClick={() => void generatePreview()}>{busy ? <Loader2 className="spin" size={16} /> : <WandSparkles size={16} />}{busy ? "正在校验" : "校验规则"}</button>
+        {preview && <p className="profile-muted">{preview.description}</p>}
+        <div className="profile-save-row"><button className="primary-button" type="button" disabled={busy || !preview} onClick={() => void save()}><Save size={16} />保存标准</button></div>
+      </section>
+    </div>
+  </section>;
 }
