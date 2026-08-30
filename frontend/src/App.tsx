@@ -19,7 +19,7 @@ import {
   UploadCloud,
   X
 } from "lucide-react";
-import { ChangeEvent, DragEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, DragEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./services/api";
 import { LibraryWorkspace } from "./LibraryWorkspace";
 import { ProfileWorkspace } from "./ProfileWorkspace";
@@ -46,6 +46,17 @@ const MAX_IMAGES = 500;
 const MAX_IMAGE_SIZE_MB = 25;
 const UPLOAD_CONCURRENCY = 6;
 const PAGE_SIZE = 50;
+
+type WorkflowStep = 1 | 2 | 3 | 4 | 5 | 6;
+
+const WORKFLOW_STEPS: Array<{ id: WorkflowStep; title: string; description: string }> = [
+  { id: 1, title: "创建任务", description: "导入与校验" },
+  { id: 2, title: "处理方案", description: "选择执行标准" },
+  { id: 3, title: "执行检查", description: "确认任务配置" },
+  { id: 4, title: "自动处理", description: "查看实时进度" },
+  { id: 5, title: "人工复核", description: "校验与修正" },
+  { id: 6, title: "交付归档", description: "下载与留档" }
+];
 
 function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -77,6 +88,7 @@ function App() {
   const [modelConfig, setModelConfig] = useState<AIModelConfig | null>(null);
   const [modelApiKey, setModelApiKey] = useState("");
   const [activeWorkspace, setActiveWorkspace] = useState<"processing" | "library" | "profiles">("processing");
+  const [workflowStep, setWorkflowStep] = useState<WorkflowStep>(1);
 
   const uploadedCount = items.filter((item) => item.status === "uploaded").length;
   const failedCount = items.filter((item) => item.status === "failed").length;
@@ -84,15 +96,9 @@ function App() {
     && (!filterEnabled || selectedStandardIds.length === 2)
     && (!beautifyEnabled || Boolean(beautifyProfile))
     && !busy;
-  const currentStep = results
-    ? 4
-    : job?.status === "tagging"
-      ? 3
-      : job?.status === "enhancing"
-        ? 2
-        : job && ["queued", "processing", "analyzing", "ranking"].includes(job.status)
-          ? 1
-          : 0;
+  const selectedStandards = processingStandards.filter((standard) => selectedStandardIds.includes(standard.id));
+  const selectedBeautifyProfile = beautifyProfiles.find((profile) => profile.id === beautifyProfile);
+  const estimatedMinutes = Math.max(1, Math.ceil(Math.max(items.length, 1) / 25));
   const averageScore = useMemo(() => {
     const selected = results?.images.filter((image) => image.decision === "selected") ?? [];
     if (!selected.length) return 0;
@@ -217,6 +223,17 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [job, resultFilter, resultPage]);
 
+  useEffect(() => {
+    if (!job) return;
+    if (!isTerminalStatus(job.status)) {
+      setWorkflowStep(4);
+      return;
+    }
+    if (results) {
+      setWorkflowStep((current) => current < 5 ? 5 : current);
+    }
+  }, [job, results]);
+
   async function loadResultPage(
     jobId: string,
     operationVersion: number,
@@ -330,6 +347,7 @@ function App() {
     setUploadPage(0);
     setBusy(false);
     setMessage(null);
+    setWorkflowStep(1);
   }
 
   function isCurrentOperation(operationVersion: number) {
@@ -406,9 +424,11 @@ function App() {
         if (!isCurrentOperation(operationVersion)) return;
         setResults(restoredResults);
         setSelectedImage(restoredResults.images.find((image) => image.decision === "selected") ?? restoredResults.images[0] ?? null);
+        setWorkflowStep(5);
       } else {
         setResults(null);
         setSelectedImage(null);
+        setWorkflowStep(4);
       }
       setHistoryOpen(false);
       window.scrollTo({ top: 0, behavior: "smooth" });
@@ -450,6 +470,7 @@ function App() {
     setJob(null);
     setResults(null);
     setSelectedImage(null);
+    setWorkflowStep(4);
 
     try {
       const uploadable = items.filter((item) => item.file);
@@ -502,6 +523,7 @@ function App() {
     } catch (error) {
       if (!isCurrentOperation(operationVersion)) return;
       setMessage(error instanceof Error ? error.message : "创建任务失败");
+      setWorkflowStep(3);
     } finally {
       if (isCurrentOperation(operationVersion)) setBusy(false);
     }
@@ -568,22 +590,6 @@ function App() {
         </div>
       </header>
 
-      {activeWorkspace === "processing" && (
-        <nav className="top-nav app-flow workflow-nav" aria-label="图片处理流程">
-          {["上传图片", "质量检测", "自动美化", "相似匹配", "结果"].map((label, index) => {
-            const done = index < currentStep;
-            const active = index === currentStep;
-            return (
-              <div key={label} className={`flow-step ${active ? "active" : ""} ${done ? "done" : ""}`} aria-current={active ? "step" : undefined}>
-                <span>{done ? <Check size={13} aria-hidden="true" /> : index + 1}</span>
-                <strong>{label}</strong>
-                {index < 4 && <i aria-hidden="true" />}
-              </div>
-            );
-          })}
-        </nav>
-      )}
-
       {message && (
         <section className="notice" role="status">
           <AlertCircle size={18} aria-hidden="true" />
@@ -618,118 +624,191 @@ function App() {
       )}
 
       {activeWorkspace === "processing" ? <>
-      <div className="workspace-grid" id="mainWorkspace">
-        <section className="control-panel reference-control">
-          <div className="panel-intro">
-            <span className="panel-kicker">BATCH ENHANCE</span>
-            <div>
-              <h2>图片处理</h2>
-              <p>按自定义规则批量筛选、优化并标记各类图片。</p>
+        <div className={`sop-workspace ${workflowStep >= 4 ? "is-wide" : ""}`} id="mainWorkspace">
+          <aside className="sop-rail" aria-label="图片处理 SOP">
+            <div className="rail-heading">
+              <div><span>SOP WORKFLOW</span><b>6 步</b></div>
+              <strong>标准处理流程</strong>
+              <small>从图片导入到结果交付，全程清晰可追踪</small>
             </div>
-          </div>
+            <div className="rail-progress" aria-label={`当前第 ${workflowStep} 步，共 6 步`}>
+              <div><span>当前进度</span><strong>{workflowStep} / 6</strong></div>
+              <i><b style={{ width: `${(workflowStep / WORKFLOW_STEPS.length) * 100}%` }} /></i>
+            </div>
+            <ol>
+              {WORKFLOW_STEPS.map((step) => {
+                const done = step.id < workflowStep;
+                const active = step.id === workflowStep;
+                const navigable = active
+                  || (!job && step.id < workflowStep && step.id <= 3)
+                  || (Boolean(results) && step.id >= 5);
+                return <li key={step.id} className={`${active ? "active" : ""} ${done ? "done" : ""}`}>
+                  <button type="button" disabled={!navigable} aria-current={active ? "step" : undefined} onClick={() => setWorkflowStep(step.id)}>
+                    <span>{done ? <Check size={15} aria-hidden="true" /> : step.id}</span>
+                    <div><strong>{step.title}</strong><small>{step.description}</small></div>
+                  </button>
+                </li>;
+              })}
+            </ol>
+            <div className="rail-help"><CircleDot size={17} aria-hidden="true" /><span><strong>流程说明</strong>每个页面只完成一个主要任务</span></div>
+          </aside>
 
-          <div className="step-section">
-            <div className="step-heading"><span>1</span><div><h3>上传图片</h3><p>支持一次导入多张不同类型的图片</p></div></div>
-            <section
-              className={`upload-zone ${dragActive ? "is-dragging" : ""}`}
-              onDragEnter={(event) => { event.preventDefault(); setDragActive(true); }}
-              onDragOver={(event) => event.preventDefault()}
-              onDragLeave={() => setDragActive(false)}
-              onDrop={onDrop}
-            >
-              <div className="drop-target">
-                <UploadCloud size={26} aria-hidden="true" />
-                <div><strong>上传图片</strong><span>点击选择或拖入图片</span></div>
+          <section className="sop-stage" aria-live="polite">
+            {workflowStep === 1 && <>
+              <header className="sop-stage-heading">
+                <span>步骤 1 / 6</span>
+                <h2>创建任务与导入图片</h2>
+                <p>导入需要批量处理的图片，系统会自动校验格式与大小。</p>
+              </header>
+              <section
+                className={`sop-upload-zone ${dragActive ? "is-dragging" : ""}`}
+                onDragEnter={(event) => { event.preventDefault(); setDragActive(true); }}
+                onDragOver={(event) => event.preventDefault()}
+                onDragLeave={() => setDragActive(false)}
+                onDrop={onDrop}
+              >
+                <UploadCloud size={34} aria-hidden="true" />
+                <strong>拖拽图片到此处，或点击选择图片</strong>
+                <p>支持 JPG、JPEG、PNG、WebP，单张不超过 {MAX_IMAGE_SIZE_MB}MB，最多 {MAX_IMAGES} 张</p>
                 <input ref={fileInputRef} id="filePicker" type="file" accept="image/*" multiple onChange={onFileChange} />
                 <button className="secondary-button" type="button" onClick={() => fileInputRef.current?.click()}><FileImage size={16} aria-hidden="true" />选择图片</button>
-              </div>
-              {items.length > 0 && <><div className="upload-grid" aria-live="polite">{pagedUploadItems.map((item) => (
-                <article className="upload-card" key={item.id}>
-                  {item.previewUrl ? <img src={item.previewUrl} alt={item.filename} /> : <span className="upload-placeholder"><FileImage size={20} aria-hidden="true" /></span>}
-                  <div className="upload-card-body"><div><strong title={item.filename}>{item.filename}</strong><span>{formatBytes(item.fileSize)}</span></div><UploadStatus item={item} /></div>
-                  <button className="icon-button" type="button" aria-label={`移除 ${item.filename}`} onClick={() => removeItem(item.id)}><Trash2 size={16} aria-hidden="true" /></button>
-                </article>
-              ))}</div><Pagination page={uploadPage} total={items.length} pageSize={PAGE_SIZE} onChange={setUploadPage} label="上传图片" /></>}
-            </section>
-          </div>
+              </section>
+              <div className="upload-queue-heading"><strong>已导入 {items.length} 张</strong>{items.length > 0 && <button type="button" onClick={resetWorkspace}>清空列表</button>}</div>
+              {items.length ? <>
+                <div className="upload-table" aria-live="polite">
+                  <div className="upload-table-head"><span>文件信息</span><span>大小</span><span>状态</span><span>操作</span></div>
+                  {pagedUploadItems.map((item) => <article className="upload-row" key={item.id}>
+                    <div className="upload-file">{item.previewUrl ? <img src={item.previewUrl} alt="" /> : <span><FileImage size={20} aria-hidden="true" /></span>}<strong title={item.filename}>{item.filename}</strong></div>
+                    <span>{formatBytes(item.fileSize)}</span>
+                    <UploadStatus item={item} />
+                    <button className="icon-button" type="button" aria-label={`移除 ${item.filename}`} onClick={() => removeItem(item.id)}><Trash2 size={16} aria-hidden="true" /></button>
+                  </article>)}
+                </div>
+                <Pagination page={uploadPage} total={items.length} pageSize={PAGE_SIZE} onChange={setUploadPage} label="上传图片" />
+              </> : <div className="queue-empty">尚未导入图片。选择图片后，格式和大小校验结果会显示在这里。</div>}
+              <div className="sop-tip"><AlertCircle size={17} aria-hidden="true" />建议使用清晰、光线充足的原图，以获得稳定的识别与美化效果。</div>
+            </>}
 
-          <div className="step-section">
-            <div className="step-heading"><span>2</span><div><h3>处理与匹配设置</h3><p>固定执行一次 AI 识别、条件筛选、独立美化、标签绑定和素材匹配</p></div></div>
-            <div className="field-stack standard-choice-list">
-              <label>正式处理流水线</label>
-              <p>原图一次 AI 识别 → 二选一启动标准 → 逐项过滤 → 独立美化 → 将首次识别标签绑定到美化图 → 素材库匹配，不重复调用视觉大模型。</p>
-            </div>
-            <div className="field-stack standard-choice-list">
-              <label>条件过滤标准（必须选择两套）</label>
-              {processingStandards.length !== 2 && <p>请在标准管理中配置且仅启用两套互斥、完整覆盖的过滤标准。</p>}
-              {processingStandards.map((standard) => (
-                <label className="standard-choice" key={standard.id}>
-                  <input type="checkbox" checked={selectedStandardIds.includes(standard.id)} onChange={() => toggleProcessingStandard(standard.id)} />
-                  <span><strong>{standard.name}</strong><small>{standard.description}</small></span>
+            {workflowStep === 2 && <>
+              <header className="sop-stage-heading">
+                <button className="back-link" type="button" onClick={() => setWorkflowStep(1)}><ChevronLeft size={16} />返回导入</button>
+                <span>步骤 2 / 6</span>
+                <h2>选择处理方案</h2>
+                <p>为本次任务选择两套互斥审核标准和一套美化方案。</p>
+              </header>
+              <section className="plan-section">
+                <div className="section-title"><div><span>01</span><div><h3>条件过滤标准</h3><p>必须且只能选择两套标准</p></div></div><b>{selectedStandardIds.length} / 2</b></div>
+                <div className="plan-options">
+                  {processingStandards.map((standard) => <label className={`plan-option ${selectedStandardIds.includes(standard.id) ? "selected" : ""}`} key={standard.id}>
+                    <input type="checkbox" checked={selectedStandardIds.includes(standard.id)} onChange={() => toggleProcessingStandard(standard.id)} />
+                    <span><strong>{standard.name}</strong><small>{standard.description}</small></span>
+                    <i>{selectedStandardIds.includes(standard.id) ? <Check size={15} /> : null}</i>
+                  </label>)}
+                  {!processingStandards.length && <p className="inline-warning">尚未配置可用标准，请前往“标准管理”完成配置。</p>}
+                </div>
+              </section>
+              <section className="plan-section">
+                <div className="section-title"><div><span>02</span><div><h3>美化方案</h3><p>过滤通过后统一执行</p></div></div></div>
+                <label className="select-field" htmlFor="beautifyProfile">美化标准
+                  <select id="beautifyProfile" value={beautifyProfile} onChange={(event) => setBeautifyProfile(event.target.value)}>
+                    <option value="" disabled>请选择美化标准</option>
+                    {beautifyProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+                  </select>
+                  <small>{selectedBeautifyProfile?.description ?? "请选择本次任务的美化方案。"}</small>
                 </label>
-              ))}
-              {processingStandards.length > 0 && selectedStandardIds.length !== 2 && <p>每个任务必须且只能选择两套标准。</p>}
-            </div>
-            <div className="field-stack">
-              <label htmlFor="beautifyProfile">美化标准{beautifyEnabled ? "" : "（已跳过）"}</label>
-              <select id="beautifyProfile" disabled={!beautifyEnabled} value={beautifyProfile} onChange={(event) => setBeautifyProfile(event.target.value)}>
-                <option value="" disabled>请选择美化标准</option>
-                {beautifyProfiles.map((profile) => (
-                  <option key={profile.id} value={profile.id}>
-                    {profile.name}
-                  </option>
-                ))}
-              </select>
-              <p>{beautifyEnabled ? beautifyProfiles.find((profile) => profile.id === beautifyProfile)?.description ?? "过滤通过后，统一按这套独立标准生成美化图。" : "关闭后保持原始画面，仅校正方向并生成标准交付文件。"}</p>
-            </div>
-          </div>
+              </section>
+              <section className="pipeline-note"><Sparkles size={20} aria-hidden="true" /><div><strong>正式处理流水线</strong><p>AI 初筛 → 标准过滤 → 独立美化 → 标签绑定 → 素材库匹配。识别结果会复用，不重复调用视觉模型。</p></div></section>
+            </>}
 
-          <button className="primary-button" type="button" onClick={startJob} disabled={!canCreateJob}>
-            {busy ? <Loader2 className="spin" size={18} aria-hidden="true" /> : <Sparkles size={18} aria-hidden="true" />}
-            {busy ? "正在创建任务" : "上传并开始处理"}
-          </button>
-        </section>
-
-        <section className="result-stage" aria-label="生成结果">
-          <div className="result-stage-heading"><div><h2>生成结果</h2><p>{results ? "结果会按处理顺序排列" : "完成上传并处理后，结果将在这里出现"}</p></div></div>
-          {!results && <div className="result-empty"><span><Sparkles size={25} aria-hidden="true" /></span><strong>从一组图片中整理出可用结果</strong><p>在左侧上传图片并配置处理阶段，平台会按本次任务设置逐张处理。</p></div>}
-          {results && <ResultsPanel results={results} averageScore={averageScore} resultFilter={resultFilter} visibleResults={visibleResults} selectedImage={selectedImage} page={resultPage} onFilterChange={(filter) => void changeResultPage(0, filter)} onPageChange={(page) => void changeResultPage(page)} onSelectImage={setSelectedImage} onReviewResolved={applyReviewResult} onRetry={(imageId) => void retryImage(imageId)} />}
-        </section>
-      </div>
-
-      {job && (
-        <section className="progress-band">
-          <div className="progress-copy">
-            <Clock3 size={20} aria-hidden="true" />
-            <div>
-              <h2>{statusLabel(job.status)}</h2>
-              <p>
-                {job.processed}/{job.total} 已处理，{job.selected} 已保留，{job.rejected} 未通过，{job.not_selected} 合格未入选
-              </p>
-              <div className="stage-counts">
-                {Object.entries(job.stage_counts).filter(([, count]) => count > 0).map(([stage, count]) => <span key={stage}>{stageCountLabel(stage)} {count}</span>)}
+            {workflowStep === 3 && <>
+              <header className="sop-stage-heading">
+                <button className="back-link" type="button" onClick={() => setWorkflowStep(2)}><ChevronLeft size={16} />返回方案</button>
+                <span>步骤 3 / 6</span>
+                <h2>执行前检查</h2>
+                <p>确认后将锁定本次任务配置，并开始上传与自动处理。</p>
+              </header>
+              <div className="preflight-list">
+                <PreflightRow icon={<Images size={20} />} title="图片清单" detail={`${items.length} 张图片已就绪`} valid={items.length > 0} action="返回修改" onAction={() => setWorkflowStep(1)} />
+                <PreflightRow icon={<Check size={20} />} title="处理标准" detail={selectedStandards.map((item) => item.name).join("、") || "尚未选择"} valid={selectedStandardIds.length === 2} action="修改" onAction={() => setWorkflowStep(2)} />
+                <PreflightRow icon={<Sparkles size={20} />} title="AI 与美化方案" detail={`AI 识别已启用 · ${selectedBeautifyProfile?.name ?? "尚未选择"}`} valid={Boolean(beautifyProfile)} action="修改" onAction={() => setWorkflowStep(2)} />
+                <PreflightRow icon={<Database size={20} />} title="素材库匹配" detail="独立美化后自动匹配，未匹配项进入人工复核" valid action="查看素材库" onAction={() => setActiveWorkspace("library")} />
               </div>
-            </div>
-          </div>
-          <div className="progress-meter" aria-label={`任务进度 ${job.progress}%`}>
-            <span style={{ width: `${job.progress}%` }} />
-          </div>
-          <strong>{job.progress}%</strong>
-          {!isTerminalStatus(job.status) && <button className="cancel-job-button" type="button" onClick={() => void cancelCurrentJob()}><X size={15} aria-hidden="true" />取消任务</button>}
-        </section>
-      )}
+              <div className="preflight-notice"><AlertCircle size={18} aria-hidden="true" /><div><strong>开始后配置将被锁定</strong><p>如需修改图片或处理方案，请在开始处理前返回对应步骤。</p></div></div>
+            </>}
 
-      {historyOpen && (
-        <HistoryPanel
-          history={history}
-          loading={historyLoading}
-          onRefresh={() => void loadHistory()}
-          onOpen={(entry) => void openHistoryJob(entry)}
-        />
-      )}
+            {workflowStep === 4 && <>
+              <header className="sop-stage-heading centered">
+                <span>步骤 4 / 6</span>
+                <h2>{job ? statusLabel(job.status) : "正在上传并创建任务"}</h2>
+                <p>任务正在后台执行，可以保持页面打开查看实时进度。</p>
+              </header>
+              <div className="processing-hero">
+                <span className="processing-icon"><Loader2 className="spin" size={34} aria-hidden="true" /></span>
+                <strong>{job?.progress ?? Math.min(18, Math.round((uploadedCount / Math.max(items.length, 1)) * 18))}%</strong>
+                <div className="processing-meter"><i style={{ width: `${job?.progress ?? Math.min(18, Math.round((uploadedCount / Math.max(items.length, 1)) * 18))}%` }} /></div>
+                <p>{job ? `${job.processed}/${job.total} 已处理` : `${uploadedCount}/${items.length} 已上传`}</p>
+              </div>
+              <div className="processing-stages">
+                {["上传校验", "AI 初筛", "标准过滤", "独立美化", "素材匹配", "汇总结果"].map((label, index) => {
+                  const progress = job?.progress ?? (busy ? 8 : 0);
+                  const threshold = [5, 18, 38, 58, 78, 96][index];
+                  const done = progress >= threshold;
+                  const active = !done && (index === 0 || progress >= [0, 5, 18, 38, 58, 78][index]);
+                  return <div key={label} className={`${done ? "done" : ""} ${active ? "active" : ""}`}><span>{done ? <Check size={15} /> : index + 1}</span><strong>{label}</strong></div>;
+                })}
+              </div>
+              {job && <div className="stage-counts centered-counts">{Object.entries(job.stage_counts).filter(([, count]) => count > 0).map(([stage, count]) => <span key={stage}>{stageCountLabel(stage)} {count}</span>)}</div>}
+              {job && !isTerminalStatus(job.status) && <button className="cancel-job-button centered-cancel" type="button" onClick={() => void cancelCurrentJob()}><X size={15} aria-hidden="true" />取消当前任务</button>}
+            </>}
+
+            {workflowStep === 5 && <>
+              <header className="sop-stage-heading result-heading-row"><div><span>步骤 5 / 6</span><h2>人工复核</h2><p>检查处理结果、修正待复核项，并按需要重试失败图片。</p></div>{results && <button className="primary-inline" type="button" onClick={() => setWorkflowStep(6)}>进入交付<ChevronRight size={16} /></button>}</header>
+              {results ? <ResultsPanel results={results} averageScore={averageScore} resultFilter={resultFilter} visibleResults={visibleResults} selectedImage={selectedImage} page={resultPage} onFilterChange={(filter) => void changeResultPage(0, filter)} onPageChange={(page) => void changeResultPage(page)} onSelectImage={setSelectedImage} onReviewResolved={applyReviewResult} onRetry={(imageId) => void retryImage(imageId)} /> : <div className="queue-empty">结果正在汇总，完成后会自动进入复核。</div>}
+            </>}
+
+            {workflowStep === 6 && <>
+              <header className="sop-stage-heading centered">
+                <span>步骤 6 / 6</span>
+                <h2>交付与归档</h2>
+                <p>下载本次处理结果，任务配置与处理记录会保留在历史记录中。</p>
+              </header>
+              <div className="delivery-summary">
+                <span className="delivery-icon"><Check size={32} aria-hidden="true" /></span>
+                <p>处理流程已完成，可以下载交付文件。</p>
+                <div><Metric label="总图片" value={results?.summary.total ?? 0} /><Metric label="保留并美化" value={results?.summary.selected ?? 0} tone="selected" /><Metric label="未通过标准" value={results?.summary.rejected ?? 0} tone="rejected" /><Metric label="合格未入选" value={results?.summary.not_selected ?? 0} /></div>
+                <button className="primary-inline delivery-download" type="button" disabled={!results?.images.some((image) => image.enhanced_url ?? image.original_url)} onClick={() => results && downloadCurrentPage(results.images)}><ArrowDownToLine size={17} />下载当前结果</button>
+                <button className="ghost-button" type="button" onClick={resetWorkspace}>创建新任务</button>
+              </div>
+            </>}
+          </section>
+
+          {workflowStep <= 3 && <aside className="task-summary">
+            <h2>本次任务</h2>
+            <dl>
+              <div><dt>图片数量</dt><dd><strong>{items.length}</strong> 张{items.length > 0 && <small className="summary-file-status"><em>{items.length - failedCount} 张已校验</em>{failedCount > 0 && <b>{failedCount} 张需处理</b>}</small>}</dd></div>
+              <div><dt>处理标准</dt><dd>{workflowStep === 1 ? "待选择" : selectedStandards.length ? selectedStandards.map((item) => item.name).join("、") : "待选择"}</dd></div>
+              <div><dt>美化方案</dt><dd>{workflowStep === 1 ? "待选择" : selectedBeautifyProfile?.name ?? "待选择"}</dd></div>
+              <div><dt>预计处理</dt><dd><Clock3 size={15} aria-hidden="true" />约 {estimatedMinutes}–{estimatedMinutes + 2} 分钟</dd></div>
+            </dl>
+            {workflowStep === 1 && <button className="summary-primary" type="button" disabled={!items.length} onClick={() => setWorkflowStep(2)}>继续选择方案<ChevronRight size={17} /></button>}
+            {workflowStep === 2 && <button className="summary-primary" type="button" disabled={selectedStandardIds.length !== 2 || !beautifyProfile} onClick={() => setWorkflowStep(3)}>进入执行检查<ChevronRight size={17} /></button>}
+            {workflowStep === 3 && <button className="summary-primary" type="button" disabled={!canCreateJob} onClick={() => void startJob()}>{busy ? <Loader2 className="spin" size={17} /> : <Sparkles size={17} />}确认并开始处理</button>}
+          </aside>}
+        </div>
+
+        {historyOpen && <HistoryPanel history={history} loading={historyLoading} onRefresh={() => void loadHistory()} onOpen={(entry) => void openHistoryJob(entry)} />}
       </> : activeWorkspace === "library" ? <LibraryWorkspace onMessage={setMessage} /> : <ProfileWorkspace onMessage={setMessage} onProfilesChanged={reloadProcessingProfiles} />}
     </main>
   );
+}
+
+function PreflightRow({ icon, title, detail, valid, action, onAction }: { icon: ReactNode; title: string; detail: string; valid: boolean; action: string; onAction: () => void }) {
+  return <section className="preflight-row">
+    <span className="preflight-icon">{icon}</span>
+    <div><h3>{title}</h3><p>{detail}</p></div>
+    <span className={`preflight-status ${valid ? "valid" : "invalid"}`}>{valid ? <Check size={15} /> : <AlertCircle size={15} />}{valid ? "通过" : "待完善"}</span>
+    <button type="button" onClick={onAction}>{action}<ChevronRight size={15} /></button>
+  </section>;
 }
 
 function ResultsPanel({
@@ -843,7 +922,7 @@ function Stage({ active, done, label }: { active: boolean; done: boolean; label:
 
 function UploadStatus({ item }: { item: UploadItem }) {
   const text = {
-    ready: "待上传",
+    ready: "已校验",
     presigning: "获取地址",
     uploading: `上传 ${item.progress}%`,
     uploaded: "已上传",
