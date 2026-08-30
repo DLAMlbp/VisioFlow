@@ -6,40 +6,38 @@ from pydantic import BaseModel, Field, field_validator
 from src.services.storage.keys import validate_object_key
 
 
-class LibraryTagNodeCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
-    parent_id: str | None = Field(default=None, max_length=40)
+class LibraryAssetGroupCreate(BaseModel):
+    tags: list[str] = Field(min_length=1, max_length=20)
     sort_order: int = Field(default=0, ge=0, le=100000)
 
-    @field_validator("name")
+    @field_validator("tags")
     @classmethod
-    def strip_name(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("标签名称不能为空")
-        return value
+    def normalize_tags(cls, value: list[str]) -> list[str]:
+        return _normalize_tags(value)
 
 
-class LibraryTagNodeUpdate(BaseModel):
-    name: str | None = Field(default=None, min_length=1, max_length=120)
+class LibraryAssetGroupUpdate(BaseModel):
+    tags: list[str] | None = Field(default=None, min_length=1, max_length=20)
     sort_order: int | None = Field(default=None, ge=0, le=100000)
     status: Literal["active", "disabled"] | None = None
 
+    @field_validator("tags")
+    @classmethod
+    def normalize_tags(cls, value: list[str] | None) -> list[str] | None:
+        return _normalize_tags(value) if value is not None else None
 
-class LibraryTagNodeResponse(BaseModel):
+
+class LibraryAssetGroupResponse(BaseModel):
     id: str
-    parent_id: str | None
-    name: str
-    depth: int
+    tags: list[str]
     sort_order: int
     status: str
     asset_count: int = 0
-    children: list["LibraryTagNodeResponse"] = Field(default_factory=list)
 
 
 class LibraryAssetCreate(BaseModel):
     object_key: str = Field(min_length=1, max_length=1024)
-    leaf_tag_node_id: str = Field(min_length=1, max_length=40)
+    group_id: str = Field(min_length=1, max_length=40)
     original_filename: str | None = Field(default=None, max_length=255)
 
     @field_validator("object_key")
@@ -50,7 +48,7 @@ class LibraryAssetCreate(BaseModel):
 
 
 class LibraryAssetUpdate(BaseModel):
-    leaf_tag_node_id: str | None = Field(default=None, min_length=1, max_length=40)
+    group_id: str | None = Field(default=None, min_length=1, max_length=40)
     status: Literal["active", "disabled"] | None = None
 
 
@@ -59,8 +57,8 @@ class LibraryAssetResponse(BaseModel):
     original_object_key: str
     thumbnail_object_key: str | None
     original_filename: str | None
-    leaf_tag_node_id: str
-    tag_path: list[str]
+    group_id: str
+    tags: list[str]
     content_type: str | None
     width: int | None
     height: int | None
@@ -78,7 +76,7 @@ class LibraryAssetListResponse(BaseModel):
 class TagReviewResponse(BaseModel):
     image_id: str
     matched_asset_id: str | None
-    tag_path: list[str]
+    tags: list[str]
     similarity_score: float | None
     feature_score: float | None
     final_score: float | None
@@ -90,3 +88,21 @@ class TagReviewResponse(BaseModel):
 class TagReviewDecisionRequest(BaseModel):
     decision: Literal["matched", "unmatched"]
     matched_asset_id: str | None = Field(default=None, max_length=40)
+
+
+def _normalize_tags(tags: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_tag in tags:
+        tag = raw_tag.strip()
+        if not tag:
+            raise ValueError("标签不能为空")
+        if len(tag) > 80:
+            raise ValueError("单个标签不能超过 80 个字符")
+        key = tag.casefold()
+        if key not in seen:
+            seen.add(key)
+            normalized.append(tag)
+    if not normalized:
+        raise ValueError("至少需要一个标签")
+    return normalized

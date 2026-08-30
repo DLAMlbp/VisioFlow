@@ -58,7 +58,6 @@ class CreateImageJobRequest(BaseModel):
     similarity_enabled: bool = True
     similarity_profile: str = Field(default="library_similarity_v2", min_length=1, max_length=80)
     unmatched_standard_policy: Literal["reject"] = "reject"
-    library_scope_node_id: str | None = Field(default=None, min_length=1, max_length=40)
     enhance_level: int = Field(default=1, ge=0, le=2)
     max_selected: int = Field(default=10, ge=1)
     images: list[CreateJobImage] = Field(min_length=1)
@@ -137,7 +136,7 @@ class ImageAITagsResponse(BaseModel):
 
 class ImageSimilarityResultResponse(BaseModel):
     decision: str
-    tag_path: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
     matched_asset_id: str | None = None
     similarity: float | None = Field(default=None, ge=0, le=1)
     final_score: float | None = Field(default=None, ge=0, le=1)

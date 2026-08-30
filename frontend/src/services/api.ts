@@ -16,8 +16,8 @@ import type {
   SaveProcessingProfile,
   SaveProcessingStandard,
   LibraryAsset,
+  LibraryAssetGroup,
   LibraryAssetList,
-  LibraryTagNode,
   TagReview,
   UpdateAIModelConfig,
   UploadBatchRegistration
@@ -125,9 +125,7 @@ export const api = {
         filter_enabled: boolean;
         beautify_enabled: boolean;
         similarity_enabled: boolean;
-        similarity_profile: string;
         unmatched_standard_policy: "reject";
-        library_scope_node_id?: string;
         enhance_level: number;
         max_selected: number;
         files: PresignRequest[];
@@ -257,32 +255,32 @@ export const api = {
           body: JSON.stringify(payload)
         });
       },
-      getLibraryTagTree(): Promise<LibraryTagNode[]> {
-        return request<LibraryTagNode[]>("/api/v1/library/tag-tree");
+      getLibraryGroups(): Promise<LibraryAssetGroup[]> {
+        return request<LibraryAssetGroup[]>("/api/v1/library/groups");
       },
-      createLibraryTagNode(payload: { name: string; parent_id?: string | null }): Promise<LibraryTagNode> {
-        return request<LibraryTagNode>("/api/v1/library/tag-nodes", {
+      createLibraryGroup(payload: { tags: string[]; sort_order?: number }): Promise<LibraryAssetGroup> {
+        return request<LibraryAssetGroup>("/api/v1/library/groups", {
           method: "POST",
           body: JSON.stringify(payload)
         });
       },
-      updateLibraryTagNode(nodeId: string, payload: { name?: string; sort_order?: number; status?: "active" | "disabled" }): Promise<LibraryTagNode> {
-        return request<LibraryTagNode>(`/api/v1/library/tag-nodes/${nodeId}`, {
+      updateLibraryGroup(groupId: string, payload: { tags?: string[]; sort_order?: number; status?: "active" | "disabled" }): Promise<LibraryAssetGroup> {
+        return request<LibraryAssetGroup>(`/api/v1/library/groups/${groupId}`, {
           method: "PATCH",
           body: JSON.stringify(payload)
         });
       },
-      async deleteLibraryTagNode(nodeId: string): Promise<void> {
-        await request<void>(`/api/v1/library/tag-nodes/${nodeId}`, { method: "DELETE" });
+      async deleteLibraryGroup(groupId: string): Promise<void> {
+        await request<void>(`/api/v1/library/groups/${groupId}`, { method: "DELETE" });
       },
-      async createLibraryAsset(payload: { object_key: string; leaf_tag_node_id: string; original_filename?: string }): Promise<LibraryAsset> {
+      async createLibraryAsset(payload: { object_key: string; group_id: string; original_filename?: string }): Promise<LibraryAsset> {
         return request<LibraryAsset>("/api/v1/library/assets", {
           method: "POST",
           body: JSON.stringify(payload)
         });
       },
-      async getLibraryAssets(leafTagNodeId?: string | null): Promise<LibraryAssetList> {
-        const query = leafTagNodeId ? `?leaf_tag_node_id=${encodeURIComponent(leafTagNodeId)}` : "";
+      async getLibraryAssets(groupId?: string | null): Promise<LibraryAssetList> {
+        const query = groupId ? `?group_id=${encodeURIComponent(groupId)}` : "";
         const result = await request<LibraryAssetList>(`/api/v1/library/assets${query}`);
         const items = await Promise.all(result.items.map(async (asset) => ({
           ...asset,
@@ -292,7 +290,7 @@ export const api = {
         })));
         return { ...result, items };
       },
-      updateLibraryAsset(assetId: string, payload: { leaf_tag_node_id?: string; status?: "active" | "disabled" }): Promise<LibraryAsset> {
+      updateLibraryAsset(assetId: string, payload: { group_id?: string; status?: "active" | "disabled" }): Promise<LibraryAsset> {
         return request<LibraryAsset>(`/api/v1/library/assets/${assetId}`, {
           method: "PATCH",
           body: JSON.stringify(payload)

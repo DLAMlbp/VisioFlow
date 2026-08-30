@@ -7,7 +7,6 @@ from celery import Task
 
 from src.core.config import get_settings
 from src.db.session import AsyncSessionLocal
-from src.models.library_tag_node import LibraryTagNode
 from src.repositories.jobs import ImageJobRepository
 from src.repositories.library import LibraryRepository
 from src.schemas.jobs import ImageItemStatus
@@ -83,12 +82,9 @@ async def _generate_image_tags(image_id: str) -> None:
                 similar_assets = await library_repository.find_similar_assets(
                     embedding,
                     similarity_profile.similarity_candidate_limit,
-                    job.library_scope_node_id,
                 )
-                nodes = {node.id: node for node in await library_repository.list_tag_nodes()}
                 scored: list[ScoredCandidate] = []
                 for asset, similarity_score in similar_assets:
-                    tag_path = _tag_path(asset.leaf_tag_node_id, nodes)
                     feature_score = feature_similarity(
                         outcome.payload.model_dump(), asset.analysis_json
                     )
@@ -99,7 +95,7 @@ async def _generate_image_tags(image_id: str) -> None:
                     scored.append(
                         ScoredCandidate(
                             asset=asset,
-                            tag_path=tag_path,
+                            tags=list(asset.group.tags),
                             similarity_score=similarity_score,
                             feature_score=feature_score,
                             final_score=final_score,
@@ -116,7 +112,7 @@ async def _generate_image_tags(image_id: str) -> None:
             image_id=item.id,
             values={
                 "matched_asset_id": match_decision.matched_asset_id,
-                "matched_tag_path_snapshot": match_decision.tag_path,
+                "matched_tags_snapshot": match_decision.tags,
                 "similarity_score": match_decision.similarity_score,
                 "feature_score": match_decision.feature_score,
                 "final_score": match_decision.final_score,
@@ -127,15 +123,15 @@ async def _generate_image_tags(image_id: str) -> None:
         )
         if tag_json is not None:
             tag_json["tags"] = (
-                match_decision.tag_path if match_decision.decision == "matched" else []
+                match_decision.tags if match_decision.decision == "matched" else []
             )
             tag_json["categories"] = (
-                {"path": match_decision.tag_path}
+                {"素材库标签": match_decision.tags}
                 if match_decision.decision == "matched"
                 else {}
             )
             tag_json["candidate_tags"] = (
-                match_decision.tag_path if match_decision.decision == "pending_review" else []
+                match_decision.tags if match_decision.decision == "pending_review" else []
             )
 
         await repository.upsert_ai_tag(
@@ -173,14 +169,3 @@ async def _complete_failed_tagging(image_id: str, reason: str) -> None:
         item = await repository.get_item(image_id)
         if item is not None and item.status == ImageItemStatus.TAGGING.value:
             await repository.complete_tagging(item, reason=reason)
-
-
-def _tag_path(leaf_node_id: str, nodes: dict[str, LibraryTagNode]) -> list[str]:
-    path: list[str] = []
-    seen: set[str] = set()
-    current = nodes.get(leaf_node_id)
-    while current is not None and current.id not in seen:
-        seen.add(current.id)
-        path.append(current.name)
-        current = nodes.get(current.parent_id) if current.parent_id else None
-    return list(reversed(path))

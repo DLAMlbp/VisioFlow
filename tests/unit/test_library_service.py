@@ -3,52 +3,61 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.models.library_asset import LibraryAsset
-from src.models.library_tag_node import LibraryTagNode
-from src.services.library import LibraryNotFound, LibraryService
+from src.models.library_asset_group import LibraryAssetGroup
+from src.schemas.library import LibraryAssetGroupCreate
+from src.services.library import InvalidLibraryRequest, LibraryNotFound, LibraryService
 
 
-async def test_tag_tree_rolls_asset_counts_up_through_all_ancestors() -> None:
-    nodes = [
-        _node("root", None, "根标签", 0),
-        _node("branch", "root", "二级标签", 1),
-        _node("leaf_a", "branch", "末级 A", 2),
-        _node("leaf_b", "branch", "末级 B", 2),
+async def test_groups_report_direct_asset_counts_without_tree_rollup() -> None:
+    groups = [
+        _group("grp_living", ["客厅", "现代", "完工"]),
+        _group("grp_kitchen", ["厨房", "明亮"]),
     ]
     repository = AsyncMock()
-    repository.list_tag_nodes.return_value = nodes
-    repository.asset_counts.return_value = {
-        "root": 1,
-        "leaf_a": 2,
-        "leaf_b": 3,
+    repository.list_groups.return_value = groups
+    repository.group_asset_counts.return_value = {
+        "grp_living": 4,
+        "grp_kitchen": 2,
     }
 
-    tree = await LibraryService(repository).get_tag_tree()
+    result = await LibraryService(repository).get_groups()
 
-    root = tree[0]
-    branch = root.children[0]
-    assert root.asset_count == 6
-    assert branch.asset_count == 5
-    assert branch.children[0].asset_count == 2
-    assert branch.children[1].asset_count == 3
+    assert result[0].tags == ["客厅", "现代", "完工"]
+    assert result[0].asset_count == 4
+    assert result[1].tags == ["厨房", "明亮"]
+    assert result[1].asset_count == 2
 
 
-def _node(node_id: str, parent_id: str | None, name: str, depth: int) -> LibraryTagNode:
-    return LibraryTagNode(
-        id=node_id,
-        parent_id=parent_id,
-        name=name,
-        depth=depth,
+async def test_create_group_rejects_an_existing_tag_combination() -> None:
+    repository = AsyncMock()
+    repository.find_group_by_tag_key.return_value = _group("grp_existing", ["客厅", "完工"])
+
+    with pytest.raises(InvalidLibraryRequest, match="相同的标签组合已存在"):
+        await LibraryService(repository).create_group(
+            LibraryAssetGroupCreate(tags=["客厅", "完工"])
+        )
+
+    repository.create_group.assert_not_awaited()
+
+
+def _group(group_id: str, tags: list[str]) -> LibraryAssetGroup:
+    return LibraryAssetGroup(
+        id=group_id,
+        tags=tags,
+        tag_key="\x1f".join(tag.casefold() for tag in tags),
         sort_order=0,
         status="active",
     )
 
 
 async def test_delete_asset_removes_object_before_database_record() -> None:
+    group = _group("grp_test", ["客厅", "完工"])
     asset = LibraryAsset(
         id="ast_test",
         original_object_key="uploads/2026/08/28/test.png",
         thumbnail_object_key="library-thumbnails/ast_test.jpg",
-        leaf_tag_node_id="leaf",
+        group_id=group.id,
+        group=group,
         status="active",
     )
     repository = AsyncMock()

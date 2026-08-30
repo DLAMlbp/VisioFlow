@@ -8,90 +8,71 @@ from sqlalchemy.orm import selectinload
 
 from src.models.image_similarity_match import ImageSimilarityMatch
 from src.models.library_asset import LibraryAsset
-from src.models.library_tag_node import LibraryTagNode
+from src.models.library_asset_group import LibraryAssetGroup
 
 
 class LibraryRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def list_tag_nodes(self) -> list[LibraryTagNode]:
+    async def list_groups(self) -> list[LibraryAssetGroup]:
         result = await self.session.execute(
-            select(LibraryTagNode).order_by(
-                LibraryTagNode.depth, LibraryTagNode.sort_order, LibraryTagNode.name
+            select(LibraryAssetGroup).order_by(
+                LibraryAssetGroup.sort_order, LibraryAssetGroup.created_at
             )
         )
         return list(result.scalars())
 
-    async def get_tag_node(self, node_id: str) -> LibraryTagNode | None:
-        return await self.session.get(LibraryTagNode, node_id)
+    async def get_group(self, group_id: str) -> LibraryAssetGroup | None:
+        return await self.session.get(LibraryAssetGroup, group_id)
 
-    async def find_sibling(self, parent_id: str | None, name: str) -> LibraryTagNode | None:
-        statement = select(LibraryTagNode).where(LibraryTagNode.name == name)
-        statement = statement.where(
-            LibraryTagNode.parent_id == parent_id
-            if parent_id is not None
-            else LibraryTagNode.parent_id.is_(None)
+    async def find_group_by_tag_key(self, tag_key: str) -> LibraryAssetGroup | None:
+        result = await self.session.execute(
+            select(LibraryAssetGroup).where(LibraryAssetGroup.tag_key == tag_key)
         )
-        return (await self.session.execute(statement)).scalar_one_or_none()
+        return result.scalar_one_or_none()
 
-    async def create_tag_node(self, node: LibraryTagNode) -> LibraryTagNode:
-        self.session.add(node)
+    async def create_group(self, group: LibraryAssetGroup) -> LibraryAssetGroup:
+        self.session.add(group)
         await self.session.commit()
-        await self.session.refresh(node)
-        return node
+        await self.session.refresh(group)
+        return group
 
-    async def update_tag_node(
-        self, node: LibraryTagNode, values: Mapping[str, object]
-    ) -> LibraryTagNode:
+    async def update_group(
+        self, group: LibraryAssetGroup, values: Mapping[str, object]
+    ) -> LibraryAssetGroup:
         for name, value in values.items():
-            setattr(node, name, value)
+            setattr(group, name, value)
         await self.session.commit()
-        await self.session.refresh(node)
-        return node
+        await self.session.refresh(group)
+        return group
 
-    async def has_active_children(self, node_id: str) -> bool:
-        count = await self.session.scalar(
-            select(func.count()).select_from(LibraryTagNode).where(
-                LibraryTagNode.parent_id == node_id,
-                LibraryTagNode.status == "active",
-            )
-        )
-        return bool(count)
-
-    async def has_children(self, node_id: str) -> bool:
-        count = await self.session.scalar(
-            select(func.count()).select_from(LibraryTagNode).where(
-                LibraryTagNode.parent_id == node_id
-            )
-        )
-        return bool(count)
-
-    async def has_assets(self, node_id: str) -> bool:
+    async def has_assets(self, group_id: str) -> bool:
         count = await self.session.scalar(
             select(func.count()).select_from(LibraryAsset).where(
-                LibraryAsset.leaf_tag_node_id == node_id
+                LibraryAsset.group_id == group_id
             )
         )
         return bool(count)
 
-    async def delete_tag_node(self, node: LibraryTagNode) -> None:
-        await self.session.delete(node)
+    async def delete_group(self, group: LibraryAssetGroup) -> None:
+        await self.session.delete(group)
         await self.session.commit()
 
-    async def asset_counts(self) -> dict[str, int]:
+    async def group_asset_counts(self) -> dict[str, int]:
         rows = await self.session.execute(
-            select(LibraryAsset.leaf_tag_node_id, func.count(LibraryAsset.id)).group_by(
-                LibraryAsset.leaf_tag_node_id
+            select(LibraryAsset.group_id, func.count(LibraryAsset.id)).group_by(
+                LibraryAsset.group_id
             )
         )
-        return {node_id: count for node_id, count in rows}
+        return {group_id: count for group_id, count in rows}
 
     async def get_asset(self, asset_id: str) -> LibraryAsset | None:
         result = await self.session.execute(
             select(LibraryAsset)
-            .options(selectinload(LibraryAsset.leaf_tag_node))
+            .options(selectinload(LibraryAsset.group))
             .where(LibraryAsset.id == asset_id)
+            .execution_options(populate_existing=True)
         )
         return result.scalar_one_or_none()
 
@@ -133,11 +114,11 @@ class LibraryRepository:
         await self.session.commit()
 
     async def list_assets(
-        self, *, leaf_tag_node_id: str | None, status: str | None, limit: int, offset: int
+        self, *, group_id: str | None, status: str | None, limit: int, offset: int
     ) -> tuple[int, list[LibraryAsset]]:
         filters = []
-        if leaf_tag_node_id:
-            filters.append(LibraryAsset.leaf_tag_node_id == leaf_tag_node_id)
+        if group_id:
+            filters.append(LibraryAsset.group_id == group_id)
         if status:
             filters.append(LibraryAsset.status == status)
         total = await self.session.scalar(
@@ -145,7 +126,7 @@ class LibraryRepository:
         )
         result = await self.session.execute(
             select(LibraryAsset)
-            .options(selectinload(LibraryAsset.leaf_tag_node))
+            .options(selectinload(LibraryAsset.group))
             .where(*filters)
             .order_by(LibraryAsset.created_at.desc())
             .limit(limit)
@@ -154,30 +135,17 @@ class LibraryRepository:
         return int(total or 0), list(result.scalars())
 
     async def find_similar_assets(
-        self, embedding: list[float], limit: int, scope_node_id: str | None = None
+        self, embedding: list[float], limit: int
     ) -> list[tuple[LibraryAsset, float]]:
-        root_filter = (
-            LibraryTagNode.id == scope_node_id
-            if scope_node_id
-            else LibraryTagNode.parent_id.is_(None)
-        )
-        active_nodes = select(LibraryTagNode.id).where(
-            root_filter,
-            LibraryTagNode.status == "active",
-        ).cte("active_library_tag_nodes", recursive=True)
-        active_nodes = active_nodes.union_all(
-            select(LibraryTagNode.id)
-            .join(active_nodes, LibraryTagNode.parent_id == active_nodes.c.id)
-            .where(LibraryTagNode.status == "active")
-        )
         distance = LibraryAsset.embedding.cosine_distance(embedding)
         result = await self.session.execute(
             select(LibraryAsset, distance.label("distance"))
-            .options(selectinload(LibraryAsset.leaf_tag_node))
+            .join(LibraryAsset.group)
+            .options(selectinload(LibraryAsset.group))
             .where(
                 LibraryAsset.status == "active",
                 LibraryAsset.embedding.is_not(None),
-                LibraryAsset.leaf_tag_node_id.in_(select(active_nodes.c.id)),
+                LibraryAssetGroup.status == "active",
             )
             .order_by(distance)
             .limit(limit)

@@ -4,6 +4,7 @@ import pytest
 from PIL import Image, ImageFilter
 
 from src.models.library_asset import LibraryAsset
+from src.models.library_asset_group import LibraryAssetGroup
 from src.services.images.similarity import (
     ScoredCandidate,
     decide_similarity,
@@ -100,7 +101,7 @@ def test_calibrated_policy_matches_real_dining_room_sample() -> None:
     )
 
     assert result.decision == "matched"
-    assert result.tag_path == ["完工案例", "旧房翻新", "客餐厅"]
+    assert result.tags == ["完工案例", "旧房翻新", "客餐厅"]
 
 
 def test_similarity_decision_matches_high_confidence_path() -> None:
@@ -113,7 +114,7 @@ def test_similarity_decision_matches_high_confidence_path() -> None:
     result = decide_similarity(candidates=candidates, settings=settings)
 
     assert result.decision == "matched"
-    assert result.tag_path == ["完工案例", "厨房"]
+    assert result.tags == ["完工案例", "厨房"]
     assert result.matched_asset_id == "ast_1"
 
 
@@ -127,7 +128,7 @@ def test_similarity_decision_does_not_require_candidate_margin_above_75_percent(
     result = decide_similarity(candidates=candidates, settings=settings)
 
     assert result.decision == "matched"
-    assert result.tag_path == ["完工案例", "厨房"]
+    assert result.tags == ["完工案例", "厨房"]
 
 
 @pytest.mark.parametrize(
@@ -185,7 +186,7 @@ def test_similarity_uses_highest_image_similarity_candidate_for_both_thresholds(
 
     assert result.decision == "matched"
     assert result.matched_asset_id == "ast_similarity"
-    assert result.tag_path == ["完工案例", "厨房"]
+    assert result.tags == ["完工案例", "厨房"]
 
 
 def test_similarity_matches_when_image_is_71_and_candidate_score_is_76() -> None:
@@ -211,7 +212,7 @@ def test_similarity_decision_reviews_when_either_score_is_below_60_percent() -> 
     )
 
     assert result.decision == "pending_review"
-    assert result.tag_path == ["完工案例", "厨房"]
+    assert result.tags == ["完工案例", "厨房"]
     assert result.matched_asset_id == "ast_1"
     assert result.message == "无法识别，等待人工复核"
 
@@ -223,15 +224,22 @@ def _candidate(asset_id: str, path: list[str], score: float) -> ScoredCandidate:
 def _scored_candidate(
     asset_id: str, path: list[str], *, similarity: float, feature: float
 ) -> ScoredCandidate:
+    group = LibraryAssetGroup(
+        id=f"grp_{asset_id}",
+        tags=path,
+        tag_key="\x1f".join(path),
+        status="active",
+    )
     asset = LibraryAsset(
         id=asset_id,
         original_object_key=f"uploads/{asset_id}.jpg",
-        leaf_tag_node_id=f"node_{asset_id}",
+        group_id=group.id,
+        group=group,
         status="active",
     )
     return ScoredCandidate(
         asset=asset,
-        tag_path=path,
+        tags=path,
         similarity_score=similarity,
         feature_score=feature,
         final_score=similarity * 0.7 + feature * 0.3,

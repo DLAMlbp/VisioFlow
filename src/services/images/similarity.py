@@ -15,7 +15,7 @@ class SimilarityPolicy(Protocol):
 @dataclass(frozen=True)
 class ScoredCandidate:
     asset: LibraryAsset
-    tag_path: list[str]
+    tags: list[str]
     similarity_score: float
     feature_score: float
     final_score: float
@@ -26,7 +26,7 @@ class SimilarityDecision:
     decision: str
     message: str
     matched_asset_id: str | None
-    tag_path: list[str]
+    tags: list[str]
     similarity_score: float | None
     feature_score: float | None
     final_score: float | None
@@ -84,7 +84,7 @@ def decide_similarity(
     serialized = [
         {
             "asset_id": candidate.asset.id,
-            "tag_path": candidate.tag_path,
+            "tags": candidate.tags,
             "similarity_score": round(candidate.similarity_score, 4),
             "feature_score": round(candidate.feature_score, 4),
             "final_score": round(candidate.final_score, 4),
@@ -96,7 +96,7 @@ def decide_similarity(
             decision=decision,
             message=message,
             matched_asset_id=None,
-            tag_path=[],
+            tags=[],
             similarity_score=best.similarity_score,
             feature_score=best.feature_score,
             final_score=best.final_score,
@@ -106,7 +106,7 @@ def decide_similarity(
         decision=decision,
         message=message,
         matched_asset_id=best.asset.id,
-        tag_path=best.tag_path,
+        tags=best.tags,
         similarity_score=best.similarity_score,
         feature_score=best.feature_score,
         final_score=best.final_score,
@@ -119,7 +119,7 @@ def unmatched_decision(message: str) -> SimilarityDecision:
         decision="unmatched",
         message=message,
         matched_asset_id=None,
-        tag_path=[],
+        tags=[],
         similarity_score=None,
         feature_score=None,
         final_score=None,

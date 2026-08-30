@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import JSON, Boolean, DateTime, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.db.base import Base
@@ -34,9 +34,6 @@ class ImageJob(Base):
     )
     unmatched_standard_policy: Mapped[str] = mapped_column(
         String(16), nullable=False, default="reject"
-    )
-    library_scope_node_id: Mapped[str | None] = mapped_column(
-        ForeignKey("library_tag_nodes.id", ondelete="SET NULL"), nullable=True, index=True
     )
     ai_tagging_model: Mapped[str | None] = mapped_column(String(120), nullable=True)
     enhance_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

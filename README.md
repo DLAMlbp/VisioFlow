@@ -36,7 +36,7 @@ Content-Type: multipart/form-data
 X-API-Key: <服务端 API Key>
 ```
 
-必填字段为 `files`、`callback_url`、`processing_standards` 和 `beautify_profile`；`files` 可同时传 1 至 50 个 `image/jpeg`、`image/png` 或 `image/webp` 文件。正式模式固定执行“原图一次 AI 识别 → 两套标准二选一 → 逐项过滤 → 独立美化 → 将首次识别标签绑定到美化图 → 素材匹配”，不会为同一任务对美化图再次调用视觉大模型。`processing_standards` 必须恰好包含两套互斥且完整覆盖的过滤标准 ID。历史阶段开关字段只为 v1 字段兼容而保留，传 `false` 会被拒绝；未命中或同时命中两套标准会明确标记为 AI 分类失败，不会静默放行。可选字段包括 `library_scope_node_id`、`similarity_profile`、`enhance_level` 和 `max_selected`。成功后立即返回 `201` 及 `job_id`，任务进入后台异步处理；进入终态后由 `control` Worker主动向 `callback_url` 推送结果。
+必填字段为 `files`、`callback_url`、`processing_standards` 和 `beautify_profile`；`files` 可同时传 1 至 50 个 `image/jpeg`、`image/png` 或 `image/webp` 文件。正式模式固定执行“原图一次 AI 识别 → 两套标准二选一 → 逐项过滤 → 独立美化 → 将首次识别标签绑定到美化图 → 素材匹配”，不会为同一任务对美化图再次调用视觉大模型。`processing_standards` 必须恰好包含两套互斥且完整覆盖的过滤标准 ID。历史阶段开关字段只为 v1 字段兼容而保留，传 `false` 会被拒绝；未命中或同时命中两套标准会明确标记为 AI 分类失败，不会静默放行。可选字段包括 `similarity_profile`、`enhance_level` 和 `max_selected`。成功后立即返回 `201` 及 `job_id`，任务进入后台异步处理；进入终态后由 `control` Worker主动向 `callback_url` 推送结果。
 
 ```bash
 curl -X POST http://127.0.0.1:18000/api/v1/integration/jobs \
@@ -61,17 +61,17 @@ curl -X POST http://127.0.0.1:18000/api/v1/integration/jobs \
 
 图片会计算清晰度、曝光、对比度和噪声评分，全部归一化为 0-100，并与真实尺寸一起交给视觉 AI。AI 按“标准管理”保存的用户自然语言决定过滤结果，并为每张图片生成一套完整美化参数；旧标准中保存的视觉参数不会参与新任务。AI 失败时任务明确失败并可重试，不会回退到内置业务标准。通过过滤的图片由本地安全执行器应用 AI 参数，输出 JPEG 存储在 `enhanced/` 前缀下。
 
-需要相似匹配时，系统生成通用内容特征（主体、对象、属性、视觉特征和可见文字），并使用 OpenCLIP 和 pgvector 检索指定素材范围中的相似参考图片。素材分析结果按文件内容复用，不会在每个任务中重新分析素材库。高置信度结果继承参考图片的完整标签路径，中置信度进入复核，低置信度返回“未识别到相似的图片素材”。匹配失败不影响图片保留和交付。
+需要相似匹配时，系统生成通用内容特征（主体、对象、属性、视觉特征和可见文字），并使用 OpenCLIP 和 pgvector 检索所有已启用素材组中的相似参考图片。素材分析结果按文件内容复用，不会在每个任务中重新分析素材库。高置信度结果继承命中参考图片所属素材组的整套标签，中置信度进入复核，低置信度返回“未识别到相似的图片素材”。匹配失败不影响图片保留和交付。
 
-参考素材通过“素材库”页面单独上传。标签树支持任意层级，上传时必须选择最末一级标签。素材原图不会进入普通图片任务，不执行清晰度、曝光、尺寸等质量过滤，也不会生成美化图；系统只进行格式校验、方向归一化、去重、通用内容分析和向量生成。
+参考素材通过“素材库”页面单独上传。素材库使用扁平素材组：每组包含一串并列标签和多张参考图片，不存在父子层级。素材原图不会进入普通图片任务，不执行清晰度、曝光、尺寸等质量过滤，也不会生成美化图；系统只进行格式校验、方向归一化、去重、通用内容分析和向量生成。
 
 素材库接口包括：
 
 ```text
-GET   /api/v1/library/tag-tree
-POST  /api/v1/library/tag-nodes
-PATCH /api/v1/library/tag-nodes/{node_id}
-DELETE /api/v1/library/tag-nodes/{node_id}
+GET   /api/v1/library/groups
+POST  /api/v1/library/groups
+PATCH /api/v1/library/groups/{group_id}
+DELETE /api/v1/library/groups/{group_id}
 POST  /api/v1/library/assets
 GET   /api/v1/library/assets
 PATCH /api/v1/library/assets/{asset_id}
@@ -95,7 +95,7 @@ npm run dev -- --port 5174 --strictPort
 
 本地 API 地址为 `http://127.0.0.1:18000`，MinIO 预签名上传地址为 `http://127.0.0.1:19000`。前端通过 Vite 代理调用 API，不会将服务端 API Key 暴露给浏览器。
 
-前端固定连接真实 API，不提供模拟数据分支。标准、标签树和素材元数据写入 PostgreSQL，素材文件写入 MinIO。
+前端固定连接真实 API，不提供模拟数据分支。标准、素材组标签和素材元数据写入 PostgreSQL，素材文件写入 MinIO。
 
 开发环境默认队列并发为：`control=1`、`preprocess=4`、`enhance=2`、`analysis=4`、`embedding=1`、`library=1`、`cleanup=1`；生产 Compose 也按队列拆分独立 Worker，避免 AI/向量任务阻塞调度、回调和清理。Redis 开启 AOF 并挂载独立持久卷，运行时 AI 配置不会随容器重建丢失。`celery-beat` 定期清理 30 天前的业务图片、24 小时未提交的上传对象，并重新投递超过 15 分钟没有进展的任务。素材库原图和向量不参与自动清理。
 

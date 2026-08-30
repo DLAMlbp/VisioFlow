@@ -31,9 +31,6 @@ class UploadBatch(Base):
     unmatched_standard_policy: Mapped[str] = mapped_column(
         String(16), nullable=False, default="reject"
     )
-    library_scope_node_id: Mapped[str | None] = mapped_column(
-        ForeignKey("library_tag_nodes.id", ondelete="SET NULL"), nullable=True, index=True
-    )
     enhance_level: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     max_selected: Mapped[int] = mapped_column(Integer, nullable=False)
     callback_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)

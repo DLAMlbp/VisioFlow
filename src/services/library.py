@@ -11,16 +11,16 @@ from src.core.exceptions import AppError
 from src.db.session import get_db_session
 from src.models.image_ai_tag import ImageAITag
 from src.models.library_asset import LibraryAsset
-from src.models.library_tag_node import LibraryTagNode
+from src.models.library_asset_group import LibraryAssetGroup
 from src.repositories.library import LibraryRepository
 from src.schemas.library import (
     LibraryAssetCreate,
+    LibraryAssetGroupCreate,
+    LibraryAssetGroupResponse,
+    LibraryAssetGroupUpdate,
     LibraryAssetListResponse,
     LibraryAssetResponse,
     LibraryAssetUpdate,
-    LibraryTagNodeCreate,
-    LibraryTagNodeResponse,
-    LibraryTagNodeUpdate,
     TagReviewDecisionRequest,
     TagReviewResponse,
 )
@@ -48,83 +48,55 @@ class LibraryService:
         self.task_publisher = task_publisher
         self.storage_provider = storage_provider
 
-    async def get_tag_tree(self) -> list[LibraryTagNodeResponse]:
-        nodes = await self.repository.list_tag_nodes()
-        counts = await self.repository.asset_counts()
-        responses = {
-            node.id: LibraryTagNodeResponse(
-                id=node.id,
-                parent_id=node.parent_id,
-                name=node.name,
-                depth=node.depth,
-                sort_order=node.sort_order,
-                status=node.status,
-                asset_count=counts.get(node.id, 0),
-            )
-            for node in nodes
-        }
-        for node in reversed(nodes):
-            if node.parent_id and node.parent_id in responses:
-                responses[node.parent_id].asset_count += responses[node.id].asset_count
+    async def get_groups(self) -> list[LibraryAssetGroupResponse]:
+        groups = await self.repository.list_groups()
+        counts = await self.repository.group_asset_counts()
+        return [self._group_response(group, counts.get(group.id, 0)) for group in groups]
 
-        roots: list[LibraryTagNodeResponse] = []
-        for node in nodes:
-            response = responses[node.id]
-            if node.parent_id and node.parent_id in responses:
-                responses[node.parent_id].children.append(response)
-            else:
-                roots.append(response)
-        return roots
-
-    async def create_tag_node(self, payload: LibraryTagNodeCreate) -> LibraryTagNodeResponse:
-        parent = None
-        if payload.parent_id:
-            parent = await self.repository.get_tag_node(payload.parent_id)
-            if parent is None:
-                raise LibraryNotFound("父级标签不存在")
-            if parent.status != "active":
-                raise InvalidLibraryRequest("不能在已停用标签下新增子标签")
-        if await self.repository.find_sibling(payload.parent_id, payload.name):
-            raise InvalidLibraryRequest("同级标签名称已存在")
-        node = await self.repository.create_tag_node(
-            LibraryTagNode(
-                id=f"ltn_{uuid4().hex}",
-                parent_id=payload.parent_id,
-                name=payload.name,
-                depth=(parent.depth + 1) if parent else 0,
+    async def create_group(
+        self, payload: LibraryAssetGroupCreate
+    ) -> LibraryAssetGroupResponse:
+        tag_key = self._tag_key(payload.tags)
+        if await self.repository.find_group_by_tag_key(tag_key):
+            raise InvalidLibraryRequest("相同的标签组合已存在")
+        group = await self.repository.create_group(
+            LibraryAssetGroup(
+                id=f"grp_{uuid4().hex}",
+                tags=payload.tags,
+                tag_key=tag_key,
                 sort_order=payload.sort_order,
                 status="active",
             )
         )
-        return self._tag_response(node)
+        return self._group_response(group)
 
-    async def update_tag_node(
-        self, node_id: str, payload: LibraryTagNodeUpdate
-    ) -> LibraryTagNodeResponse:
-        node = await self.repository.get_tag_node(node_id)
-        if node is None:
-            raise LibraryNotFound("标签不存在")
+    async def update_group(
+        self, group_id: str, payload: LibraryAssetGroupUpdate
+    ) -> LibraryAssetGroupResponse:
+        group = await self.repository.get_group(group_id)
+        if group is None:
+            raise LibraryNotFound("素材组不存在")
         values = payload.model_dump(exclude_none=True)
-        if "name" in values:
-            values["name"] = str(values["name"]).strip()
-            sibling = await self.repository.find_sibling(node.parent_id, str(values["name"]))
-            if sibling is not None and sibling.id != node.id:
-                raise InvalidLibraryRequest("同级标签名称已存在")
-        node = await self.repository.update_tag_node(node, values)
-        return self._tag_response(node)
+        if payload.tags is not None:
+            tag_key = self._tag_key(payload.tags)
+            duplicate = await self.repository.find_group_by_tag_key(tag_key)
+            if duplicate is not None and duplicate.id != group.id:
+                raise InvalidLibraryRequest("相同的标签组合已存在")
+            values["tag_key"] = tag_key
+        group = await self.repository.update_group(group, values)
+        counts = await self.repository.group_asset_counts()
+        return self._group_response(group, counts.get(group.id, 0))
 
-    async def delete_tag_node(self, node_id: str) -> None:
-        node = await self.repository.get_tag_node(node_id)
-        if node is None:
-            raise LibraryNotFound("标签不存在")
-        if await self.repository.has_children(node.id):
-            raise InvalidLibraryRequest("存在下级标签，不能删除")
-        if await self.repository.has_assets(node.id):
-            raise InvalidLibraryRequest("标签仍关联素材，不能删除")
-        await self.repository.delete_tag_node(node)
+    async def delete_group(self, group_id: str) -> None:
+        group = await self.repository.get_group(group_id)
+        if group is None:
+            raise LibraryNotFound("素材组不存在")
+        if await self.repository.has_assets(group.id):
+            raise InvalidLibraryRequest("素材组仍有关联图片，不能删除")
+        await self.repository.delete_group(group)
 
     async def create_asset(self, payload: LibraryAssetCreate) -> LibraryAssetResponse:
-        node = await self._require_uploadable_node(payload.leaf_tag_node_id)
+        await self._require_active_group(payload.group_id)
         if await self.repository.get_asset_by_object_key(payload.object_key):
             raise InvalidLibraryRequest("该图片已经登记到素材库")
         asset = await self.repository.create_asset(
@@ -132,28 +104,29 @@ class LibraryService:
                 id=f"ast_{uuid4().hex}",
                 original_object_key=payload.object_key,
                 original_filename=payload.original_filename,
-                leaf_tag_node_id=node.id,
+                group_id=payload.group_id,
                 status="pending",
             )
         )
         if self.task_publisher:
             self.task_publisher.publish(asset.id)
-        return await self._asset_response(asset)
+        loaded = await self.repository.get_asset(asset.id)
+        return self._asset_response(loaded or asset)
 
     async def list_assets(
         self,
         *,
-        leaf_tag_node_id: str | None,
+        group_id: str | None,
         status: str | None,
         limit: int,
         offset: int,
     ) -> LibraryAssetListResponse:
         total, assets = await self.repository.list_assets(
-            leaf_tag_node_id=leaf_tag_node_id, status=status, limit=limit, offset=offset
+            group_id=group_id, status=status, limit=limit, offset=offset
         )
         return LibraryAssetListResponse(
             total=total,
-            items=[await self._asset_response(asset) for asset in assets],
+            items=[self._asset_response(asset) for asset in assets],
         )
 
     async def update_asset(
@@ -163,12 +136,13 @@ class LibraryService:
         if asset is None:
             raise LibraryNotFound("素材不存在")
         values = payload.model_dump(exclude_none=True)
-        if payload.leaf_tag_node_id:
-            await self._require_uploadable_node(payload.leaf_tag_node_id)
+        if payload.group_id:
+            await self._require_active_group(payload.group_id)
         if payload.status == "active" and (asset.embedding is None or asset.analysis_json is None):
             raise InvalidLibraryRequest("素材尚未完成分析，不能启用")
-        asset = await self.repository.update_asset(asset, values)
-        return await self._asset_response(asset)
+        await self.repository.update_asset(asset, values)
+        loaded = await self.repository.get_asset(asset.id)
+        return self._asset_response(loaded or asset)
 
     async def delete_asset(self, asset_id: str) -> None:
         asset = await self.repository.get_asset(asset_id)
@@ -185,7 +159,7 @@ class LibraryService:
         asset = await self.repository.get_asset(asset_id)
         if asset is None:
             raise LibraryNotFound("素材不存在")
-        asset = await self.repository.update_asset(
+        await self.repository.update_asset(
             asset,
             {
                 "status": "pending",
@@ -197,7 +171,8 @@ class LibraryService:
         )
         if self.task_publisher:
             self.task_publisher.publish(asset.id)
-        return await self._asset_response(asset)
+        loaded = await self.repository.get_asset(asset.id)
+        return self._asset_response(loaded or asset)
 
     async def list_reviews(self, limit: int, offset: int) -> list[TagReviewResponse]:
         matches = await self.repository.list_pending_reviews(limit, offset)
@@ -212,7 +187,7 @@ class LibraryService:
         if payload.decision == "unmatched":
             values = {
                 "matched_asset_id": None,
-                "matched_tag_path_snapshot": [],
+                "matched_tags_snapshot": [],
                 "decision": "unmatched",
                 "message": "未识别到相似的图片素材",
             }
@@ -221,36 +196,35 @@ class LibraryService:
             if not asset_id:
                 raise InvalidLibraryRequest("请选择要确认的素材")
             asset = await self.repository.get_asset(asset_id)
-            if asset is None or asset.status != "active":
-                raise InvalidLibraryRequest("所选素材不存在或已停用")
+            if asset is None or asset.status != "active" or asset.group.status != "active":
+                raise InvalidLibraryRequest("所选素材或素材组不存在、未完成分析或已停用")
             values = {
                 "matched_asset_id": asset.id,
-                "matched_tag_path_snapshot": await self._tag_path(asset.leaf_tag_node_id),
+                "matched_tags_snapshot": list(asset.group.tags),
                 "decision": "matched",
                 "message": "已匹配到相似图片素材",
             }
         updated = await self.repository.upsert_match(image_id, values)
-        await self._sync_ai_tag(image_id, updated.decision, updated.matched_tag_path_snapshot)
+        await self._sync_ai_tag(image_id, updated.decision, updated.matched_tags_snapshot)
         return self._review_response(updated)
 
-    async def _require_uploadable_node(self, node_id: str) -> LibraryTagNode:
-        node = await self.repository.get_tag_node(node_id)
-        if node is None:
-            raise LibraryNotFound("标签不存在")
-        if node.status != "active":
-            raise InvalidLibraryRequest("不能向已停用标签上传素材")
-        if await self.repository.has_active_children(node.id):
-            raise InvalidLibraryRequest("请选择标签树最末一级后上传素材")
-        return node
+    async def _require_active_group(self, group_id: str) -> LibraryAssetGroup:
+        group = await self.repository.get_group(group_id)
+        if group is None:
+            raise LibraryNotFound("素材组不存在")
+        if group.status != "active":
+            raise InvalidLibraryRequest("不能向已停用的素材组上传图片")
+        return group
 
-    async def _asset_response(self, asset: LibraryAsset) -> LibraryAssetResponse:
+    @staticmethod
+    def _asset_response(asset: LibraryAsset) -> LibraryAssetResponse:
         return LibraryAssetResponse(
             id=asset.id,
             original_object_key=asset.original_object_key,
             thumbnail_object_key=asset.thumbnail_object_key,
             original_filename=asset.original_filename,
-            leaf_tag_node_id=asset.leaf_tag_node_id,
-            tag_path=await self._tag_path(asset.leaf_tag_node_id),
+            group_id=asset.group_id,
+            tags=list(asset.group.tags),
             content_type=asset.content_type,
             width=asset.width,
             height=asset.height,
@@ -260,18 +234,7 @@ class LibraryService:
             created_at=asset.created_at,
         )
 
-    async def _tag_path(self, leaf_node_id: str) -> list[str]:
-        nodes = {node.id: node for node in await self.repository.list_tag_nodes()}
-        path: list[str] = []
-        seen: set[str] = set()
-        current = nodes.get(leaf_node_id)
-        while current is not None and current.id not in seen:
-            seen.add(current.id)
-            path.append(current.name)
-            current = nodes.get(current.parent_id) if current.parent_id else None
-        return list(reversed(path))
-
-    async def _sync_ai_tag(self, image_id: str, decision: str, path: list[str]) -> None:
+    async def _sync_ai_tag(self, image_id: str, decision: str, tags: list[str]) -> None:
         tag = await self.repository.session.scalar(
             select(ImageAITag).where(ImageAITag.image_id == image_id)
         )
@@ -280,8 +243,8 @@ class LibraryService:
         current = dict(tag.tag_json or {})
         current.update(
             {
-                "tags": path if decision == "matched" else [],
-                "categories": {"path": path} if decision == "matched" else {},
+                "tags": tags if decision == "matched" else [],
+                "categories": {"素材库标签": tags} if decision == "matched" else {},
                 "candidate_tags": [],
             }
         )
@@ -289,14 +252,19 @@ class LibraryService:
         await self.repository.session.commit()
 
     @staticmethod
-    def _tag_response(node: LibraryTagNode) -> LibraryTagNodeResponse:
-        return LibraryTagNodeResponse(
-            id=node.id,
-            parent_id=node.parent_id,
-            name=node.name,
-            depth=node.depth,
-            sort_order=node.sort_order,
-            status=node.status,
+    def _tag_key(tags: list[str]) -> str:
+        return "\x1f".join(tag.casefold() for tag in tags)
+
+    @staticmethod
+    def _group_response(
+        group: LibraryAssetGroup, asset_count: int = 0
+    ) -> LibraryAssetGroupResponse:
+        return LibraryAssetGroupResponse(
+            id=group.id,
+            tags=list(group.tags),
+            sort_order=group.sort_order,
+            status=group.status,
+            asset_count=asset_count,
         )
 
     @staticmethod
@@ -304,7 +272,7 @@ class LibraryService:
         return TagReviewResponse(
             image_id=match.image_id,
             matched_asset_id=match.matched_asset_id,
-            tag_path=match.matched_tag_path_snapshot or [],
+            tags=match.matched_tags_snapshot or [],
             similarity_score=match.similarity_score,
             feature_score=match.feature_score,
             final_score=match.final_score,

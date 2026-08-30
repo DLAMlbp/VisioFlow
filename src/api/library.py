@@ -4,12 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from src.schemas.library import (
     LibraryAssetCreate,
+    LibraryAssetGroupCreate,
+    LibraryAssetGroupResponse,
+    LibraryAssetGroupUpdate,
     LibraryAssetListResponse,
     LibraryAssetResponse,
     LibraryAssetUpdate,
-    LibraryTagNodeCreate,
-    LibraryTagNodeResponse,
-    LibraryTagNodeUpdate,
     TagReviewDecisionRequest,
     TagReviewResponse,
 )
@@ -25,37 +25,37 @@ review_router = APIRouter()
 LibraryServiceDep = Annotated[LibraryService, Depends(get_library_service)]
 
 
-@router.get("/tag-tree", response_model=list[LibraryTagNodeResponse])
-async def get_tag_tree(service: LibraryServiceDep) -> list[LibraryTagNodeResponse]:
-    return await service.get_tag_tree()
+@router.get("/groups", response_model=list[LibraryAssetGroupResponse])
+async def get_groups(service: LibraryServiceDep) -> list[LibraryAssetGroupResponse]:
+    return await service.get_groups()
 
 
 @router.post(
-    "/tag-nodes", response_model=LibraryTagNodeResponse, status_code=status.HTTP_201_CREATED
+    "/groups", response_model=LibraryAssetGroupResponse, status_code=status.HTTP_201_CREATED
 )
-async def create_tag_node(
-    payload: LibraryTagNodeCreate, service: LibraryServiceDep
-) -> LibraryTagNodeResponse:
+async def create_group(
+    payload: LibraryAssetGroupCreate, service: LibraryServiceDep
+) -> LibraryAssetGroupResponse:
     try:
-        return await service.create_tag_node(payload)
+        return await service.create_group(payload)
     except (InvalidLibraryRequest, LibraryNotFound) as exc:
         raise _http_error(exc) from exc
 
 
-@router.patch("/tag-nodes/{node_id}", response_model=LibraryTagNodeResponse)
-async def update_tag_node(
-    node_id: str, payload: LibraryTagNodeUpdate, service: LibraryServiceDep
-) -> LibraryTagNodeResponse:
+@router.patch("/groups/{group_id}", response_model=LibraryAssetGroupResponse)
+async def update_group(
+    group_id: str, payload: LibraryAssetGroupUpdate, service: LibraryServiceDep
+) -> LibraryAssetGroupResponse:
     try:
-        return await service.update_tag_node(node_id, payload)
+        return await service.update_group(group_id, payload)
     except (InvalidLibraryRequest, LibraryNotFound) as exc:
         raise _http_error(exc) from exc
 
 
-@router.delete("/tag-nodes/{node_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_tag_node(node_id: str, service: LibraryServiceDep) -> Response:
+@router.delete("/groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_group(group_id: str, service: LibraryServiceDep) -> Response:
     try:
-        await service.delete_tag_node(node_id)
+        await service.delete_group(group_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except (InvalidLibraryRequest, LibraryNotFound) as exc:
         raise _http_error(exc) from exc
@@ -74,13 +74,13 @@ async def create_library_asset(
 @router.get("/assets", response_model=LibraryAssetListResponse)
 async def list_library_assets(
     service: LibraryServiceDep,
-    leaf_tag_node_id: str | None = None,
+    group_id: str | None = None,
     asset_status: str | None = Query(default=None, alias="status"),
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> LibraryAssetListResponse:
     return await service.list_assets(
-        leaf_tag_node_id=leaf_tag_node_id,
+        group_id=group_id,
         status=asset_status,
         limit=limit,
         offset=offset,

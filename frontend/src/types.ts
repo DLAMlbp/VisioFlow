@@ -61,7 +61,6 @@ export interface CreateJobRequest {
   similarity_enabled: boolean;
   similarity_profile: string;
   unmatched_standard_policy: "reject";
-  library_scope_node_id?: string;
   enhance_level: number;
   max_selected: number;
   images: Array<{ object_key: string }>;
@@ -128,7 +127,7 @@ export interface AIImageTags {
 
 export interface SimilarityTaggingResult {
   decision: "matched" | "pending_review" | "unmatched";
-  tag_path: string[];
+  tags: string[];
   matched_asset_id?: string | null;
   similarity?: number | null;
   final_score?: number | null;
@@ -137,7 +136,7 @@ export interface SimilarityTaggingResult {
 
 export interface SimilarityCandidate {
   asset_id: string;
-  tag_path: string[];
+  tags: string[];
   similarity_score: number;
   feature_score: number;
   final_score: number;
@@ -146,7 +145,7 @@ export interface SimilarityCandidate {
 export interface TagReview {
   image_id: string;
   matched_asset_id?: string | null;
-  tag_path: string[];
+  tags: string[];
   similarity_score?: number | null;
   feature_score?: number | null;
   final_score?: number | null;
@@ -275,15 +274,12 @@ export interface UpdateAIModelConfig {
   api_key?: string;
 }
 
-export interface LibraryTagNode {
+export interface LibraryAssetGroup {
   id: string;
-  parent_id?: string | null;
-  name: string;
-  depth: number;
+  tags: string[];
   sort_order: number;
   status: "active" | "disabled";
   asset_count: number;
-  children: LibraryTagNode[];
 }
 
 export interface LibraryAsset {
@@ -291,8 +287,8 @@ export interface LibraryAsset {
   original_object_key: string;
   thumbnail_object_key?: string | null;
   original_filename?: string | null;
-  leaf_tag_node_id: string;
-  tag_path: string[];
+  group_id: string;
+  tags: string[];
   content_type?: string | null;
   width?: number | null;
   height?: number | null;

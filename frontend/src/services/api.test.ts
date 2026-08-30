@@ -21,6 +21,24 @@ describe("real API client", () => {
     expect(new Headers(request.headers).has("Content-Type")).toBe(false);
   });
 
+  it("loads flat library groups with one tag set per image group", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify([
+      {
+        id: "grp_living",
+        tags: ["客厅", "现代风格", "完工"],
+        sort_order: 0,
+        status: "active",
+        asset_count: 4
+      }
+    ]), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const groups = await api.getLibraryGroups();
+
+    expect(groups[0]?.tags).toEqual(["客厅", "现代风格", "完工"]);
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/library/groups", expect.any(Object));
+  });
+
   it("shows the backend detail instead of a raw JSON response", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
       JSON.stringify({ detail: "服务端 API_KEY 未配置" }),

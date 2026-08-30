@@ -19,7 +19,6 @@ class CreateUploadBatchRequest(BaseModel):
     similarity_enabled: bool = True
     similarity_profile: str = Field(default="library_similarity_v2", min_length=1, max_length=80)
     unmatched_standard_policy: Literal["reject"] = "reject"
-    library_scope_node_id: str | None = Field(default=None, min_length=1, max_length=40)
     enhance_level: int = Field(default=1, ge=0, le=2)
     max_selected: int | None = Field(default=None, ge=1)
     callback_url: HttpUrl | None = None

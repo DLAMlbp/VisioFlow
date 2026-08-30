@@ -8,13 +8,12 @@ from src.core.exceptions import AppError
 from src.db.session import get_db_session
 from src.models.image_item import ImageItem
 from src.models.image_job import ImageJob
-from src.models.library_tag_node import LibraryTagNode
 from src.repositories.jobs import ImageJobRepository
 from src.schemas.jobs import (
     CreateImageJobRequest,
     CreateImageJobResponse,
-    ImageAuditDimensionResponse,
     ImageAITagsResponse,
+    ImageAuditDimensionResponse,
     ImageItemStatus,
     ImageJobHistoryItemResponse,
     ImageJobHistoryResponse,
@@ -101,12 +100,6 @@ class ImageJobService:
                     raise RuntimeError("托管处理标准需要数据库会话")
                 if payload.similarity_enabled:
                     self.profile_loader.get_similarity_profile(payload.similarity_profile)
-                if payload.similarity_enabled and payload.library_scope_node_id:
-                    scope = await self.repository.session.get(
-                        LibraryTagNode, payload.library_scope_node_id
-                    )
-                    if scope is None or scope.status != "active":
-                        raise ProfileNotFoundError("素材匹配范围不存在或已停用")
             except ProfileNotFoundError as exc:
                 raise InvalidJobRequest(exc.args[0]) from exc
 
@@ -127,9 +120,6 @@ class ImageJobService:
             similarity_enabled=payload.similarity_enabled,
             similarity_profile_id=payload.similarity_profile,
             unmatched_standard_policy=payload.unmatched_standard_policy,
-            library_scope_node_id=(
-                payload.library_scope_node_id if payload.similarity_enabled else None
-            ),
             ai_tagging_model=self.settings.ai_tagging_model if self.settings.ai_tagging_enabled else None,
             enhance_level=payload.enhance_level,
             max_selected=payload.max_selected,
@@ -293,7 +283,7 @@ class ImageJobService:
                     tagging_result=(
                         ImageSimilarityResultResponse(
                             decision=item.similarity_match.decision,
-                            tag_path=item.similarity_match.matched_tag_path_snapshot or [],
+                            tags=item.similarity_match.matched_tags_snapshot or [],
                             matched_asset_id=item.similarity_match.matched_asset_id,
                             similarity=item.similarity_match.similarity_score,
                             final_score=item.similarity_match.final_score,

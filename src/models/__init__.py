@@ -5,7 +5,7 @@ from src.models.image_metric import ImageMetric
 from src.models.image_result import ImageResult
 from src.models.image_similarity_match import ImageSimilarityMatch
 from src.models.library_asset import LibraryAsset
-from src.models.library_tag_node import LibraryTagNode
+from src.models.library_asset_group import LibraryAssetGroup
 from src.models.processing_profile import ProcessingProfile
 from src.models.upload_batch import UploadBatch, UploadBatchItem
 
@@ -17,7 +17,7 @@ __all__ = [
     "ImageResult",
     "ImageSimilarityMatch",
     "LibraryAsset",
-    "LibraryTagNode",
+    "LibraryAssetGroup",
     "ProcessingProfile",
     "UploadBatch",
     "UploadBatchItem",

@@ -12,7 +12,6 @@ from src.core.exceptions import AppError, InvalidUploadRequest
 from src.db.session import get_db_session
 from src.models.image_item import ImageItem
 from src.models.image_job import ImageJob
-from src.models.library_tag_node import LibraryTagNode
 from src.models.upload_batch import UploadBatch, UploadBatchItem
 from src.repositories.upload_batches import UploadBatchRepository
 from src.schemas.jobs import JobStatus
@@ -90,12 +89,6 @@ class UploadBatchService:
                 beautify_snapshot = neutral_beautify_snapshot()
             if payload.similarity_enabled:
                 loader.get_similarity_profile(payload.similarity_profile)
-            if payload.similarity_enabled and payload.library_scope_node_id:
-                scope = await self.session.get(
-                    LibraryTagNode, payload.library_scope_node_id
-                )
-                if scope is None or scope.status != "active":
-                    raise ProfileNotFoundError("素材匹配范围不存在或已停用")
         except ProfileNotFoundError as exc:
             raise InvalidUploadBatch(exc.args[0]) from exc
 
@@ -117,9 +110,6 @@ class UploadBatchService:
             similarity_enabled=payload.similarity_enabled,
             similarity_profile_id=payload.similarity_profile,
             unmatched_standard_policy=payload.unmatched_standard_policy,
-            library_scope_node_id=(
-                payload.library_scope_node_id if payload.similarity_enabled else None
-            ),
             enhance_level=payload.enhance_level,
             max_selected=payload.max_selected or len(payload.files),
             callback_url=str(payload.callback_url) if payload.callback_url else None,
@@ -222,7 +212,6 @@ class UploadBatchService:
             similarity_enabled=batch.similarity_enabled,
             similarity_profile_id=batch.similarity_profile_id,
             unmatched_standard_policy=batch.unmatched_standard_policy,
-            library_scope_node_id=batch.library_scope_node_id,
             ai_tagging_model=(
                 self.settings.ai_tagging_model if self.settings.ai_tagging_enabled else None
             ),

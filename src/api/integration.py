@@ -56,7 +56,6 @@ async def create_integration_job(
     similarity_enabled: Annotated[bool, Form()] = True,
     similarity_profile: Annotated[str, Form()] = "library_similarity_v2",
     unmatched_standard_policy: Annotated[str, Form(pattern="^reject$")] = "reject",
-    library_scope_node_id: Annotated[str | None, Form()] = None,
     enhance_level: Annotated[int, Form(ge=0, le=2)] = 1,
     max_selected: Annotated[int, Form(ge=1)] = 10,
 ) -> CreateImageJobResponse:
@@ -96,7 +95,6 @@ async def create_integration_job(
             similarity_enabled=similarity_enabled,
             similarity_profile=similarity_profile,
             unmatched_standard_policy=unmatched_standard_policy,
-            library_scope_node_id=library_scope_node_id,
             enhance_level=enhance_level,
             max_selected=max_selected,
             images=[{"object_key": object_key} for object_key in image_keys],

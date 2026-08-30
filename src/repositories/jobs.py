@@ -29,7 +29,6 @@ class JobConfig:
     similarity_enabled: bool
     similarity_profile_id: str
     unmatched_standard_policy: str
-    library_scope_node_id: str | None
     max_selected: int
     total_count: int
     dispatch_cursor: int
@@ -96,7 +95,6 @@ class ImageJobRepository:
                     ImageJob.similarity_enabled,
                     ImageJob.similarity_profile_id,
                     ImageJob.unmatched_standard_policy,
-                    ImageJob.library_scope_node_id,
                     ImageJob.max_selected,
                     ImageJob.total_count,
                     ImageJob.dispatch_cursor,

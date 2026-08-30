@@ -32,7 +32,6 @@ import type {
   JobHistoryResponse,
   JobProgress,
   JobResults,
-  LibraryTagNode,
   ProfileOption,
   ResultImage,
   ResultFilter,
@@ -48,14 +47,6 @@ const MAX_IMAGE_SIZE_MB = 25;
 const UPLOAD_CONCURRENCY = 6;
 const PAGE_SIZE = 50;
 
-const fallbackSimilarityProfiles: ProfileOption[] = [
-  {
-    id: "library_similarity_v2",
-    name: "素材库智能匹配",
-    description: "图片相似度和综合分都达到 60% 时自动继承参考素材标签，否则进入人工复核。"
-  }
-];
-
 function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const itemsRef = useRef<UploadItem[]>([]);
@@ -63,12 +54,8 @@ function App() {
   const [items, setItems] = useState<UploadItem[]>([]);
   const [processingStandards, setProcessingStandards] = useState<ProfileOption[]>([]);
   const [beautifyProfiles, setBeautifyProfiles] = useState<ProfileOption[]>([]);
-  const [similarityProfiles, setSimilarityProfiles] = useState<ProfileOption[]>(fallbackSimilarityProfiles);
   const [selectedStandardIds, setSelectedStandardIds] = useState<string[]>([]);
   const [beautifyProfile, setBeautifyProfile] = useState("");
-  const [similarityProfile, setSimilarityProfile] = useState("library_similarity_v2");
-  const [libraryScopes, setLibraryScopes] = useState<LibraryTagNode[]>([]);
-  const [libraryScopeNodeId, setLibraryScopeNodeId] = useState("");
   const filterEnabled = true;
   const beautifyEnabled = true;
   const similarityEnabled = true;
@@ -127,8 +114,8 @@ function App() {
         tagging_result: taggingResult,
         ai_tags: image.ai_tags ? {
           ...image.ai_tags,
-          tags: matched ? taggingResult.tag_path : [],
-          categories: matched ? { path: taggingResult.tag_path } : {},
+          tags: matched ? taggingResult.tags : [],
+          categories: matched ? { 素材库标签: taggingResult.tags } : {},
           candidate_tags: []
         } : image.ai_tags
       };
@@ -165,10 +152,6 @@ function App() {
       setMessage(error instanceof Error ? error.message : "正式后端初始化失败");
     };
     void reloadProcessingProfiles().catch(reportStartupError);
-    api.getSimilarityProfiles().then(setSimilarityProfiles).catch(reportStartupError);
-    api.getLibraryTagTree().then((nodes) => {
-      setLibraryScopes(nodes.filter((node) => node.status === "active"));
-    }).catch(reportStartupError);
   }, []);
 
   useEffect(() => {
@@ -477,9 +460,7 @@ function App() {
         filter_enabled: filterEnabled,
         beautify_enabled: beautifyEnabled,
         similarity_enabled: similarityEnabled,
-        similarity_profile: similarityProfile,
         unmatched_standard_policy: "reject",
-        library_scope_node_id: similarityEnabled && libraryScopeNodeId ? libraryScopeNodeId : undefined,
         enhance_level: 1,
         max_selected: uploadable.length,
         files: uploadable.map((item) => ({
@@ -701,25 +682,6 @@ function App() {
               </select>
               <p>{beautifyEnabled ? beautifyProfiles.find((profile) => profile.id === beautifyProfile)?.description ?? "过滤通过后，统一按这套独立标准生成美化图。" : "关闭后保持原始画面，仅校正方向并生成标准交付文件。"}</p>
             </div>
-            {similarityEnabled && <div className="field-stack">
-              <label htmlFor="libraryScope">素材匹配范围</label>
-              <select id="libraryScope" value={libraryScopeNodeId} onChange={(event) => setLibraryScopeNodeId(event.target.value)}>
-                <option value="">全部启用素材</option>
-                {libraryScopes.map((node) => <option key={node.id} value={node.id}>{node.name}</option>)}
-              </select>
-              <p>选择一个标签树根节点后，只会在该业务素材范围内检索，避免跨场景误匹配。</p>
-            </div>}
-            {similarityEnabled && <div className="field-stack">
-              <label htmlFor="similarityProfile">相似匹配标准</label>
-              <select id="similarityProfile" value={similarityProfile} onChange={(event) => setSimilarityProfile(event.target.value)}>
-                {similarityProfiles.map((profile) => (
-                  <option key={profile.id} value={profile.id}>
-                    {profile.name}
-                  </option>
-                ))}
-              </select>
-              <p>{similarityProfiles.find((profile) => profile.id === similarityProfile)?.description}</p>
-            </div>}
           </div>
 
           <button className="primary-button" type="button" onClick={startJob} disabled={!canCreateJob}>
@@ -949,9 +911,9 @@ function ResultCard({ image, active, onOpen }: { image: ResultImage; active: boo
       </div>
       <p>{primaryReason}</p>
       {image.processing_standard_name && <p className="standard-match-note">处理标准：{image.processing_standard_name}</p>}
-      {image.tagging_result?.decision === "matched" && image.tagging_result.tag_path.length ? (
+      {image.tagging_result?.decision === "matched" && image.tagging_result.tags.length ? (
         <div className="tag-row" aria-label="AI 自动标签">
-          {image.tagging_result.tag_path.slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}
+          {image.tagging_result.tags.slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}
         </div>
       ) : image.tagging_result?.decision === "pending_review" ? <p className="unmatched-note">无法识别，等待人工复核</p>
         : image.tagging_result?.decision === "unmatched" ? <p className="unmatched-note">无法识别</p> : null}
@@ -1074,7 +1036,7 @@ function SimilarityMatch({ imageId, result, onResolved }: { imageId: string; res
       if (!review) return;
       const byPath = new Map<string, SimilarityCandidate>();
       review.candidates.forEach((candidate) => {
-        const key = candidate.tag_path.join(" / ");
+        const key = candidate.tags.join("、");
         if (!byPath.has(key)) byPath.set(key, candidate);
       });
       const options = Array.from(byPath.values());
@@ -1096,7 +1058,7 @@ function SimilarityMatch({ imageId, result, onResolved }: { imageId: string; res
       });
       onResolved(imageId, {
         decision: review.decision,
-        tag_path: review.tag_path,
+        tags: review.tags,
         matched_asset_id: review.matched_asset_id,
         similarity: review.similarity_score,
         final_score: review.final_score,
@@ -1113,10 +1075,10 @@ function SimilarityMatch({ imageId, result, onResolved }: { imageId: string; res
   return <section className={`similarity-panel ${result.decision}`}>
     <div className="similarity-heading"><h3>素材匹配</h3><span>{result.decision === "matched" ? "已匹配" : result.decision === "pending_review" ? "待复核" : "未匹配"}</span></div>
     <p>{result.message}</p>
-    {result.tag_path.length ? <div className="path-tags">{result.tag_path.map((tag, index) => <span key={`${tag}-${index}`}>{tag}{index < result.tag_path.length - 1 && <ChevronRight size={13} aria-hidden="true" />}</span>)}</div> : null}
+    {result.tags.length ? <div className="path-tags">{result.tags.map((tag, index) => <span key={`${tag}-${index}`}>{tag}</span>)}</div> : null}
     {result.similarity != null ? <small>图片相似度 {Math.round(result.similarity * 100)}%</small> : null}
     {result.decision === "pending_review" && <div className="review-controls">
-      {candidates.length > 1 && <label>选择候选标签<select value={selectedAssetId} onChange={(event) => setSelectedAssetId(event.target.value)}>{candidates.map((candidate) => <option key={candidate.asset_id} value={candidate.asset_id}>{candidate.tag_path.join(" / ")}（综合匹配 {Math.round(candidate.final_score * 100)}%）</option>)}</select></label>}
+      {candidates.length > 1 && <label>选择候选标签组合<select value={selectedAssetId} onChange={(event) => setSelectedAssetId(event.target.value)}>{candidates.map((candidate) => <option key={candidate.asset_id} value={candidate.asset_id}>{candidate.tags.join("、")}（综合匹配 {Math.round(candidate.final_score * 100)}%）</option>)}</select></label>}
       <div className="review-actions"><button className="review-confirm" type="button" disabled={reviewBusy || (!selectedAssetId && !result.matched_asset_id)} onClick={() => void decideReview("matched")}>{reviewBusy ? <Loader2 className="spin" size={15} /> : <Check size={15} />}确认此标签</button><button type="button" disabled={reviewBusy} onClick={() => void decideReview("unmatched")}><X size={15} />设为未匹配</button></div>
       {reviewError && <p className="review-error">{reviewError}</p>}
     </div>}

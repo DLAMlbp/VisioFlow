@@ -23,7 +23,7 @@ class ImageSimilarityMatch(Base):
     matched_asset_id: Mapped[str | None] = mapped_column(
         ForeignKey("library_assets.id", ondelete="SET NULL"), nullable=True, index=True
     )
-    matched_tag_path_snapshot: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    matched_tags_snapshot: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     similarity_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     feature_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     final_score: Mapped[float | None] = mapped_column(Float, nullable=True)
