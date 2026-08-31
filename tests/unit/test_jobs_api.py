@@ -66,7 +66,11 @@ def test_create_image_job_returns_201_and_job_id() -> None:
     response = client.post(
         "/api/v1/image/jobs",
         json={
-                "processing_standards": ["std_finished", "std_unfinished"],
+            "filter_route": {
+                "completion_profile": "completion_renovation_v1",
+                "completed_filter_profile": "standard_completed_v1",
+                "non_completed_filter_profile": "standard_non_completed_v1",
+            },
             "beautify_profile": "natural_v1",
             "enhance_level": 1,
             "max_selected": 10,

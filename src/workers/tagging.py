@@ -14,6 +14,7 @@ from src.services.ai_model_config import load_ai_model_settings
 from src.services.images.embedding import ImageEmbeddingError, OpenClipImageEmbedder
 from src.services.images.similarity import (
     ScoredCandidate,
+    combined_similarity_score,
     decide_similarity,
     feature_similarity,
     unmatched_decision,
@@ -88,9 +89,10 @@ async def _generate_image_tags(image_id: str) -> None:
                     feature_score = feature_similarity(
                         outcome.payload.model_dump(), asset.analysis_json
                     )
-                    final_score = (
-                        similarity_score * similarity_profile.similarity_image_weight
-                        + feature_score * similarity_profile.similarity_feature_weight
+                    final_score = combined_similarity_score(
+                        similarity_score=similarity_score,
+                        feature_score=feature_score,
+                        settings=similarity_profile,
                     )
                     scored.append(
                         ScoredCandidate(

@@ -8,7 +8,6 @@ from src.core.config import Settings, get_settings
 from src.main import app
 from src.services.managed_profiles import (
     CompiledProfile,
-    ManagedProfileError,
     ManagedProfileService,
 )
 
@@ -84,23 +83,29 @@ async def test_successful_natural_language_preview_can_always_be_saved(
 
 
 @pytest.mark.asyncio
-async def test_only_two_active_processing_standards_can_be_created(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def two_active_standards(*_args, **_kwargs):
-        return [SimpleNamespace(id="one"), SimpleNamespace(id="two")]
+async def test_multiple_reusable_branch_standards_can_be_created() -> None:
+    class FakeSession:
+        def add(self, row):
+            self.row = row
 
-    monkeypatch.setattr(ManagedProfileService, "list", two_active_standards)
-    service = ManagedProfileService(SimpleNamespace(), Settings())
+        async def commit(self):
+            return None
 
-    with pytest.raises(ManagedProfileError, match="只允许启用两套"):
-        await service.create(
-            "standard",
-            name="第三套",
-            instruction="第三套启动规则",
-            description="不应保存",
-            config={
-                "activation_rule": "第三套启动规则",
-                "filter_rule": "第三套过滤规则",
-            },
-        )
+        async def refresh(self, row):
+            return None
+
+    session = FakeSession()
+    service = ManagedProfileService(session, Settings())
+
+    created = await service.create(
+        "standard",
+        name="第三套",
+        instruction="由后端路由后启用",
+        description="可被任务选择的分支标准",
+        config={
+            "activation_rule": "由后端路由后始终启用",
+            "filter_rule": "过滤不符合本分支要求的图片",
+        },
+    )
+
+    assert created.profile_type == "standard"

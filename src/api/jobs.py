@@ -58,9 +58,24 @@ async def get_image_job_results(
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     decision: str | None = Query(default=None),
+    completion_label: str | None = Query(
+        default=None, pattern="^(completed|non_completed)$"
+    ),
+    review_required: bool | None = Query(default=None),
 ) -> ImageJobResultsResponse:
     try:
-        return await service.get_results(job_id, limit=limit, offset=offset, decision=decision)
+        completion_filters: dict[str, object] = {}
+        if completion_label is not None:
+            completion_filters["completion_label"] = completion_label
+        if review_required is not None:
+            completion_filters["review_required"] = review_required
+        return await service.get_results(
+            job_id,
+            limit=limit,
+            offset=offset,
+            decision=decision,
+            **completion_filters,
+        )
     except JobNotFound as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
 

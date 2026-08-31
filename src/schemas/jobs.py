@@ -26,6 +26,7 @@ class ImageItemStatus(StrEnum):
     QUEUED = "queued"
     ANALYZING = "analyzing"
     FILTERED = "filtered"
+    BEAUTIFY_PLANNING = "beautify_planning"
     ENHANCING = "enhancing"
     ENHANCED = "enhanced"
     TAGGING = "tagging"
@@ -49,7 +50,30 @@ class CreateJobImage(BaseModel):
         return value
 
 
+class FilterRoutingPolicy(BaseModel):
+    insufficient_evidence_policy: Literal["reject", "route_non_completed"] = (
+        "route_non_completed"
+    )
+    low_confidence_policy: Literal["continue_with_review", "reject"] = (
+        "continue_with_review"
+    )
+
+
+class CompletionFilterRoute(BaseModel):
+    completion_profile: str = Field(min_length=1, max_length=80)
+    completed_filter_profile: str = Field(min_length=1, max_length=80)
+    non_completed_filter_profile: str = Field(min_length=1, max_length=80)
+    policy: FilterRoutingPolicy = Field(default_factory=FilterRoutingPolicy)
+
+    @model_validator(mode="after")
+    def require_distinct_branches(self):
+        if self.completed_filter_profile == self.non_completed_filter_profile:
+            raise ValueError("完工与非完工过滤标准不能相同")
+        return self
+
+
 class CreateImageJobRequest(BaseModel):
+    filter_route: CompletionFilterRoute | None = None
     processing_standards: list[str] = Field(default_factory=list, max_length=2)
     filter_profile: str | None = Field(default=None, min_length=1, max_length=80)
     beautify_profile: str | None = Field(default=None, min_length=1, max_length=80)
@@ -66,11 +90,9 @@ class CreateImageJobRequest(BaseModel):
     @model_validator(mode="after")
     def require_processing_configuration(self):
         if not (self.filter_enabled and self.beautify_enabled and self.similarity_enabled):
-            raise ValueError("正式模式固定执行一次识别、条件筛选、美化、标签绑定和素材匹配")
-        if len(self.processing_standards) != 2:
-            raise ValueError("必须选择两套互斥且完整覆盖的过滤标准")
-        if len(set(self.processing_standards)) != 2:
-            raise ValueError("条件过滤标准不能重复")
+            raise ValueError("正式模式固定执行完工分类、分支过滤、过滤后美化和素材库匹配")
+        if self.filter_route is None:
+            raise ValueError("必须配置完工分类、完工过滤和非完工过滤标准")
         if not self.beautify_profile:
             raise ValueError("请选择独立的美化标准")
         return self
@@ -124,6 +146,7 @@ class ImageMetricsResponse(BaseModel):
 
 class ImageAITagsResponse(BaseModel):
     status: str
+    source: Literal["library", "legacy_ai"] | None = None
     summary: str | None = None
     tags: list[str] = Field(default_factory=list)
     categories: dict[str, list[str]] = Field(default_factory=dict)
@@ -139,6 +162,7 @@ class ImageSimilarityResultResponse(BaseModel):
     tags: list[str] = Field(default_factory=list)
     matched_asset_id: str | None = None
     similarity: float | None = Field(default=None, ge=0, le=1)
+    feature_score: float | None = Field(default=None, ge=0, le=1)
     final_score: float | None = Field(default=None, ge=0, le=1)
     message: str
 
@@ -147,6 +171,46 @@ class ImageAuditDimensionResponse(BaseModel):
     dimension: str
     passed: bool
     reason: str
+
+
+class ImageCompletionResponse(BaseModel):
+    label: Literal["completed", "non_completed"]
+    subtype: Literal[
+        "completed",
+        "construction",
+        "insufficient_evidence",
+        "invalid_or_irrelevant",
+    ]
+    confidence: float = Field(ge=0, le=1)
+    reason: str
+    reason_codes: list[str] = Field(default_factory=list)
+    review_required: bool = False
+
+
+class BeautifyAcceptanceCheckResponse(BaseModel):
+    name: Literal["exposure", "color", "noise", "sharpening"]
+    passed: bool
+    before: dict[str, float] = Field(default_factory=dict)
+    after: dict[str, float] = Field(default_factory=dict)
+    reason: str
+
+
+class BeautifyAcceptanceResponse(BaseModel):
+    status: Literal["passed", "fallback", "failed"]
+    checks: list[BeautifyAcceptanceCheckResponse] = Field(default_factory=list)
+    fallback_reason: str | None = None
+
+
+class ImageBeautifyResponse(BaseModel):
+    status: str
+    needed: bool | None = None
+    reason: str | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    planned_parameters: dict[str, object] = Field(default_factory=dict)
+    effective_parameters: dict[str, object] = Field(default_factory=dict)
+    corrections: list[str] = Field(default_factory=list)
+    preview_attempts: int = 0
+    acceptance: BeautifyAcceptanceResponse | None = None
 
 
 class ImageJobResultItemResponse(BaseModel):
@@ -163,11 +227,16 @@ class ImageJobResultItemResponse(BaseModel):
     metrics: ImageMetricsResponse | None = None
     enhanced_metrics: ImageMetricsResponse | None = None
     ai_tags: ImageAITagsResponse | None = None
+    library_tags: ImageSimilarityResultResponse | None = None
     tagging_result: ImageSimilarityResultResponse | None = None
     processing_standard_id: str | None = None
     processing_standard_name: str | None = None
     activation_reason: str | None = None
     audit_dimensions: list[ImageAuditDimensionResponse] = Field(default_factory=list)
+    completion: ImageCompletionResponse | None = None
+    beautify: ImageBeautifyResponse | None = None
+    routed_filter_profile_id: str | None = None
+    routed_filter_profile_version: int | None = None
 
 
 class ImageJobResultsResponse(BaseModel):

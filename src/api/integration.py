@@ -8,8 +8,10 @@ from src.api.jobs import JobServiceDep
 from src.api.uploads import SettingsDep, StorageDep
 from src.core.exceptions import InvalidUploadRequest
 from src.schemas.jobs import (
+    CompletionFilterRoute,
     CreateImageJobRequest,
     CreateImageJobResponse,
+    FilterRoutingPolicy,
     ImageJobProgressResponse,
     ImageJobResultItemResponse,
 )
@@ -50,6 +52,15 @@ async def create_integration_job(
     processing_standards: Annotated[
         str | None, Form(description="逗号分隔的两套互斥且完整覆盖的过滤标准 ID")
     ] = None,
+    completion_profile: Annotated[str | None, Form(min_length=1)] = None,
+    completed_filter_profile: Annotated[str | None, Form(min_length=1)] = None,
+    non_completed_filter_profile: Annotated[str | None, Form(min_length=1)] = None,
+    insufficient_evidence_policy: Annotated[
+        str, Form(pattern="^(reject|route_non_completed)$")
+    ] = "route_non_completed",
+    low_confidence_policy: Annotated[
+        str, Form(pattern="^(continue_with_review|reject)$")
+    ] = "continue_with_review",
     filter_profile: Annotated[str | None, Form()] = None,
     filter_enabled: Annotated[bool, Form()] = True,
     beautify_enabled: Annotated[bool, Form()] = True,
@@ -64,6 +75,16 @@ async def create_integration_job(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"集成接口单次最多支持 {settings.integration_max_files} 张图片",
+        )
+    route_values = (
+        completion_profile,
+        completed_filter_profile,
+        non_completed_filter_profile,
+    )
+    if not all(route_values):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="新任务必须同时提供完工分类、完工过滤和非完工过滤标准",
         )
 
     uploaded_keys: list[str] = []
@@ -83,6 +104,19 @@ async def create_integration_job(
             image_keys.append(object_key)
 
         payload = CreateImageJobRequest(
+            filter_route=(
+                CompletionFilterRoute(
+                    completion_profile=completion_profile,
+                    completed_filter_profile=completed_filter_profile,
+                    non_completed_filter_profile=non_completed_filter_profile,
+                    policy=FilterRoutingPolicy(
+                        insufficient_evidence_policy=insufficient_evidence_policy,
+                        low_confidence_policy=low_confidence_policy,
+                    ),
+                )
+                if all(route_values)
+                else None
+            ),
             processing_standards=[
                 value.strip()
                 for value in (processing_standards or "").split(",")

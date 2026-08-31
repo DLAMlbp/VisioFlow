@@ -35,14 +35,16 @@ X-API-Key: <INTEGRATION_API_KEY>
 
 创建请求必须包含 `callback_url`。该地址由调用方服务端提供，任务进入终态后由图片服务的 `control` Worker 主动 `POST` 完整结果。
 
-正式模式固定执行原图一次 AI 识别、逐项筛选、美化、首次识别标签绑定和素材匹配，不会对美化图再次调用视觉大模型。`processing_standards` 必须恰好传入两套互斥且完整覆盖的过滤标准 ID（逗号分隔），`beautify_profile` 必填。历史阶段开关字段仍保留在 v1，但传 `false` 会返回参数错误；`filter_profile` 不再用于创建正式任务。
+正式模式固定执行“AI 完工分类 -> 完工/施工分支过滤 -> 整批过滤完成 -> AI 规划并本地美化 -> OpenCLIP 图片向量与大模型内容特征混合匹配 -> 继承素材组人工标签”。大模型内容特征只用于候选比对，不会直接生成正式标签。`completion_profile`、`completed_filter_profile`、`non_completed_filter_profile` 和 `beautify_profile` 均为必填。`processing_standards` 仅作为旧请求字段保留，不再允许用于创建新任务。历史阶段开关字段仍保留在 v1，但传 `false` 会返回参数错误。
 
 ```bash
 curl -X POST "https://<service-host>/api/v1/integration/jobs" \
   -H "X-API-Key: $INTEGRATION_API_KEY" \
   -F "files=@product-front.jpg;type=image/jpeg" \
   -F "files=@product-side.png;type=image/png" \
-  -F "processing_standards=<条件标准 ID 1>,<条件标准 ID 2>" \
+  -F "completion_profile=<完工分类标准 ID>" \
+  -F "completed_filter_profile=<完工过滤标准 ID>" \
+  -F "non_completed_filter_profile=<非完工过滤标准 ID>" \
   -F "beautify_profile=<标准管理中的美化标准 ID>" \
   -F "callback_url=https://client.example.com/api/image-callback" \
   -F "max_selected=10"
@@ -103,7 +105,7 @@ curl "https://<service-host>/api/v1/integration/jobs/job_xxx/results?limit=50&of
   -H "X-API-Key: $INTEGRATION_API_KEY"
 ```
 
-结果包含筛选决定、质量分、美化说明、AI 标签、相似素材匹配，以及 `original_url`、`enhanced_url` 两个限时下载地址。下载地址有效期见响应中的 `download_expires_in`，过期后重新请求结果即可获得新地址。回调中的下载地址遵循相同规则。
+结果包含完工分类、实际过滤分支、质量分、美化说明和素材库匹配标签，以及 `original_url`、`enhanced_url` 两个限时下载地址。正式标签只读取 `library_tags.tags`；待复核或未匹配时该数组为空。下载地址有效期见响应中的 `download_expires_in`，过期后重新请求结果即可获得新地址。
 
 ## 状态码
 

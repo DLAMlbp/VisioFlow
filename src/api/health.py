@@ -9,6 +9,7 @@ from sqlalchemy import text
 from src.core.config import get_settings
 from src.db.session import AsyncSessionLocal
 from src.services.ai_model_config import load_ai_model_settings
+from src.services.jobs.workflow_config import required_workflow_error
 from src.services.storage.factory import get_storage_provider
 
 router = APIRouter(tags=["health"])
@@ -40,6 +41,9 @@ async def readiness(response: Response) -> dict[str, object]:
             await client.aclose()
 
     async def check_configuration() -> None:
+        workflow_error = required_workflow_error(settings)
+        if workflow_error:
+            raise RuntimeError(workflow_error)
         if not settings.api_key:
             raise RuntimeError("API_KEY 未配置")
         effective = await asyncio.to_thread(load_ai_model_settings, settings)

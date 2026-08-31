@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -10,7 +11,12 @@ from src.models.image_metric import ImageMetric
 from src.models.image_result import ImageResult
 from src.repositories.jobs import JobProgressSnapshot
 from src.schemas.jobs import CreateImageJobRequest
-from src.services.jobs.service import ImageJobService, InvalidJobRequest, JobNotFound
+from src.services.jobs.service import (
+    ImageJobService,
+    InvalidJobRequest,
+    JobNotFound,
+    _beautify_response,
+)
 from src.services.managed_profiles import ManagedProfileService
 from src.services.profiles import ProfileLoader, ProfileNotFoundError
 
@@ -71,15 +77,22 @@ class FakeTaskPublisher:
         self.image_ids.append(image_id)
 
 
+def _route() -> dict[str, str]:
+    return {
+        "completion_profile": "completion_renovation_v1",
+        "completed_filter_profile": "std_finished",
+        "non_completed_filter_profile": "std_unfinished",
+    }
+
+
 def make_payload(image_count: int = 2) -> CreateImageJobRequest:
     return CreateImageJobRequest(
-        processing_standards=["std_finished", "std_unfinished"],
+        filter_route=_route(),
         beautify_profile="natural_v1",
         enhance_level=1,
         max_selected=10,
         images=[
-            {"object_key": f"uploads/2026/08/19/image_{index}.jpg"}
-            for index in range(image_count)
+            {"object_key": f"uploads/2026/08/19/image_{index}.jpg"} for index in range(image_count)
         ],
     )
 
@@ -106,7 +119,7 @@ async def test_create_job_persists_job_and_image_items() -> None:
 async def test_create_job_rejects_disabled_required_stage_configuration() -> None:
     with pytest.raises(ValidationError, match="正式模式固定执行"):
         CreateImageJobRequest(
-            processing_standards=["std_finished", "std_unfinished"],
+            filter_route=_route(),
             beautify_profile="natural_v1",
             filter_enabled=False,
             images=[{"object_key": "uploads/2026/08/19/image.jpg"}],
@@ -119,16 +132,27 @@ async def test_create_job_snapshots_managed_profiles(
 ) -> None:
     repository = FakeJobRepository()
     repository.session = object()
-    async def resolve_standards(_self, profile_ids: list[str]):
-        return [
-            (object(), {"id": profile_id, "instruction": f"standard-{profile_id}", "config": {}})
-            for profile_id in profile_ids
-        ]
+
+    async def resolve_routing_profiles(_self, **_kwargs):
+        return (
+            (
+                SimpleNamespace(id="completion_renovation_v1"),
+                {"id": "completion_renovation_v1", "instruction": "completion"},
+            ),
+            (
+                SimpleNamespace(id="std_finished"),
+                {"id": "std_finished", "instruction": "standard-std_finished"},
+            ),
+            (
+                SimpleNamespace(id="std_unfinished"),
+                {"id": "std_unfinished", "instruction": "standard-std_unfinished"},
+            ),
+        )
 
     async def resolve_beautify(_self, profile_id: str):
         return object(), {"id": profile_id, "instruction": "自然提亮", "config": {}}
 
-    monkeypatch.setattr(ManagedProfileService, "resolve_standards", resolve_standards)
+    monkeypatch.setattr(ManagedProfileService, "resolve_routing_profiles", resolve_routing_profiles)
     monkeypatch.setattr(ManagedProfileService, "resolve_beautify", resolve_beautify)
     monkeypatch.setattr(ProfileLoader, "get_similarity_profile", lambda *_args: object())
     service = ImageJobService(
@@ -137,7 +161,6 @@ async def test_create_job_snapshots_managed_profiles(
         profile_loader=ProfileLoader(Settings(profiles_directory="profiles")),
     )
     payload = make_payload()
-    payload.processing_standards = ["std_finished", "std_unfinished"]
     payload.beautify_profile = "bty_user"
     payload.similarity_profile = "library_similarity_v1"
 
@@ -152,6 +175,61 @@ async def test_create_job_snapshots_managed_profiles(
     ]
     assert stored.beautify_profile_snapshot is not None
     assert stored.beautify_profile_snapshot["id"] == "bty_user"
+
+
+@pytest.mark.asyncio
+async def test_create_job_fails_closed_when_required_workflow_switch_is_disabled() -> None:
+    service = ImageJobService(
+        repository=FakeJobRepository(),
+        settings=Settings(batch_filter_barrier_enabled=False),
+    )
+
+    with pytest.raises(InvalidJobRequest, match="整批过滤完成屏障"):
+        await service.create_job(make_payload())
+
+
+@pytest.mark.asyncio
+async def test_create_job_snapshots_completion_and_both_filter_branches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = FakeJobRepository()
+    repository.session = object()
+
+    async def resolve_routing_profiles(_self, **_kwargs):
+        return (
+            (SimpleNamespace(id="cmp"), {"id": "cmp", "version": 2}),
+            (SimpleNamespace(id="done"), {"id": "done", "version": 3}),
+            (SimpleNamespace(id="work"), {"id": "work", "version": 4}),
+        )
+
+    async def resolve_beautify(_self, profile_id: str):
+        return object(), {"id": profile_id, "instruction": "自然提亮", "config": {}}
+
+    monkeypatch.setattr(ManagedProfileService, "resolve_routing_profiles", resolve_routing_profiles)
+    monkeypatch.setattr(ManagedProfileService, "resolve_beautify", resolve_beautify)
+    monkeypatch.setattr(ProfileLoader, "get_similarity_profile", lambda *_args: object())
+    service = ImageJobService(
+        repository=repository,
+        settings=Settings(profiles_directory="profiles"),
+        profile_loader=ProfileLoader(Settings(profiles_directory="profiles")),
+    )
+    payload = CreateImageJobRequest(
+        filter_route={
+            "completion_profile": "cmp",
+            "completed_filter_profile": "done",
+            "non_completed_filter_profile": "work",
+        },
+        beautify_profile="beautify",
+        images=[{"object_key": "uploads/test/image.jpg"}],
+    )
+
+    response = await service.create_job(payload)
+    stored = repository.jobs[response.job_id]
+
+    assert stored.routing_mode == "completion"
+    assert stored.completion_profile_snapshot["version"] == 2
+    assert stored.completed_filter_profile_snapshot["version"] == 3
+    assert stored.non_completed_filter_profile_snapshot["version"] == 4
 
 
 @pytest.mark.asyncio
@@ -198,9 +276,26 @@ async def test_get_progress_returns_counts() -> None:
     assert progress.rejected == 1
 
 
+def test_pipeline_progress_is_monotonic_across_new_stages() -> None:
+    stages = (
+        "classifying",
+        "filtering",
+        "beautify_planning",
+        "beautifying",
+        "matching",
+        "completed",
+    )
+    values = [ImageJobService._calculate_progress({stage: 1}, 1, "processing") for stage in stages]
+
+    assert values == sorted(values)
+    assert len(set(values)) == len(values)
+
+
 @pytest.mark.asyncio
 async def test_get_progress_raises_for_missing_job() -> None:
-    service = ImageJobService(repository=FakeJobRepository(), settings=Settings(max_images_per_job=50))
+    service = ImageJobService(
+        repository=FakeJobRepository(), settings=Settings(max_images_per_job=50)
+    )
 
     with pytest.raises(JobNotFound):
         await service.get_progress("job_missing")
@@ -253,17 +348,17 @@ async def test_create_job_rejects_missing_managed_profile(
     repository = FakeJobRepository()
     repository.session = object()
 
-    async def missing_standards(*_args):
+    async def missing_standards(*_args, **_kwargs):
         raise ProfileNotFoundError("筛选标准不存在或已停用: missing")
 
-    monkeypatch.setattr(ManagedProfileService, "resolve_standards", missing_standards)
+    monkeypatch.setattr(ManagedProfileService, "resolve_routing_profiles", missing_standards)
     service = ImageJobService(
         repository=repository,
         settings=Settings(max_images_per_job=50, profiles_directory="profiles"),
         profile_loader=ProfileLoader(Settings(profiles_directory="profiles")),
     )
     payload = make_payload()
-    payload.processing_standards = ["missing", "std_unfinished"]
+    payload.filter_route.completed_filter_profile = "missing"
 
     with pytest.raises(InvalidJobRequest, match="筛选标准不存在"):
         await service.create_job(payload)
@@ -302,9 +397,7 @@ async def test_get_results_returns_decision_metrics_and_enhanced_key() -> None:
             "decision": "pass",
             "reason": "全部审核维度合格",
             "confidence": 0.95,
-            "dimensions": [
-                {"dimension": "画面清晰度", "passed": True, "reason": "主体清晰"}
-            ],
+            "dimensions": [{"dimension": "画面清晰度", "passed": True, "reason": "主体清晰"}],
         },
         "beautify": {"needed": False, "reason": "无需调整", "parameters": {}},
         "content": {"summary": "完工客厅", "confidence": 0.9},
@@ -338,3 +431,51 @@ async def test_get_results_returns_decision_metrics_and_enhanced_key() -> None:
     assert response.images[0].enhanced_metrics.exposure == 92
     assert response.images[0].audit_dimensions[0].dimension == "画面清晰度"
     assert response.images[0].audit_dimensions[0].passed is True
+
+
+def test_beautify_response_returns_plan_execution_and_acceptance_audit() -> None:
+    item = SimpleNamespace(
+        beautify_plan_status="completed",
+        beautify_plan_error=None,
+        beautify_plan_json={
+            "decision": {
+                "needed": True,
+                "reason": "暗部需要适度打开",
+                "confidence": 0.93,
+                "parameters": {"brightness": 1.08, "shadow_lift": 0.15},
+                "parameter_reasons": {},
+                "risk_flags": [],
+            },
+            "effective_parameters": {"brightness": 1.08, "shadow_lift": 0.15},
+            "corrections": [],
+        },
+    )
+    result = SimpleNamespace(
+        enhancement_audit_json={
+            "effective_parameters": {"brightness": 1.03, "shadow_lift": 0.15},
+            "corrections": ["小图预演发现曝光风险，已降低亮度"],
+            "preview_attempts": [{"attempt": 1}, {"attempt": 2}],
+            "acceptance": {
+                "status": "passed",
+                "checks": [
+                    {
+                        "name": "exposure",
+                        "passed": True,
+                        "before": {"brightness": 90.0},
+                        "after": {"brightness": 100.0},
+                        "reason": "验收通过",
+                    }
+                ],
+                "fallback_reason": None,
+            },
+        }
+    )
+
+    response = _beautify_response(item, result)
+
+    assert response is not None
+    assert response.needed is True
+    assert response.preview_attempts == 2
+    assert response.effective_parameters["brightness"] == 1.03
+    assert response.acceptance is not None
+    assert response.acceptance.checks[0].name == "exposure"

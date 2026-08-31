@@ -9,6 +9,7 @@ from io import BytesIO
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from src.core.config import get_settings
+from src.core.metrics import emit_metric
 from src.db.session import AsyncSessionLocal
 from src.repositories.library import LibraryRepository
 from src.services.ai_model_config import load_ai_model_settings
@@ -20,7 +21,11 @@ from src.services.images.metadata import (
     make_thumbnail,
     pillow_format_to_content_type,
 )
-from src.services.images.tagging import get_tag_provider
+from src.services.images.tagging import (
+    analyze_with_retries,
+    get_tag_provider,
+    matching_content_payload,
+)
 from src.services.storage.factory import get_storage_provider
 from src.services.storage.keys import build_library_thumbnail_object_key
 from src.workers.celery_app import celery_app
@@ -52,8 +57,12 @@ async def _process_library_asset(asset_id: str) -> None:
     async with AsyncSessionLocal() as session:
         repository = LibraryRepository(session)
         asset = await repository.get_asset(asset_id)
-        if asset is None or asset.status != "pending":
+        if asset is None or (
+            asset.status != "pending"
+            and not (asset.status == "active" and asset.analysis_json is None)
+        ):
             return
+        was_active = asset.status == "active"
         settings = load_ai_model_settings(get_settings())
         try:
             storage = get_storage_provider()
@@ -69,10 +78,17 @@ async def _process_library_asset(asset_id: str) -> None:
             if duplicate is not None:
                 raise ValueError(f"素材库已存在相同图片：{duplicate.id}")
 
-            outcome = await get_tag_provider(settings).tag(prepared.normalized_bytes)
-            if outcome.status != "completed" or outcome.payload is None:
-                raise ValueError(outcome.error_message or "素材内容分析失败")
-            embedding = await OpenClipImageEmbedder(settings).embed(prepared.normalized_bytes)
+            analysis = await analyze_with_retries(
+                get_tag_provider(settings),
+                prepared.normalized_bytes,
+                settings.ai_tagging_max_retries,
+            )
+            if analysis.status != "completed" or analysis.payload is None:
+                raise ValueError(analysis.error_message or "素材内容特征识别失败")
+            content = matching_content_payload(analysis.payload)
+            embedding = await OpenClipImageEmbedder(settings).embed(
+                prepared.normalized_bytes
+            )
             thumbnail_object_key = build_library_thumbnail_object_key(asset.id)
             await storage.upload(
                 thumbnail_object_key,
@@ -89,7 +105,7 @@ async def _process_library_asset(asset_id: str) -> None:
                     "sha256": prepared.sha256,
                     "phash": prepared.phash,
                     "thumbnail_object_key": thumbnail_object_key,
-                    "analysis_json": outcome.payload.model_dump(),
+                    "analysis_json": content.model_dump(mode="json"),
                     "embedding": embedding,
                     "embedding_version": settings.image_embedding_version,
                     "status": "active",
@@ -97,16 +113,55 @@ async def _process_library_asset(asset_id: str) -> None:
                 },
             )
         except (ImageEmbeddingError, OSError, UnidentifiedImageError, ValueError) as exc:
+            emit_metric(
+                logger,
+                "embedding_failures_total",
+                labels={
+                    "source": "library",
+                    "asset_id": asset.id,
+                    "embedding_version": settings.image_embedding_version,
+                },
+            )
             await repository.update_asset(
                 asset,
-                {"status": "failed", "error_message": str(exc)[:500]},
+                (
+                    {"error_message": f"内容特征待补全：{str(exc)[:470]}"}
+                    if was_active
+                    else {"status": "failed", "error_message": str(exc)[:500]}
+                ),
             )
         except Exception:
             logger.exception("Unable to process library asset %s", asset_id)
+            emit_metric(
+                logger,
+                "embedding_failures_total",
+                labels={
+                    "source": "library",
+                    "asset_id": asset.id,
+                    "embedding_version": settings.image_embedding_version,
+                },
+            )
             await repository.update_asset(
                 asset,
-                {"status": "failed", "error_message": "素材处理失败"},
+                (
+                    {"error_message": "内容特征待补全：素材处理失败"}
+                    if was_active
+                    else {"status": "failed", "error_message": "素材处理失败"}
+                ),
             )
+
+
+@celery_app.task(name="library.backfill_content_features", queue="library")
+def backfill_library_content_features() -> None:
+    asyncio.run(_backfill_library_content_features())
+
+
+async def _backfill_library_content_features() -> None:
+    async with AsyncSessionLocal() as session:
+        repository = LibraryRepository(session)
+        asset_ids = await repository.list_active_assets_missing_analysis(limit=100)
+    for asset_id in asset_ids:
+        celery_app.send_task("library.process_asset", args=[asset_id], queue="library")
 
 
 def _prepare_library_image(image_bytes: bytes) -> PreparedLibraryImage:

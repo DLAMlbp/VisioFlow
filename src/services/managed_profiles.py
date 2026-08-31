@@ -16,12 +16,13 @@ from src.models.processing_profile import ProcessingProfile
 from src.services.ai_model_config import load_ai_model_settings
 from src.services.profiles import (
     BeautifyProfile,
+    CompletionProfile,
     FilterProfile,
     ProcessingStandard,
     ProfileNotFoundError,
 )
 
-ProfileType = Literal["filter", "beautify", "standard"]
+ProfileType = Literal["filter", "beautify", "standard", "completion"]
 
 
 class ManagedProfileError(Exception):
@@ -77,6 +78,39 @@ class ManagedProfileService:
         profile = BeautifyProfile.model_validate(row.config_json)
         return profile, self._snapshot(row)
 
+    async def resolve_completion(
+        self, profile_id: str
+    ) -> tuple[CompletionProfile, dict[str, object]]:
+        row = await self.get("completion", profile_id)
+        if row is None or row.status != "active":
+            raise ProfileNotFoundError(f"完工分类标准不存在或已停用: {profile_id}")
+        profile = CompletionProfile.model_validate(row.config_json)
+        return profile, self._snapshot(row)
+
+    async def resolve_routing_profiles(
+        self,
+        *,
+        completion_profile_id: str,
+        completed_filter_profile_id: str,
+        non_completed_filter_profile_id: str,
+    ) -> tuple[
+        tuple[CompletionProfile, dict[str, object]],
+        tuple[ProcessingStandard, dict[str, object]],
+        tuple[ProcessingStandard, dict[str, object]],
+    ]:
+        completion = await self.resolve_completion(completion_profile_id)
+        branches: list[tuple[ProcessingStandard, dict[str, object]]] = []
+        for profile_id in (completed_filter_profile_id, non_completed_filter_profile_id):
+            row = await self.get("standard", profile_id)
+            if row is None or row.status != "active":
+                raise ProfileNotFoundError(f"分支过滤标准不存在或已停用: {profile_id}")
+            branches.append(
+                (ProcessingStandard.model_validate(row.config_json), self._snapshot(row))
+            )
+        if completed_filter_profile_id == non_completed_filter_profile_id:
+            raise ProfileNotFoundError("完工与非完工过滤标准不能相同")
+        return completion, branches[0], branches[1]
+
     async def resolve_standards(
         self, profile_ids: list[str] | None = None
     ) -> list[tuple[ProcessingStandard, dict[str, object]]]:
@@ -110,9 +144,12 @@ class ManagedProfileService:
         description: str,
         config: dict[str, object],
     ) -> ProcessingProfile:
-        if profile_type == "standard" and len(await self.list("standard")) >= 2:
-            raise ManagedProfileError("正式流程只允许启用两套条件过滤标准；请编辑或停用现有标准")
-        prefix = {"filter": "flt", "beautify": "bty", "standard": "std"}[profile_type]
+        prefix = {
+            "filter": "flt",
+            "beautify": "bty",
+            "standard": "std",
+            "completion": "cmp",
+        }[profile_type]
         profile_id = f"{prefix}_{uuid4().hex}"
         candidate = {**config, "id": profile_id, "version": 1, "description": description.strip()}
         validated = self._validate(profile_type, candidate)
@@ -181,6 +218,14 @@ class ManagedProfileService:
     async def compile(self, profile_type: ProfileType, instruction: str) -> CompiledProfile:
         if profile_type == "standard":
             raise ManagedProfileError("条件过滤标准需要分别填写启动规则和过滤规则")
+        if profile_type == "completion":
+            description = instruction.strip()[:500]
+            profile = CompletionProfile(
+                id="preview", version=1, description=description
+            )
+            return CompiledProfile(
+                description, profile.model_dump(mode="json"), []
+            )
         settings = load_ai_model_settings(self.settings)
         if not settings.ai_tagging_enabled or not settings.ai_tagging_api_key:
             raise ManagedProfileError("请先在 AI 配置中启用模型并填写 API Key")
@@ -234,6 +279,8 @@ class ManagedProfileService:
                 return FilterProfile.model_validate(config)
             if profile_type == "beautify":
                 return BeautifyProfile.model_validate(config)
+            if profile_type == "completion":
+                return CompletionProfile.model_validate(config)
             return ProcessingStandard.model_validate(config)
         except ValidationError as exc:
             raise ManagedProfileError("标准参数超出允许范围") from exc
@@ -339,6 +386,12 @@ def _neutral_profile(profile_type: ProfileType) -> dict[str, object]:
             "id": "preview",
             "version": 1,
             "description": "由用户处理要求驱动的 AI 过滤标准",
+        }
+    if profile_type == "completion":
+        return {
+            "id": "preview",
+            "version": 1,
+            "description": "逐图判断装修空间是否完工",
         }
     return {
         "id": "preview",

@@ -83,6 +83,14 @@ class ProcessingStandard(BaseModel):
     priority: int = Field(default=100, ge=0, le=10000)
 
 
+class CompletionProfile(BaseModel):
+    """Versioned instructions used only for renovation completion classification."""
+
+    id: str
+    version: int = Field(ge=1)
+    description: str
+
+
 class SimilarityProfile(BaseModel):
     id: str
     version: int = Field(ge=1)

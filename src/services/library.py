@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 from uuid import uuid4
 
@@ -7,7 +8,9 @@ from fastapi import Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import Settings, get_settings
 from src.core.exceptions import AppError
+from src.core.metrics import emit_metric
 from src.db.session import get_db_session
 from src.models.image_ai_tag import ImageAITag
 from src.models.library_asset import LibraryAsset
@@ -28,6 +31,8 @@ from src.services.jobs.dispatch import LibraryAssetTaskPublisher
 from src.services.storage.factory import get_storage_provider
 from src.services.storage.interfaces import StorageProvider
 
+logger = logging.getLogger(__name__)
+
 
 class LibraryNotFound(AppError):
     code = "LIBRARY_NOT_FOUND"
@@ -43,19 +48,19 @@ class LibraryService:
         repository: LibraryRepository,
         task_publisher: LibraryAssetTaskPublisher | None = None,
         storage_provider: StorageProvider | None = None,
+        settings: Settings | None = None,
     ) -> None:
         self.repository = repository
         self.task_publisher = task_publisher
         self.storage_provider = storage_provider
+        self.settings = settings or get_settings()
 
     async def get_groups(self) -> list[LibraryAssetGroupResponse]:
         groups = await self.repository.list_groups()
         counts = await self.repository.group_asset_counts()
         return [self._group_response(group, counts.get(group.id, 0)) for group in groups]
 
-    async def create_group(
-        self, payload: LibraryAssetGroupCreate
-    ) -> LibraryAssetGroupResponse:
+    async def create_group(self, payload: LibraryAssetGroupCreate) -> LibraryAssetGroupResponse:
         tag_key = self._tag_key(payload.tags)
         if await self.repository.find_group_by_tag_key(tag_key):
             raise InvalidLibraryRequest("相同的标签组合已存在")
@@ -138,8 +143,10 @@ class LibraryService:
         values = payload.model_dump(exclude_none=True)
         if payload.group_id:
             await self._require_active_group(payload.group_id)
-        if payload.status == "active" and (asset.embedding is None or asset.analysis_json is None):
-            raise InvalidLibraryRequest("素材尚未完成分析，不能启用")
+        if payload.status == "active" and (
+            asset.embedding is None or asset.analysis_json is None
+        ):
+            raise InvalidLibraryRequest("素材尚未完成图片向量和内容特征分析，不能启用")
         await self.repository.update_asset(asset, values)
         loaded = await self.repository.get_asset(asset.id)
         return self._asset_response(loaded or asset)
@@ -181,9 +188,19 @@ class LibraryService:
     async def decide_review(
         self, image_id: str, payload: TagReviewDecisionRequest
     ) -> TagReviewResponse:
+        if not self.settings.library_only_tags_enabled:
+            raise InvalidLibraryRequest("仅继承素材库人工标签功能已关闭，复核写入已暂停")
         match = await self.repository.get_match(image_id)
         if match is None:
             raise LibraryNotFound("匹配记录不存在")
+        requested_asset_id = payload.matched_asset_id or match.matched_asset_id
+        if match.decision != "pending_review":
+            duplicate = payload.decision == match.decision and (
+                payload.decision == "unmatched" or requested_asset_id == match.matched_asset_id
+            )
+            if duplicate:
+                return self._review_response(match)
+            raise InvalidLibraryRequest("该复核结论已经确认，不能再次修改")
         if payload.decision == "unmatched":
             values = {
                 "matched_asset_id": None,
@@ -192,7 +209,7 @@ class LibraryService:
                 "message": "未识别到相似的图片素材",
             }
         else:
-            asset_id = payload.matched_asset_id or match.matched_asset_id
+            asset_id = requested_asset_id
             if not asset_id:
                 raise InvalidLibraryRequest("请选择要确认的素材")
             asset = await self.repository.get_asset(asset_id)
@@ -206,6 +223,11 @@ class LibraryService:
             }
         updated = await self.repository.upsert_match(image_id, values)
         await self._sync_ai_tag(image_id, updated.decision, updated.matched_tags_snapshot)
+        emit_metric(
+            logger,
+            "library_tags_written_total",
+            labels={"decision": updated.decision, "source": "manual_review"},
+        )
         return self._review_response(updated)
 
     async def _require_active_group(self, group_id: str) -> LibraryAssetGroup:
@@ -284,9 +306,11 @@ class LibraryService:
 
 def get_library_service(
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> LibraryService:
     return LibraryService(
         LibraryRepository(session),
         LibraryAssetTaskPublisher(),
         get_storage_provider(),
+        settings,
     )

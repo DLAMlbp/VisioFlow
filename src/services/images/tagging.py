@@ -280,6 +280,50 @@ def get_tag_provider(settings: Settings) -> VisionTagProvider:
     return DisabledTagProvider()
 
 
+def matching_content_payload(payload: TagPayload) -> TagPayload:
+    """Keep model observations while preventing model-generated business tags."""
+    return payload.model_copy(
+        update={
+            "tags": [],
+            "categories": {},
+            "candidate_tags": [],
+        }
+    )
+
+
+async def analyze_with_retries(
+    provider: VisionTagProvider,
+    image_bytes: bytes,
+    max_retries: int,
+) -> TaggingOutcome:
+    outcome = await provider.tag(image_bytes)
+    for _ in range(max_retries):
+        if outcome.status == "completed" or not outcome.retryable:
+            return outcome
+        outcome = await provider.tag(image_bytes)
+    return outcome
+
+
+async def analyze_many_with_retries(
+    provider: VisionTagProvider,
+    images: list[bytes],
+    max_retries: int,
+) -> list[TaggingOutcome]:
+    outcomes = await provider.tag_many(images)
+    for _ in range(max_retries):
+        retry_indexes = [
+            index
+            for index, outcome in enumerate(outcomes)
+            if outcome.status != "completed" and outcome.retryable
+        ]
+        if not retry_indexes:
+            break
+        retried = await provider.tag_many([images[index] for index in retry_indexes])
+        for index, outcome in zip(retry_indexes, retried, strict=True):
+            outcomes[index] = outcome
+    return outcomes
+
+
 def _resize_for_tagging(image_bytes: bytes, long_side: int) -> bytes:
     with Image.open(BytesIO(image_bytes)) as image:
         image.load()

@@ -10,10 +10,13 @@ from src.models.image_item import ImageItem
 from src.models.image_job import ImageJob
 from src.repositories.jobs import ImageJobRepository
 from src.schemas.jobs import (
+    BeautifyAcceptanceResponse,
     CreateImageJobRequest,
     CreateImageJobResponse,
     ImageAITagsResponse,
     ImageAuditDimensionResponse,
+    ImageBeautifyResponse,
+    ImageCompletionResponse,
     ImageItemStatus,
     ImageJobHistoryItemResponse,
     ImageJobHistoryResponse,
@@ -25,6 +28,7 @@ from src.schemas.jobs import (
     JobStatus,
 )
 from src.services.ai_model_config import load_ai_model_settings
+from src.services.images.beautify_planning import beautify_plan_from_json
 from src.services.images.processing_vision import (
     filter_dimensions_from_processing_json,
     selected_standard_from_processing_json,
@@ -35,6 +39,7 @@ from src.services.jobs.callback_security import (
 )
 from src.services.jobs.dispatch import JobDispatchTaskPublisher, TaskPublisher
 from src.services.jobs.ids import build_image_id, build_job_id
+from src.services.jobs.workflow_config import required_workflow_error
 from src.services.managed_profiles import (
     ManagedProfileService,
     neutral_beautify_snapshot,
@@ -65,8 +70,13 @@ class ImageJobService:
         self.profile_loader = profile_loader
 
     async def create_job(self, payload: CreateImageJobRequest) -> CreateImageJobResponse:
+        workflow_error = required_workflow_error(self.settings)
+        if workflow_error:
+            raise InvalidJobRequest(workflow_error + "；新任务已拒绝，系统不会回退旧流程")
         if len(payload.images) > self.settings.max_images_per_job:
             raise InvalidJobRequest(f"单个 Job 最多支持 {self.settings.max_images_per_job} 张图片")
+        if payload.filter_route is None:
+            raise InvalidJobRequest("新任务必须使用完工分类和双路由过滤配置")
         if payload.callback_url:
             try:
                 validate_callback_destination(
@@ -77,19 +87,34 @@ class ImageJobService:
             except CallbackConfigurationError as exc:
                 raise InvalidJobRequest(str(exc)) from exc
         filter_snapshot = None
-        beautify_snapshot = (
-            None if payload.beautify_enabled else neutral_beautify_snapshot()
-        )
+        beautify_snapshot = None if payload.beautify_enabled else neutral_beautify_snapshot()
         standard_snapshots = None
+        routing_mode = "completion"
+        completion_profile_id = None
+        completion_snapshot = None
+        completed_filter_profile_id = None
+        completed_filter_snapshot = None
+        non_completed_filter_profile_id = None
+        non_completed_filter_snapshot = None
+        routing_policy = None
         if self.profile_loader is not None:
             try:
                 if hasattr(self.repository, "session"):
                     manager = ManagedProfileService(self.repository.session, self.settings)
-                    if payload.filter_enabled and payload.processing_standards:
-                        resolved = await manager.resolve_standards(payload.processing_standards)
-                        standard_snapshots = [snapshot for _, snapshot in resolved]
-                    elif payload.filter_enabled:
-                        _, filter_snapshot = await manager.resolve_filter(payload.filter_profile or "")
+                    route = payload.filter_route
+                    completion, completed, non_completed = await manager.resolve_routing_profiles(
+                        completion_profile_id=route.completion_profile,
+                        completed_filter_profile_id=route.completed_filter_profile,
+                        non_completed_filter_profile_id=route.non_completed_filter_profile,
+                    )
+                    completion_profile_id = completion[0].id
+                    completion_snapshot = completion[1]
+                    completed_filter_profile_id = completed[0].id
+                    completed_filter_snapshot = completed[1]
+                    non_completed_filter_profile_id = non_completed[0].id
+                    non_completed_filter_snapshot = non_completed[1]
+                    routing_policy = route.policy.model_dump(mode="json")
+                    standard_snapshots = [completed[1], non_completed[1]]
                     if payload.beautify_enabled:
                         _, beautify_snapshot = await manager.resolve_beautify(
                             payload.beautify_profile or ""
@@ -106,21 +131,30 @@ class ImageJobService:
         job = ImageJob(
             id=build_job_id(),
             status=JobStatus.QUEUED.value,
-            filter_profile_id=(
-                payload.filter_profile or ("conditional_standard_v1" if payload.filter_enabled else "system_passthrough")
-            ),
+            filter_profile_id=(payload.filter_profile or "completion_routing_v1"),
             beautify_profile_id=(
-                payload.beautify_profile or ("conditional_standard_v1" if payload.beautify_enabled else "system_delivery")
+                payload.beautify_profile
+                or ("conditional_standard_v1" if payload.beautify_enabled else "system_delivery")
             ),
             filter_profile_snapshot=filter_snapshot,
             beautify_profile_snapshot=beautify_snapshot,
             processing_standard_snapshots=standard_snapshots,
+            routing_mode=routing_mode,
+            completion_profile_id=completion_profile_id,
+            completion_profile_snapshot=completion_snapshot,
+            completed_filter_profile_id=completed_filter_profile_id,
+            completed_filter_profile_snapshot=completed_filter_snapshot,
+            non_completed_filter_profile_id=non_completed_filter_profile_id,
+            non_completed_filter_profile_snapshot=non_completed_filter_snapshot,
+            routing_policy_json=routing_policy,
             filter_enabled=payload.filter_enabled,
             beautify_enabled=payload.beautify_enabled,
             similarity_enabled=payload.similarity_enabled,
             similarity_profile_id=payload.similarity_profile,
             unmatched_standard_policy=payload.unmatched_standard_policy,
-            ai_tagging_model=self.settings.ai_tagging_model if self.settings.ai_tagging_enabled else None,
+            ai_tagging_model=self.settings.ai_tagging_model
+            if self.settings.ai_tagging_enabled
+            else None,
             enhance_level=payload.enhance_level,
             max_selected=payload.max_selected,
             total_count=len(payload.images),
@@ -192,7 +226,9 @@ class ImageJobService:
                     ai_tagging_model=(
                         job.ai_tagging_model
                         if job.ai_tagging_model is not None
-                        else self.settings.ai_tagging_model if self.settings.ai_tagging_enabled else None
+                        else self.settings.ai_tagging_model
+                        if self.settings.ai_tagging_enabled
+                        else None
                     ),
                     created_at=job.created_at,
                     completed_at=job.completed_at,
@@ -208,12 +244,23 @@ class ImageJobService:
         limit: int = 50,
         offset: int = 0,
         decision: str | None = None,
+        completion_label: str | None = None,
+        review_required: bool | None = None,
     ) -> ImageJobResultsResponse:
         snapshot = await self.repository.get_progress_snapshot(job_id)
         if snapshot is None:
             raise JobNotFound("Job 不存在")
+        result_filters: dict[str, object] = {}
+        if completion_label is not None:
+            result_filters["completion_label"] = completion_label
+        if review_required is not None:
+            result_filters["review_required"] = review_required
         result_total, result_items = await self.repository.list_result_items(
-            job_id, limit=limit, offset=offset, decision=decision
+            job_id,
+            limit=limit,
+            offset=offset,
+            decision=decision,
+            **result_filters,
         )
         job_config = (
             await self.repository.get_config(job_id)
@@ -235,9 +282,10 @@ class ImageJobService:
             selected_standard_id, activation_reason = selected_standard_from_processing_json(
                 item.ai_processing_json
             )
-            audit_dimensions = filter_dimensions_from_processing_json(
-                item.ai_processing_json
-            )
+            if item.routed_filter_profile_id:
+                selected_standard_id = item.routed_filter_profile_id
+                activation_reason = _completion_reason(item.completion_json)
+            audit_dimensions = filter_dimensions_from_processing_json(item.ai_processing_json)
             images.append(
                 ImageJobResultItemResponse(
                     image_id=item.id,
@@ -268,6 +316,9 @@ class ImageJobService:
                     ai_tags=(
                         ImageAITagsResponse(
                             status=item.ai_tag.status,
+                            source=(
+                                "library" if item.ai_tag.provider == "library" else "legacy_ai"
+                            ),
                             summary=(item.ai_tag.tag_json or {}).get("summary"),
                             tags=(item.ai_tag.tag_json or {}).get("tags", []),
                             categories=(item.ai_tag.tag_json or {}).get("categories", {}),
@@ -283,9 +334,31 @@ class ImageJobService:
                     tagging_result=(
                         ImageSimilarityResultResponse(
                             decision=item.similarity_match.decision,
-                            tags=item.similarity_match.matched_tags_snapshot or [],
+                            tags=(
+                                item.similarity_match.matched_tags_snapshot or []
+                                if item.similarity_match.decision == "matched"
+                                else []
+                            ),
                             matched_asset_id=item.similarity_match.matched_asset_id,
                             similarity=item.similarity_match.similarity_score,
+                            feature_score=item.similarity_match.feature_score,
+                            final_score=item.similarity_match.final_score,
+                            message=item.similarity_match.message,
+                        )
+                        if item.similarity_match is not None
+                        else None
+                    ),
+                    library_tags=(
+                        ImageSimilarityResultResponse(
+                            decision=item.similarity_match.decision,
+                            tags=(
+                                item.similarity_match.matched_tags_snapshot or []
+                                if item.similarity_match.decision == "matched"
+                                else []
+                            ),
+                            matched_asset_id=item.similarity_match.matched_asset_id,
+                            similarity=item.similarity_match.similarity_score,
+                            feature_score=item.similarity_match.feature_score,
                             final_score=item.similarity_match.final_score,
                             message=item.similarity_match.message,
                         )
@@ -303,6 +376,10 @@ class ImageJobService:
                         )
                         for dimension in audit_dimensions
                     ],
+                    completion=_completion_response(item),
+                    beautify=_beautify_response(item, result),
+                    routed_filter_profile_id=item.routed_filter_profile_id,
+                    routed_filter_profile_version=item.routed_filter_profile_version,
                 )
             )
         return ImageJobResultsResponse(
@@ -333,9 +410,11 @@ class ImageJobService:
             for key in ("completed", "rejected", "not_selected", "failed", "cancelled")
         )
         weighted = (
-            stage_counts.get("filtering", 0) * 0.15
-            + stage_counts.get("beautifying", 0) * 0.38
-            + stage_counts.get("content_analysis", 0) * 0.68
+            stage_counts.get("classifying", 0) * 0.18
+            + stage_counts.get("filtering", 0) * 0.28
+            + stage_counts.get("beautify_planning", 0) * 0.42
+            + stage_counts.get("beautifying", 0) * 0.62
+            + stage_counts.get("content_analysis", 0) * 0.72
             + stage_counts.get("matching", 0) * 0.90
             + terminal
         )
@@ -355,6 +434,71 @@ class ImageJobService:
 
         MetadataTaskPublisher().publish(image_id)
         return await self.get_progress(job_id)
+
+
+def _completion_response(item: ImageItem) -> ImageCompletionResponse | None:
+    if not item.completion_label or not item.completion_subtype:
+        return None
+    normalized = (
+        item.completion_json.get("normalized") if isinstance(item.completion_json, dict) else None
+    )
+    reason_codes = normalized.get("reason_codes", []) if isinstance(normalized, dict) else []
+    return ImageCompletionResponse(
+        label=item.completion_label,
+        subtype=item.completion_subtype,
+        confidence=float(item.completion_confidence or 0),
+        reason=_completion_reason(item.completion_json) or "已完成装修状态分类",
+        reason_codes=[str(code) for code in reason_codes],
+        review_required=bool(item.review_required),
+    )
+
+
+def _beautify_response(item: ImageItem, result) -> ImageBeautifyResponse | None:
+    if item.beautify_plan_status is None:
+        return None
+    plan = beautify_plan_from_json(item.beautify_plan_json)
+    audit = (
+        result.enhancement_audit_json
+        if result is not None and isinstance(result.enhancement_audit_json, dict)
+        else {}
+    )
+    acceptance_payload = audit.get("acceptance")
+    acceptance = (
+        BeautifyAcceptanceResponse.model_validate(acceptance_payload)
+        if isinstance(acceptance_payload, dict)
+        else None
+    )
+    preview_attempts = audit.get("preview_attempts")
+    decision = plan.decision if plan is not None else None
+    return ImageBeautifyResponse(
+        status=item.beautify_plan_status,
+        needed=decision.needed if decision is not None else None,
+        reason=decision.reason if decision is not None else item.beautify_plan_error,
+        confidence=decision.confidence if decision is not None else None,
+        planned_parameters=(
+            decision.parameters.model_dump(mode="json") if decision is not None else {}
+        ),
+        effective_parameters=(
+            audit.get("effective_parameters", {})
+            if isinstance(audit.get("effective_parameters", {}), dict)
+            else {}
+        ),
+        corrections=[
+            str(reason) for reason in audit.get("corrections", []) if isinstance(reason, str)
+        ],
+        preview_attempts=len(preview_attempts) if isinstance(preview_attempts, list) else 0,
+        acceptance=acceptance,
+    )
+
+
+def _completion_reason(payload: object) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    normalized = payload.get("normalized")
+    if not isinstance(normalized, dict):
+        return None
+    reason = normalized.get("reason")
+    return str(reason) if reason else None
 
 
 def get_job_service(

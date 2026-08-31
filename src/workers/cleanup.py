@@ -12,13 +12,18 @@ from src.db.session import AsyncSessionLocal
 from src.models.image_item import ImageItem
 from src.models.image_job import ImageJob
 from src.models.upload_batch import UploadBatch, UploadBatchItem
+from src.repositories.jobs import ImageJobRepository
 from src.services.jobs.dispatch import (
     AnalysisTaskPublisher,
+    BeautifyPlanTaskPublisher,
+    CompletionTaskPublisher,
     EmbeddingTaskPublisher,
     EnhancementTaskPublisher,
     JobDispatchTaskPublisher,
     MatchTaskPublisher,
     MetadataTaskPublisher,
+    RankingTaskPublisher,
+    RoutedProcessingTaskPublisher,
 )
 from src.services.storage.factory import get_storage_provider
 from src.workers.celery_app import celery_app
@@ -76,7 +81,9 @@ async def _cleanup_expired_images() -> None:
                 try:
                     await storage.delete(item.object_key)
                 except Exception:
-                    logger.debug("Unable to delete orphan upload %s", item.object_key, exc_info=True)
+                    logger.debug(
+                        "Unable to delete orphan upload %s", item.object_key, exc_info=True
+                    )
                 item.status = "expired"
             if batch.status == "registered":
                 batch.status = "expired"
@@ -120,12 +127,122 @@ async def _recover_stalled_images() -> None:
                 )
             ).scalars()
         )
-        preprocessing = await _reset_stage(
-            session,
-            status="analyzing",
-            timestamp=ImageItem.preprocess_started_at,
-            cutoff=cutoff,
-            values={"status": "queued", "preprocess_started_at": None},
+        preprocessing = list(
+            (
+                await session.execute(
+                    update(ImageItem)
+                    .where(
+                        ImageItem.status == "analyzing",
+                        ImageItem.preprocess_completed_at.is_(None),
+                        ImageItem.preprocess_started_at < cutoff,
+                    )
+                    .values(status="queued", preprocess_started_at=None)
+                    .returning(ImageItem.id)
+                )
+            ).scalars()
+        )
+        ranking_jobs = list(
+            (
+                await session.execute(
+                    select(ImageJob.id).where(
+                        ImageJob.cancel_requested_at.is_(None),
+                        ImageJob.status == "ranking",
+                        ImageJob.updated_at < cutoff,
+                    )
+                )
+            ).scalars()
+        )
+        classifying = list(
+            (
+                await session.execute(
+                    update(ImageItem)
+                    .where(
+                        ImageItem.status == "analyzing",
+                        ImageItem.completion_status == "processing",
+                        ImageItem.completion_started_at < cutoff,
+                    )
+                    .values(completion_status="pending", completion_started_at=None)
+                    .returning(ImageItem.id)
+                )
+            ).scalars()
+        )
+        routed_processing = list(
+            (
+                await session.execute(
+                    update(ImageItem)
+                    .where(
+                        ImageItem.status == "analyzing",
+                        ImageItem.ai_processing_status == "processing",
+                        ImageItem.ai_processing_started_at < cutoff,
+                    )
+                    .values(ai_processing_status="pending", ai_processing_started_at=None)
+                    .returning(ImageItem.id)
+                )
+            ).scalars()
+        )
+        pending_completion = list(
+            (
+                await session.execute(
+                    select(ImageItem.id).where(
+                        ImageItem.status == "analyzing",
+                        ImageItem.completion_status == "pending",
+                        ImageItem.updated_at < cutoff,
+                    )
+                )
+            ).scalars()
+        )
+        pending_routed_processing = list(
+            (
+                await session.execute(
+                    select(ImageItem.id).where(
+                        ImageItem.status == "analyzing",
+                        ImageItem.completion_status == "completed",
+                        ImageItem.ai_processing_status == "pending",
+                        ImageItem.updated_at < cutoff,
+                    )
+                )
+            ).scalars()
+        )
+        beautify_planning = list(
+            (
+                await session.execute(
+                    update(ImageItem)
+                    .where(
+                        ImageItem.status == "beautify_planning",
+                        ImageItem.beautify_plan_status == "processing",
+                        ImageItem.beautify_plan_started_at < cutoff,
+                    )
+                    .values(
+                        status="filtered",
+                        beautify_plan_status="pending",
+                        beautify_plan_started_at=None,
+                    )
+                    .returning(ImageItem.id)
+                )
+            ).scalars()
+        )
+        pending_beautify_plans = list(
+            (
+                await session.execute(
+                    select(ImageItem.id).where(
+                        ImageItem.status == "filtered",
+                        ImageItem.beautify_plan_status == "pending",
+                        ImageItem.updated_at < cutoff,
+                    )
+                )
+            ).scalars()
+        )
+        completed_beautify_plans = list(
+            (
+                await session.execute(
+                    select(ImageItem.id).where(
+                        ImageItem.status == "filtered",
+                        ImageItem.beautify_plan_status == "completed",
+                        ImageItem.enhance_started_at.is_(None),
+                        ImageItem.updated_at < cutoff,
+                    )
+                )
+            ).scalars()
         )
         enhancing = await _reset_stage(
             session,
@@ -153,14 +270,112 @@ async def _recover_stalled_images() -> None:
             cutoff=cutoff,
             reset_to="queued",
         )
+        queued_matches = list(
+            (
+                await session.execute(
+                    select(ImageItem.id).where(
+                        ImageItem.status == "tagging",
+                        ImageItem.match_status == "queued",
+                        ImageItem.updated_at < cutoff,
+                    )
+                )
+            ).scalars()
+        )
+        ready_matches = list(
+            (
+                await session.execute(
+                    select(ImageItem.id).where(
+                        ImageItem.status == "tagging",
+                        ImageItem.match_status == "pending",
+                        ImageItem.analysis_status.in_(("completed", "failed")),
+                        ImageItem.embedding_status.in_(("completed", "failed")),
+                        ImageItem.updated_at < cutoff,
+                    )
+                )
+            ).scalars()
+        )
+        completed_matches = list(
+            (
+                await session.execute(
+                    select(ImageItem.id).where(
+                        ImageItem.status == "tagging",
+                        ImageItem.match_status == "completed",
+                        ImageItem.updated_at < cutoff,
+                    )
+                )
+            ).scalars()
+        )
         await session.commit()
 
-    _publish_many(JobDispatchTaskPublisher(), undispatched_jobs)
-    _publish_many(MetadataTaskPublisher(), [*queued, *preprocessing])
-    _publish_many(EnhancementTaskPublisher(), enhancing)
-    _publish_many(AnalysisTaskPublisher(), analyzing)
-    _publish_many(EmbeddingTaskPublisher(), embedding)
-    _publish_many(MatchTaskPublisher(), matching)
+        repository = ImageJobRepository(session)
+        barrier_candidates = list(
+            (
+                await session.execute(
+                    select(ImageJob.id).where(
+                        ImageJob.cancel_requested_at.is_(None),
+                        ImageJob.status == "processing",
+                        ~ImageJob.items.any(ImageItem.status.in_(("queued", "analyzing"))),
+                        ImageJob.items.any(ImageItem.status == "filtered"),
+                    )
+                )
+            ).scalars()
+        )
+        barrier_ranking_jobs = [
+            job_id
+            for job_id in barrier_candidates
+            if await repository.claim_ranking_if_filtering_complete(job_id)
+        ]
+        newly_queued_matches = [
+            image_id
+            for image_id in ready_matches
+            if await repository.claim_match_if_ready(image_id)
+        ]
+        for image_id in completed_matches:
+            item = await repository.get_item(image_id)
+            if item is None or item.similarity_match is None:
+                continue
+            await repository.complete_tagging(
+                item,
+                reason=item.similarity_match.message,
+            )
+
+    _publish_pipeline_recovery(
+        undispatched_jobs=undispatched_jobs,
+        metadata=[*queued, *preprocessing],
+        completion=[*classifying, *pending_completion],
+        routed_processing=[*routed_processing, *pending_routed_processing],
+        ranking=[*ranking_jobs, *barrier_ranking_jobs],
+        beautify_plan=[*beautify_planning, *pending_beautify_plans],
+        enhancement=[*enhancing, *completed_beautify_plans],
+        analysis=analyzing,
+        embedding=embedding,
+        matching=[*matching, *queued_matches, *newly_queued_matches],
+    )
+
+
+def _publish_pipeline_recovery(
+    *,
+    undispatched_jobs: list[str],
+    metadata: list[str],
+    completion: list[str],
+    routed_processing: list[str],
+    ranking: list[str],
+    beautify_plan: list[str],
+    enhancement: list[str],
+    analysis: list[str],
+    embedding: list[str],
+    matching: list[str],
+) -> None:
+    _publish_many(JobDispatchTaskPublisher(), list(dict.fromkeys(undispatched_jobs)))
+    _publish_many(MetadataTaskPublisher(), list(dict.fromkeys(metadata)))
+    _publish_many(CompletionTaskPublisher(), list(dict.fromkeys(completion)))
+    _publish_many(RoutedProcessingTaskPublisher(), list(dict.fromkeys(routed_processing)))
+    _publish_many(RankingTaskPublisher(), list(dict.fromkeys(ranking)))
+    _publish_many(BeautifyPlanTaskPublisher(), list(dict.fromkeys(beautify_plan)))
+    _publish_many(EnhancementTaskPublisher(), list(dict.fromkeys(enhancement)))
+    _publish_many(AnalysisTaskPublisher(), list(dict.fromkeys(analysis)))
+    _publish_many(EmbeddingTaskPublisher(), list(dict.fromkeys(embedding)))
+    _publish_many(MatchTaskPublisher(), list(dict.fromkeys(matching)))
 
 
 async def _reset_stage(session, *, status, timestamp, cutoff, values) -> list[str]:
@@ -177,13 +392,22 @@ async def _reset_stage(session, *, status, timestamp, cutoff, values) -> list[st
 
 
 async def _reset_substage(
-    session, *, column, timestamp, cutoff, reset_to: str = "pending"
+    session,
+    *,
+    column,
+    timestamp,
+    cutoff,
+    reset_to: str = "pending",
+    extra_condition=None,
 ) -> list[str]:
+    filters = [ImageItem.status == "tagging", column == "processing", timestamp < cutoff]
+    if extra_condition is not None:
+        filters.append(extra_condition)
     return list(
         (
             await session.execute(
                 update(ImageItem)
-                .where(ImageItem.status == "tagging", column == "processing", timestamp < cutoff)
+                .where(*filters)
                 .values({column.key: reset_to, timestamp.key: None})
                 .returning(ImageItem.id)
             )

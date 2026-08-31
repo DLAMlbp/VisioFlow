@@ -19,6 +19,7 @@ class BeautifyResult:
     local_tone_applied: bool
     glare_reduction_applied: bool
     local_clarity_applied: bool
+    sharpness_applied: bool
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,7 @@ class NaturalBeautifyService:
         enhanced, local_clarity_applied = self._enhance_local_clarity(enhanced, profile)
 
         enhanced = self._ensure_minimum_output_size(enhanced, profile)
+        enhanced, sharpness_applied = self._apply_output_sharpness(enhanced, profile)
         output = BytesIO()
         enhanced.save(output, format="JPEG", quality=profile.jpeg_quality, optimize=True)
         return BeautifyResult(
@@ -64,6 +66,7 @@ class NaturalBeautifyService:
             local_tone_applied=local_tone_applied,
             glare_reduction_applied=glare_reduction_applied,
             local_clarity_applied=local_clarity_applied,
+            sharpness_applied=sharpness_applied,
         )
 
     def normalize_orientation(
@@ -119,6 +122,8 @@ class NaturalBeautifyService:
             reasons.append("已压制局部反光和眩光")
         if result.local_clarity_applied:
             reasons.append("已增强主体与纹理边缘细节")
+        if result.sharpness_applied:
+            reasons.append("已进行带阈值的输出锐化")
         return reasons
 
     @classmethod
@@ -332,3 +337,22 @@ class NaturalBeautifyService:
         alpha = (edge_mask * profile.local_clarity_strength)[:, :, None]
         enhanced = rgb.astype(np.float32) * (1 - alpha) + detailed.astype(np.float32) * alpha
         return Image.fromarray(np.clip(enhanced, 0, 255).astype(np.uint8)), True
+
+    @staticmethod
+    def _apply_output_sharpness(
+        image: Image.Image,
+        profile: BeautifyProfile,
+    ) -> tuple[Image.Image, bool]:
+        if abs(profile.sharpness - 1.0) < 0.01:
+            return image, False
+        if profile.sharpness < 1.0:
+            return ImageEnhance.Sharpness(image).enhance(profile.sharpness), True
+
+        rgb = np.asarray(image).astype(np.float32)
+        blurred = cv2.GaussianBlur(rgb, (0, 0), sigmaX=1.0)
+        detail = rgb - blurred
+        edge_strength = np.max(np.abs(detail), axis=2)
+        mask = cv2.GaussianBlur((edge_strength >= 6).astype(np.float32), (0, 0), sigmaX=0.8)
+        amount = min(1.5, (profile.sharpness - 1.0) * 1.5)
+        sharpened = rgb + detail * amount * mask[:, :, None]
+        return Image.fromarray(np.clip(sharpened, 0, 255).astype(np.uint8)), True

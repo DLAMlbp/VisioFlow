@@ -378,7 +378,7 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
           <section className="library-upload-band">
             <div className="upload-band-copy">
               <span><ImagePlus size={18} aria-hidden="true" /></span>
-              <div><h3>{selectedGroup ? selectedGroup.tags.join(" · ") : "选择一个素材组"}</h3><p>上传的多张参考图片会共同对应这串标签；图片只做校验、去重、内容分析和向量生成。</p></div>
+              <div><h3>{selectedGroup ? selectedGroup.tags.join(" · ") : "选择一个素材组"}</h3><p>上传的参考图片会完成校验、去重、图片向量生成和大模型内容特征识别。</p></div>
             </div>
             <div
               className={`library-dropzone ${dragActive ? "is-dragging" : ""} ${!canUpload ? "disabled" : ""}`}

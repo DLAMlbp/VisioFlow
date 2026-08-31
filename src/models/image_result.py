@@ -25,6 +25,7 @@ class ImageResult(Base):
     final_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     enhanced_object_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     enhanced_metrics_json: Mapped[dict[str, float] | None] = mapped_column(JSON, nullable=True)
+    enhancement_audit_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     reject_codes_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     reasons_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 

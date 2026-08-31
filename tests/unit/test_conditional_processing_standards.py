@@ -43,41 +43,22 @@ def _payload(selected_standard_id: str | None) -> dict[str, object]:
             "selected_standard_id": selected_standard_id,
             "reason": "选择命中的最高优先级标准",
         },
-        "filter": {"decision": "pass", "reason": "画面清晰", "confidence": 0.95},
-        "beautify": {
-            "needed": True,
-            "reason": "画面略暗",
-            "parameters": {
-                "brightness": 1.05,
-                "contrast": 1.0,
-                "color": 1.0,
-                "auto_white_balance": False,
-                "white_balance_strength": 0.0,
-                "shadow_lift": 0.1,
-                "highlight_recovery": 0.05,
-                "denoise_strength": 0.1,
-                "local_tone_strength": 0.1,
-                "local_tone_clip_limit": 1.5,
-                "glare_reduction_strength": 0.0,
-                "local_clarity_strength": 0.1,
-                "auto_straighten": False,
-                "max_straighten_degrees": 3.0,
-            },
+        "filter": {
+            "decision": "pass",
+            "reason": "画面清晰",
+            "confidence": 0.95,
+            "dimensions": [
+                {"dimension": "清晰度", "passed": True, "reason": "主体边缘清晰"}
+            ],
         },
-        "content": {
-            "summary": "白色背景中的运动鞋",
-            "scene": "摄影棚",
-            "space": "",
-            "condition": "完好",
-            "content_type": "商品照片",
-            "subjects": [],
-            "view": "空间全景",
-            "tags": [],
-            "categories": {},
-            "candidate_tags": [],
-            "confidence": 0.9,
-            "risks": [],
-        },
+    }
+
+
+def _route() -> dict[str, str]:
+    return {
+        "completion_profile": "completion_renovation_v1",
+        "completed_filter_profile": "std_high",
+        "non_completed_filter_profile": "std_low",
     }
 
 
@@ -97,7 +78,9 @@ def test_standard_snapshots_are_sorted_by_priority_and_keep_names() -> None:
 async def test_ai_selection_accepts_one_matching_standard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service = ProcessingVisionService(Settings(ai_tagging_api_key="test-key"))
+    service = ProcessingVisionService(
+        Settings(ai_tagging_enabled=True, ai_tagging_api_key="test-key")
+    )
     monkeypatch.setattr(
         service,
         "_request",
@@ -123,7 +106,9 @@ async def test_ai_selection_accepts_one_matching_standard(
 async def test_ai_selection_rejects_multiple_matching_standards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service = ProcessingVisionService(Settings(ai_tagging_api_key="test-key"))
+    service = ProcessingVisionService(
+        Settings(ai_tagging_enabled=True, ai_tagging_api_key="test-key")
+    )
     invalid_payload = _payload("std_low")
     invalid_payload["standard_selection"]["evaluations"][1]["matched"] = True
     monkeypatch.setattr(
@@ -145,19 +130,17 @@ async def test_ai_selection_rejects_multiple_matching_standards(
     assert outcome.payload is None
 
 
-def test_new_job_accepts_conditional_standards_without_legacy_profiles() -> None:
-    payload = CreateImageJobRequest(
-        processing_standards=["std_high", "std_low"],
-        beautify_profile="bty_natural",
-        images=[{"object_key": "uploads/test/image.jpg"}],
-    )
-
-    assert payload.processing_standards == ["std_high", "std_low"]
-    assert payload.filter_profile is None
+def test_new_job_rejects_legacy_conditional_standard_configuration() -> None:
+    with pytest.raises(ValidationError, match="必须配置完工分类"):
+        CreateImageJobRequest(
+            processing_standards=["std_high", "std_low"],
+            beautify_profile="bty_natural",
+            images=[{"object_key": "uploads/test/image.jpg"}],
+        )
 
 
-def test_job_requires_conditional_or_complete_legacy_configuration() -> None:
-    with pytest.raises(ValidationError, match="必须选择两套互斥且完整覆盖"):
+def test_job_requires_completion_routing_configuration() -> None:
+    with pytest.raises(ValidationError, match="必须配置完工分类"):
         CreateImageJobRequest(images=[{"object_key": "uploads/test/image.jpg"}])
 
 
@@ -173,8 +156,8 @@ def test_standard_preview_keeps_activation_and_filter_rules() -> None:
     assert compiled.config["priority"] == 300
 
 
-def test_new_job_requires_exactly_two_filter_standards_and_beautify() -> None:
-    with pytest.raises(ValidationError, match="必须选择两套互斥且完整覆盖"):
+def test_new_job_requires_route_and_beautify_profile() -> None:
+    with pytest.raises(ValidationError, match="必须配置完工分类"):
         CreateImageJobRequest(
             processing_standards=["std_product"],
             beautify_profile="bty_natural",
@@ -183,7 +166,7 @@ def test_new_job_requires_exactly_two_filter_standards_and_beautify() -> None:
 
     with pytest.raises(ValidationError, match="请选择独立的美化标准"):
         CreateImageJobRequest(
-            processing_standards=["std_product", "std_document"],
+            filter_route=_route(),
             images=[{"object_key": "uploads/test/image.jpg"}],
         )
 
@@ -202,7 +185,9 @@ def test_formal_job_cannot_disable_required_processing_stages() -> None:
 async def test_ai_selection_rejects_zero_matching_standards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service = ProcessingVisionService(Settings(ai_tagging_api_key="test-key"))
+    service = ProcessingVisionService(
+        Settings(ai_tagging_enabled=True, ai_tagging_api_key="test-key")
+    )
     payload = _payload(None)
     for evaluation in payload["standard_selection"]["evaluations"]:
         evaluation["matched"] = False
@@ -210,6 +195,9 @@ async def test_ai_selection_rejects_zero_matching_standards(
         "decision": "pass",
         "reason": "没有规则命中，按任务策略保留",
         "confidence": 1.0,
+        "dimensions": [
+            {"dimension": "规则命中", "passed": True, "reason": "错误地按默认策略放行"}
+        ],
     }
     monkeypatch.setattr(
         service,

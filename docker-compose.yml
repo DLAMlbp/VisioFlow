@@ -62,6 +62,14 @@ services:
     <<: *worker
     command: celery -A src.workers.celery_app worker -Q preprocess -l info --concurrency=4
 
+  worker-vision:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q vision -l info --concurrency=4
+
+  worker-beautify-plan:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q beautify_plan -l info --concurrency=4
+
   worker-enhance:
     <<: *worker
     command: celery -A src.workers.celery_app worker -Q enhance -l info --concurrency=2

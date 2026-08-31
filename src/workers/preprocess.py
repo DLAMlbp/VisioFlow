@@ -1,16 +1,19 @@
 import asyncio
 import logging
+from datetime import UTC, datetime
 from io import BytesIO
 
 from celery import Task
 from PIL import Image
 
 from src.core.config import get_settings
+from src.core.metrics import emit_metric
 from src.db.session import AsyncSessionLocal
 from src.repositories.jobs import ImageJobRepository
 from src.schemas.jobs import ImageItemStatus
 from src.services.ai_model_config import load_ai_model_settings
 from src.services.images.beautify import NaturalBeautifyService
+from src.services.images.beautify_planning import neutralize_beautify_profile
 from src.services.images.hard_filter import HardFilterService, RejectCode
 from src.services.images.metadata import (
     ImageMetadataError,
@@ -21,11 +24,13 @@ from src.services.images.metadata import (
 from src.services.images.processing_vision import (
     PROCESSING_PROMPT_VERSION,
     ProcessingVisionService,
-    neutralize_beautify_profile,
 )
 from src.services.images.quality import QualityEngine
 from src.services.images.vision_rate_limit import acquire_vision_rate_slot
-from src.services.jobs.dispatch import EnhancementTaskPublisher, RankingTaskPublisher
+from src.services.jobs.dispatch import (
+    CompletionTaskPublisher,
+    RankingTaskPublisher,
+)
 from src.services.managed_profiles import (
     beautify_from_snapshot,
     legacy_standard_from_snapshots,
@@ -119,9 +124,7 @@ async def _preprocess_image_metadata(image_id: str) -> None:
             return
 
         beautify_service = NaturalBeautifyService()
-        neutral_beautify_profile = neutralize_beautify_profile(
-            beautify_profile
-        )
+        neutral_beautify_profile = neutralize_beautify_profile(beautify_profile)
         orientation_result = beautify_service.normalize_orientation(
             metadata.original_bytes,
             neutral_beautify_profile,
@@ -176,16 +179,15 @@ async def _preprocess_image_metadata(image_id: str) -> None:
             contrast=quality_metrics.contrast_score,
             noise=quality_metrics.noise_score,
         )
+        if job.routing_mode == "completion":
+            if await repository.complete_metadata_for_completion(item):
+                CompletionTaskPublisher().publish(item.id)
+            return
         if settings.ai_tagging_enabled and settings.ai_tagging_api_key:
             await acquire_vision_rate_slot(settings)
         ai_outcome = await ProcessingVisionService(settings).analyze(
             orientation_result.image_bytes,
             standards=standards,
-            beautify_instruction=(
-                _profile_instruction(job.beautify_profile_snapshot, beautify_profile.description)
-                if job.beautify_enabled
-                else "保持原始画面，不进行美化调整"
-            ),
             unmatched_standard_policy=job.unmatched_standard_policy,
             image_context={
                 "width": normalized_width,
@@ -226,17 +228,12 @@ async def _preprocess_image_metadata(image_id: str) -> None:
             await _advance_after_preprocess(repository, item)
             return
         selected_standard = next(
-            (
-                standard
-                for standard in standards
-                if standard.id == selection.selected_standard_id
-            ),
+            (standard for standard in standards if standard.id == selection.selected_standard_id),
             None,
         )
         if (
             job.filter_enabled
-            and
-            ai_outcome.status == "completed"
+            and ai_outcome.status == "completed"
             and ai_outcome.payload.filter.rejected
         ):
             await repository.reject_item(
@@ -267,14 +264,27 @@ async def _preprocess_image_metadata(image_id: str) -> None:
 
 
 async def _advance_after_preprocess(repository: ImageJobRepository, item) -> None:
+    if not get_settings().batch_filter_barrier_enabled:
+        return
     job = await repository.get_config(item.job_id)
     if job is None or job.cancel_requested_at is not None:
         return
-    if job.max_selected >= job.total_count:
-        if item.status == ImageItemStatus.FILTERED.value:
-            EnhancementTaskPublisher().publish(item.id)
-        return
     if await repository.claim_ranking_if_filtering_complete(job.id):
+        waited = max(
+            0.0,
+            (datetime.now(UTC) - getattr(item, "created_at", datetime.now(UTC))).total_seconds(),
+        )
+        emit_metric(
+            logger,
+            "filter_barrier_wait_seconds",
+            value=round(waited, 3),
+            labels={"job_id": job.id},
+        )
+        emit_metric(
+            logger,
+            "filter_barrier_trigger_total",
+            labels={"job_id": job.id},
+        )
         RankingTaskPublisher().publish(job.id)
 
 

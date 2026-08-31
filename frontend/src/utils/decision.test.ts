@@ -4,7 +4,7 @@ import { decisionLabel, isTerminalStatus, normalizeDecision, rejectCodeLabel, st
 describe("decision helpers", () => {
   it("maps backend decisions to Chinese labels", () => {
     expect(decisionLabel("selected")).toBe("已保留并美化");
-    expect(decisionLabel("rejected")).toBe("未通过标准");
+    expect(decisionLabel("rejected")).toBe("分支过滤未通过");
   });
 
   it("detects terminal job statuses", () => {

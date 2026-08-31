@@ -152,6 +152,19 @@ class LibraryRepository:
         )
         return [(asset, max(0.0, min(1.0, 1.0 - float(value)))) for asset, value in result]
 
+    async def list_active_assets_missing_analysis(self, *, limit: int) -> list[str]:
+        result = await self.session.execute(
+            select(LibraryAsset.id)
+            .where(
+                LibraryAsset.status == "active",
+                LibraryAsset.embedding.is_not(None),
+                LibraryAsset.analysis_json.is_(None),
+            )
+            .order_by(LibraryAsset.created_at)
+            .limit(limit)
+        )
+        return list(result.scalars())
+
     async def upsert_match(
         self, image_id: str, values: Mapping[str, object]
     ) -> ImageSimilarityMatch:

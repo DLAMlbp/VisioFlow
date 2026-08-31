@@ -3,7 +3,7 @@ import asyncio
 from src.core.config import get_settings
 from src.db.session import AsyncSessionLocal
 from src.repositories.jobs import ImageJobRepository
-from src.services.jobs.dispatch import EnhancementTaskPublisher, MetadataTaskPublisher
+from src.services.jobs.dispatch import BeautifyPlanTaskPublisher, MetadataTaskPublisher
 from src.workers.celery_app import celery_app
 
 
@@ -44,6 +44,11 @@ def rank_job(job_id: str) -> None:
 
 
 async def _rank_job(job_id: str) -> None:
+    settings = get_settings()
+    if not settings.batch_filter_barrier_enabled:
+        return
+    if not settings.post_filter_beautify_plan_enabled:
+        return
     async with AsyncSessionLocal() as session:
         repository = ImageJobRepository(session)
         job = await repository.get_config(job_id)
@@ -55,7 +60,8 @@ async def _rank_job(job_id: str) -> None:
         for item in not_selected:
             await repository.mark_not_selected(item)
         await repository.finish_ranking(job_id)
-        publisher = EnhancementTaskPublisher()
+        publisher = BeautifyPlanTaskPublisher()
         for item in selected:
-            publisher.publish(item.id)
+            if await repository.queue_beautify_plan(item.id):
+                publisher.publish(item.id)
         await repository.complete_job_if_finished(job_id)

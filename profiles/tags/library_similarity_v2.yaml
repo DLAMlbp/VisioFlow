@@ -1,6 +1,6 @@
 id: library_similarity_v2
-version: 5
-description: 图片相似度和综合分都达到 60% 时自动继承参考素材标签，否则进入人工复核。
+version: 7
+description: 图片向量占 70%、大模型内容特征占 30%；图片分和综合分均达到 60% 时自动继承素材组标签，否则按候选可信度进入复核或未匹配。
 
 similarity_candidate_limit: 20
 similarity_image_weight: 0.70

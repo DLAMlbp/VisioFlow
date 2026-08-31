@@ -7,6 +7,8 @@ from src.models.library_asset import LibraryAsset
 
 
 class SimilarityPolicy(Protocol):
+    similarity_image_weight: float
+    similarity_feature_weight: float
     similarity_auto_threshold: float
     similarity_review_threshold: float
     similarity_min_margin: float
@@ -17,7 +19,7 @@ class ScoredCandidate:
     asset: LibraryAsset
     tags: list[str]
     similarity_score: float
-    feature_score: float
+    feature_score: float | None
     final_score: float
 
 
@@ -35,9 +37,9 @@ class SimilarityDecision:
 
 def feature_similarity(
     query: dict[str, object] | None, candidate: dict[str, object] | None
-) -> float:
+) -> float | None:
     if not query or not candidate:
-        return 0.0
+        return None
     scores: list[float] = []
     for field in ("scene", "space", "condition", "content_type", "view"):
         left = _normalized_text(query.get(field))
@@ -57,6 +59,23 @@ def feature_similarity(
     return sum(scores) / len(scores) if scores else 0.0
 
 
+def combined_similarity_score(
+    *,
+    similarity_score: float,
+    feature_score: float | None,
+    settings: SimilarityPolicy,
+) -> float:
+    if feature_score is None:
+        return similarity_score
+    total_weight = settings.similarity_image_weight + settings.similarity_feature_weight
+    if total_weight <= 0:
+        return similarity_score
+    return (
+        similarity_score * settings.similarity_image_weight
+        + feature_score * settings.similarity_feature_weight
+    ) / total_weight
+
+
 def decide_similarity(
     *,
     candidates: list[ScoredCandidate],
@@ -65,28 +84,49 @@ def decide_similarity(
     if not candidates:
         return unmatched_decision("无法识别")
 
-    ranked = sorted(
-        candidates,
-        key=lambda item: (item.similarity_score, item.final_score),
-        reverse=True,
-    )
+    ranked = sorted(candidates, key=lambda item: item.final_score, reverse=True)
     best = ranked[0]
+    margin = (
+        best.final_score - ranked[1].final_score
+        if len(ranked) > 1
+        else 1.0
+    )
+    content_features_ready = (
+        settings.similarity_feature_weight <= 0 or best.feature_score is not None
+    )
     if (
+        content_features_ready
+        and
         best.similarity_score >= settings.similarity_auto_threshold
         and best.final_score >= settings.similarity_auto_threshold
+        and margin >= settings.similarity_min_margin
     ):
         decision = "matched"
-        message = "已匹配到相似图片素材"
-    else:
+        message = "已通过图片向量与内容特征匹配到相似素材"
+    elif (
+        best.similarity_score >= settings.similarity_review_threshold
+        or best.final_score >= settings.similarity_review_threshold
+    ):
         decision = "pending_review"
-        message = "无法识别，等待人工复核"
+        message = (
+            "内容特征暂不可用，候选素材需要人工确认"
+            if best.feature_score is None and settings.similarity_feature_weight > 0
+            else "图片与内容特征候选需要人工确认"
+        )
+    else:
+        decision = "unmatched"
+        message = "未匹配到可信的图片与内容特征候选"
 
     serialized = [
         {
             "asset_id": candidate.asset.id,
             "tags": candidate.tags,
             "similarity_score": round(candidate.similarity_score, 4),
-            "feature_score": round(candidate.feature_score, 4),
+            "feature_score": (
+                round(candidate.feature_score, 4)
+                if candidate.feature_score is not None
+                else None
+            ),
             "final_score": round(candidate.final_score, 4),
         }
         for candidate in ranked[:10]
@@ -96,6 +136,17 @@ def decide_similarity(
             decision=decision,
             message=message,
             matched_asset_id=None,
+            tags=[],
+            similarity_score=best.similarity_score,
+            feature_score=best.feature_score,
+            final_score=best.final_score,
+            candidates=serialized,
+        )
+    if decision == "pending_review":
+        return SimilarityDecision(
+            decision=decision,
+            message=message,
+            matched_asset_id=best.asset.id,
             tags=[],
             similarity_score=best.similarity_score,
             feature_score=best.feature_score,
@@ -124,6 +175,24 @@ def unmatched_decision(message: str) -> SimilarityDecision:
         feature_score=None,
         final_score=None,
         candidates=[],
+    )
+
+
+def apply_shadow_mode(
+    decision: SimilarityDecision, *, enabled: bool
+) -> SimilarityDecision:
+    """Keep an automatic match review-only while preserving its audit scores."""
+    if not enabled or decision.decision != "matched":
+        return decision
+    return SimilarityDecision(
+        decision="pending_review",
+        message="Shadow 模式：自动匹配结果等待人工确认",
+        matched_asset_id=decision.matched_asset_id,
+        tags=[],
+        similarity_score=decision.similarity_score,
+        feature_score=decision.feature_score,
+        final_score=decision.final_score,
+        candidates=decision.candidates,
     )
 
 

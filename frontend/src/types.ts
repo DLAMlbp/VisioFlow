@@ -18,6 +18,7 @@ export type Decision =
   | "queued"
   | "analyzing"
   | "filtered"
+  | "beautify_planning"
   | "enhancing"
   | "enhanced"
   | "selected"
@@ -27,7 +28,7 @@ export type Decision =
   | "tagging"
   | "cancelled";
 
-export type ResultFilter = "all" | "selected" | "rejected" | "not_selected" | "failed";
+export type ResultFilter = "all" | "selected" | "rejected" | "not_selected" | "failed" | "completed" | "non_completed" | "review";
 
 export interface UploadItem {
   id: string;
@@ -54,6 +55,7 @@ export interface PresignResponse {
 }
 
 export interface CreateJobRequest {
+  filter_route?: CompletionFilterRoute;
   processing_standards: string[];
   beautify_profile?: string;
   filter_enabled: boolean;
@@ -65,6 +67,16 @@ export interface CreateJobRequest {
   max_selected: number;
   images: Array<{ object_key: string }>;
   callback_url?: string;
+}
+
+export interface CompletionFilterRoute {
+  completion_profile: string;
+  completed_filter_profile: string;
+  non_completed_filter_profile: string;
+  policy: {
+    insufficient_evidence_policy: "reject" | "route_non_completed";
+    low_confidence_policy: "continue_with_review" | "reject";
+  };
 }
 
 export interface CreateJobResponse {
@@ -115,6 +127,7 @@ export interface ImageMetrics {
 
 export interface AIImageTags {
   status: "pending" | "completed" | "failed";
+  source?: "library" | "legacy_ai";
   summary?: string | null;
   tags: string[];
   categories: Record<string, string[]>;
@@ -130,15 +143,38 @@ export interface SimilarityTaggingResult {
   tags: string[];
   matched_asset_id?: string | null;
   similarity?: number | null;
+  feature_score?: number | null;
   final_score?: number | null;
   message: string;
+}
+
+export interface BeautifyAudit {
+  status: string;
+  needed?: boolean | null;
+  reason?: string | null;
+  confidence?: number | null;
+  planned_parameters: Record<string, unknown>;
+  effective_parameters: Record<string, unknown>;
+  corrections: string[];
+  preview_attempts: number;
+  acceptance?: {
+    status: "passed" | "fallback" | "failed";
+    checks: Array<{
+      name: "exposure" | "color" | "noise" | "sharpening";
+      passed: boolean;
+      before: Record<string, number>;
+      after: Record<string, number>;
+      reason: string;
+    }>;
+    fallback_reason?: string | null;
+  } | null;
 }
 
 export interface SimilarityCandidate {
   asset_id: string;
   tags: string[];
   similarity_score: number;
-  feature_score: number;
+  feature_score: number | null;
   final_score: number;
 }
 
@@ -171,6 +207,7 @@ export interface ResultImage {
   reject_codes?: string[];
   duplicate_group_id?: string;
   ai_tags?: AIImageTags;
+  library_tags?: SimilarityTaggingResult;
   tagging_result?: SimilarityTaggingResult;
   processing_standard_id?: string | null;
   processing_standard_name?: string | null;
@@ -180,6 +217,17 @@ export interface ResultImage {
     passed: boolean;
     reason: string;
   }>;
+  completion?: {
+    label: "completed" | "non_completed";
+    subtype: "completed" | "construction" | "insufficient_evidence" | "invalid_or_irrelevant";
+    confidence: number;
+    reason: string;
+    reason_codes: string[];
+    review_required: boolean;
+  };
+  beautify?: BeautifyAudit;
+  routed_filter_profile_id?: string | null;
+  routed_filter_profile_version?: number | null;
 }
 
 export interface JobResults {
@@ -219,7 +267,7 @@ export interface ProfileOption {
   editable?: boolean;
 }
 
-export type ProcessingProfileType = "filter" | "beautify";
+export type ProcessingProfileType = "filter" | "beautify" | "completion";
 
 export interface ProcessingProfile extends ProfileOption {
   profile_type: ProcessingProfileType;

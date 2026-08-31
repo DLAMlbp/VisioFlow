@@ -221,3 +221,25 @@ def test_delivery_image_is_upscaled_to_the_minimum_long_side() -> None:
     output = NaturalBeautifyService._ensure_minimum_output_size(image, profile)
 
     assert output.size == (2048, 1152)
+
+
+def test_output_sharpness_changes_edges_without_changing_dimensions() -> None:
+    image = Image.new("RGB", (320, 240), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((80, 60, 240, 180), fill="gray")
+    profile = BeautifyProfile(
+        id="test",
+        version=1,
+        description="test",
+        brightness=1,
+        contrast=1,
+        color=1,
+        sharpness=1.5,
+        jpeg_quality=95,
+    )
+
+    sharpened, applied = NaturalBeautifyService._apply_output_sharpness(image, profile)
+
+    assert applied is True
+    assert sharpened.size == image.size
+    assert sharpened.tobytes() != image.tobytes()

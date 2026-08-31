@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, Numeric, String, func
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.db.base import Base
@@ -44,10 +44,55 @@ class ImageItem(Base):
 
     ai_processing_status: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)
     ai_processing_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    ai_processing_diagnostic_json: Mapped[dict[str, object] | None] = mapped_column(
+        JSON, nullable=True
+    )
     ai_processing_model: Mapped[str | None] = mapped_column(String(120), nullable=True)
     ai_processing_prompt_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
     ai_processing_duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     ai_processing_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    ai_processing_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    ai_processing_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    completion_status: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)
+    completion_label: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)
+    completion_subtype: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    completion_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    completion_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    completion_model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    completion_prompt_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    completion_duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    completion_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completion_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    routed_filter_profile_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    routed_filter_profile_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    review_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, index=True
+    )
+
+    beautify_plan_status: Mapped[str | None] = mapped_column(
+        String(24), nullable=True, index=True
+    )
+    beautify_plan_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    beautify_plan_model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    beautify_plan_prompt_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    beautify_plan_duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    beautify_plan_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    beautify_plan_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    beautify_plan_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     analysis_status: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)

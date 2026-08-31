@@ -40,6 +40,7 @@ interface BackendResultImage {
   metrics: JobResults["images"][number]["metrics"] | null;
   enhanced_metrics: JobResults["images"][number]["metrics"] | null;
   ai_tags: JobResults["images"][number]["ai_tags"] | null;
+  library_tags: JobResults["images"][number]["library_tags"] | null;
   tagging_result: JobResults["images"][number]["tagging_result"] | null;
   processing_standard_id: string | null;
   processing_standard_name: string | null;
@@ -49,6 +50,10 @@ interface BackendResultImage {
     passed: boolean;
     reason: string;
   }>;
+  completion: JobResults["images"][number]["completion"] | null;
+  beautify: JobResults["images"][number]["beautify"] | null;
+  routed_filter_profile_id: string | null;
+  routed_filter_profile_version: number | null;
 }
 
 interface BackendJobResults {
@@ -120,6 +125,7 @@ export const api = {
         });
       },
       createUploadBatch(payload: {
+        filter_route?: CreateJobRequest["filter_route"];
         processing_standards: string[];
         beautify_profile?: string;
         filter_enabled: boolean;
@@ -147,9 +153,11 @@ export const api = {
       getHistory(): Promise<JobHistoryResponse> {
         return request<JobHistoryResponse>("/api/v1/image/jobs?limit=30");
       },
-      async getResults(jobId: string, limit = 50, offset = 0, decision?: string): Promise<JobResults> {
+      async getResults(jobId: string, limit = 50, offset = 0, filter?: string): Promise<JobResults> {
         const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-        if (decision) params.set("decision", decision);
+        if (filter === "completed" || filter === "non_completed") params.set("completion_label", filter);
+        else if (filter === "review") params.set("review_required", "true");
+        else if (filter) params.set("decision", filter);
         const result = await request<BackendJobResults>(`/api/v1/image/jobs/${jobId}/results?${params}`);
         const objectKeys = result.images.flatMap((image) => [
           ...(image.files_expired ? [] : [
@@ -186,11 +194,16 @@ export const api = {
             warnings: [],
             reject_codes: image.reject_codes,
             ai_tags: image.ai_tags ?? undefined,
+            library_tags: image.library_tags ?? image.tagging_result ?? undefined,
             tagging_result: image.tagging_result ?? undefined,
             processing_standard_id: image.processing_standard_id,
             processing_standard_name: image.processing_standard_name,
             activation_reason: image.activation_reason,
-            audit_dimensions: image.audit_dimensions ?? []
+            audit_dimensions: image.audit_dimensions ?? [],
+            completion: image.completion ?? undefined,
+            beautify: image.beautify ?? undefined,
+            routed_filter_profile_id: image.routed_filter_profile_id,
+            routed_filter_profile_version: image.routed_filter_profile_version
           }));
         return {
           job_id: result.job_id,
@@ -217,6 +230,9 @@ export const api = {
       },
       getBeautifyProfiles(): Promise<ProfileOption[]> {
         return request<ProfileOption[]>("/api/v1/beautify-profiles");
+      },
+      getCompletionProfiles(): Promise<ProfileOption[]> {
+        return request<ProfileOption[]>("/api/v1/completion-profiles");
       },
       getProcessingStandards(): Promise<ProfileOption[]> {
         return request<ProfileOption[]>("/api/v1/processing-standards");
@@ -297,23 +313,23 @@ export const api = {
         });
       },
       getProcessingProfile(type: ProcessingProfileType, profileId: string): Promise<ProcessingProfile> {
-        return request<ProcessingProfile>(`/api/v1/${type === "filter" ? "filter" : "beautify"}-profiles/${profileId}`);
+        return request<ProcessingProfile>(`/api/v1/${profileRoot(type)}/${profileId}`);
       },
       previewProcessingProfile(type: ProcessingProfileType, instruction: string): Promise<ProfilePreview> {
-        return request<ProfilePreview>(`/api/v1/${type === "filter" ? "filter" : "beautify"}-profiles/preview`, {
+        return request<ProfilePreview>(`/api/v1/${profileRoot(type)}/preview`, {
           method: "POST",
           body: JSON.stringify({ instruction })
         });
       },
       saveProcessingProfile(type: ProcessingProfileType, profileId: string | null, payload: SaveProcessingProfile): Promise<ProcessingProfile> {
-        const root = `/api/v1/${type === "filter" ? "filter" : "beautify"}-profiles`;
+        const root = `/api/v1/${profileRoot(type)}`;
         return request<ProcessingProfile>(profileId ? `${root}/${profileId}` : root, {
           method: profileId ? "PUT" : "POST",
           body: JSON.stringify(payload)
         });
       },
       async deleteProcessingProfile(type: ProcessingProfileType, profileId: string): Promise<void> {
-        await request<void>(`/api/v1/${type === "filter" ? "filter" : "beautify"}-profiles/${profileId}`, { method: "DELETE" });
+        await request<void>(`/api/v1/${profileRoot(type)}/${profileId}`, { method: "DELETE" });
       },
       async deleteLibraryAsset(assetId: string): Promise<void> {
         await request<void>(`/api/v1/library/assets/${assetId}`, { method: "DELETE" });
@@ -331,6 +347,10 @@ export const api = {
         });
       }
     };
+
+function profileRoot(type: ProcessingProfileType): string {
+  return `${type}-profiles`;
+}
 
 async function getDownloadUrl(objectKey: string): Promise<string> {
   const response = await request<{ download_url: string }>("/api/v1/uploads/presign-download", {

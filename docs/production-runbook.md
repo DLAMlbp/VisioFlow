@@ -6,6 +6,28 @@
 
 `.env.production` 至少需要设置强随机值：`API_KEY`、`INTEGRATION_API_KEY`、`AI_TAGGING_API_KEY`、`AI_CONFIG_ENCRYPTION_KEY`、`CALLBACK_SIGNING_SECRET`、PostgreSQL/MinIO 密码；并显式配置 `TRUSTED_HOSTS`、`CALLBACK_ALLOWED_HOSTS`、`API_IMAGE`、`WEB_IMAGE`。镜像必须使用 Git SHA、版本号或 digest，禁止使用 `latest`。
 
+以下强制工作流开关必须全部为 `true`：
+
+```dotenv
+COMPLETION_ROUTING_ENABLED=true
+BATCH_FILTER_BARRIER_ENABLED=true
+POST_FILTER_BEAUTIFY_PLAN_ENABLED=true
+LIBRARY_IMAGE_ONLY_MATCHING_ENABLED=true
+LIBRARY_ONLY_TAGS_ENABLED=true
+```
+
+任一开关关闭时 `/health/ready` 返回失败，新任务会被拒绝，不能以关闭开关的方式跳过阶段。首次灰度建议保留 `LIBRARY_MATCH_SHADOW_MODE=true`，完成足量人工复核和离线阈值校准后再单独审批关闭。
+
+分支过滤响应约束建议保持以下默认值：
+
+```dotenv
+AI_PROCESSING_STRICT_JSON_SCHEMA_ENABLED=true
+AI_PROCESSING_SCHEMA_MAX_RETRIES=1
+AI_PROCESSING_MAX_COMPLETION_TOKENS=3000
+```
+
+系统先请求严格 JSON Schema；供应商以 HTTP 400/422 表示不支持时自动回退到 `json_object`。模型返回缺字段、类型错误或无效 JSON 时会按 `AI_PROCESSING_SCHEMA_MAX_RETRIES` 纠错，默认最多增加一次付费 AI 调用。最终失败会将错误字段、尝试次数、`finish_reason`、内容 SHA256 和最多 2000 字的脱敏响应摘要保存到 `image_items.ai_processing_diagnostic_json`；Bearer 凭据和图片 Base64 不会保存。排障后只对明确选中的失败图片执行人工重试，禁止批量自动重试历史失败任务。
+
 正式公网入口必须在外部负载均衡器或 API Gateway 终止 HTTPS。不要把 Compose 的 HTTP、PostgreSQL、Redis 或 MinIO 内部端口直接暴露到公网。
 
 ## 服务器只读前置检查
@@ -46,9 +68,13 @@ curl --fail --silent https://<service-host>/health/ready
 
 - 创建一套仅含测试图片的正式任务，确认两套启动规则必须且只能命中一套。
 - 核对结果页与历史记录的 `selected`、`rejected`、`not_selected` 数量一致。
-- 确认过滤通过后生成增强图，AI 标签的 `source_object_key` 指向增强图。
+- 确认完工分类与分支过滤都完成后才启动美化规划。
+- 确认所有 `non_completed` 子类型都进入非完工过滤分支；不得在完工分类阶段直接淘汰，且“未完工”本身不得成为非完工分支的拒绝理由。
+- 确认素材匹配使用美化图向量和大模型内容特征，最终标签仍只来自素材组人工标签。
+- 确认 `worker-vision` 和 `worker-beautify-plan` 健康，旧 `worker-analysis` 只服务历史任务。
 - 确认回调包含时间戳和 HMAC 签名，接收方完成签名、时效和幂等校验。
 - 检查 API、控制 Worker、各处理 Worker 和 beat 的有限量日志，不输出完整环境变量或密钥。
+- 检查结构化日志中的 `completion_requests_total`、`routed_filter_requests_total`、`filter_barrier_trigger_total`、`beautify_plan_failures_total`、`enhancement_failures_total`、`embedding_failures_total`、`library_match_total` 和 `forbidden_llm_tag_write_total`；最后一项必须为零。
 
 ## 回滚
 

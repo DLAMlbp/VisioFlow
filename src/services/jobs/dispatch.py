@@ -17,6 +17,16 @@ class MetadataTaskPublisher:
         celery_app.send_task("image.preprocess_metadata", args=[image_id], queue="preprocess")
 
 
+class CompletionTaskPublisher:
+    def publish(self, image_id: str) -> None:
+        celery_app.send_task("image.classify_completion", args=[image_id], queue="vision")
+
+
+class RoutedProcessingTaskPublisher:
+    def publish(self, image_id: str) -> None:
+        celery_app.send_task("image.apply_routed_processing", args=[image_id], queue="vision")
+
+
 class AnalysisTaskPublisher:
     def publish(self, image_id: str) -> None:
         celery_app.send_task(
@@ -42,6 +52,13 @@ class LibraryAssetTaskPublisher:
 class EnhancementTaskPublisher:
     def publish(self, image_id: str) -> None:
         celery_app.send_task("image.enhance", args=[image_id], queue="enhance")
+
+
+class BeautifyPlanTaskPublisher:
+    def publish(self, image_id: str) -> None:
+        celery_app.send_task(
+            "image.plan_beautify", args=[image_id], queue="beautify_plan"
+        )
 
 
 class RankingTaskPublisher:

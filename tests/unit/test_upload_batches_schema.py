@@ -16,9 +16,17 @@ def _files(count: int) -> list[dict[str, object]]:
     ]
 
 
+def _route() -> dict[str, str]:
+    return {
+        "completion_profile": "completion_renovation_v1",
+        "completed_filter_profile": "standard_completed_v1",
+        "non_completed_filter_profile": "standard_non_completed_v1",
+    }
+
+
 def test_upload_batch_accepts_500_images() -> None:
     payload = CreateUploadBatchRequest(
-        processing_standards=["std_finished", "std_unfinished"],
+        filter_route=_route(),
         beautify_profile="bty_user",
         files=_files(500),
     )
@@ -29,7 +37,7 @@ def test_upload_batch_accepts_500_images() -> None:
 def test_upload_batch_rejects_more_than_500_images() -> None:
     with pytest.raises(ValidationError):
         CreateUploadBatchRequest(
-            processing_standards=["std_finished", "std_unfinished"],
+            filter_route=_route(),
             beautify_profile="bty_user",
             files=_files(501),
         )
@@ -44,7 +52,7 @@ def test_batch_pipeline_defaults_are_server_ready() -> None:
     assert settings.inference_device == "auto"
 
 
-def test_upload_batch_requires_exactly_two_standards() -> None:
+def test_upload_batch_requires_completion_route() -> None:
     with pytest.raises(ValidationError):
         CreateUploadBatchRequest(
             processing_standards=["std_finished"],

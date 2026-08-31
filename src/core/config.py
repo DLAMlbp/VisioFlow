@@ -72,11 +72,15 @@ class Settings(BaseSettings):
     ai_tagging_api_key: str = ""
     ai_tagging_timeout_seconds: int = 90
     ai_tagging_max_retries: int = 2
+    ai_processing_schema_max_retries: int = Field(default=1, ge=0, le=3)
+    ai_processing_max_completion_tokens: int = Field(default=3000, ge=800, le=8000)
+    ai_processing_strict_json_schema_enabled: bool = True
     ai_tagging_image_long_side: int = 1024
     ai_tagging_concurrency: int = 4
     ai_tagging_rate_limit_per_minute: int = 24
     ai_tagging_store_raw_response: bool = False
     ai_config_encryption_key: str = ""
+    completion_review_confidence: float = Field(default=0.8, ge=0, le=1)
 
     image_embedding_model: str = "ViT-B-32"
     image_embedding_pretrained: str = "laion2b_s34b_b79k"
@@ -84,6 +88,12 @@ class Settings(BaseSettings):
     inference_device: str = "auto"
     inference_cpu_threads: int = 4
     default_similarity_profile: str = "library_similarity_v2"
+    completion_routing_enabled: bool = True
+    batch_filter_barrier_enabled: bool = True
+    post_filter_beautify_plan_enabled: bool = True
+    library_image_only_matching_enabled: bool = True
+    library_only_tags_enabled: bool = True
+    library_match_shadow_mode: bool = False
     cleanup_interval_seconds: int = 3600
     pipeline_recovery_interval_seconds: int = 300
     pipeline_stale_seconds: int = 900

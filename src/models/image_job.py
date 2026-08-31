@@ -26,6 +26,22 @@ class ImageJob(Base):
     processing_standard_snapshots: Mapped[list[dict[str, object]] | None] = mapped_column(
         JSON, nullable=True
     )
+    routing_mode: Mapped[str] = mapped_column(String(24), nullable=False, default="legacy")
+    completion_profile_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    completion_profile_snapshot: Mapped[dict[str, object] | None] = mapped_column(
+        JSON, nullable=True
+    )
+    completed_filter_profile_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    completed_filter_profile_snapshot: Mapped[dict[str, object] | None] = mapped_column(
+        JSON, nullable=True
+    )
+    non_completed_filter_profile_id: Mapped[str | None] = mapped_column(
+        String(80), nullable=True
+    )
+    non_completed_filter_profile_snapshot: Mapped[dict[str, object] | None] = mapped_column(
+        JSON, nullable=True
+    )
+    routing_policy_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     filter_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     beautify_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     similarity_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

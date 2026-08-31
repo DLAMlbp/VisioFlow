@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, HttpUrl, model_validator
 
+from src.schemas.jobs import CompletionFilterRoute
+
 
 class UploadBatchFile(BaseModel):
     filename: str = Field(min_length=1, max_length=255)
@@ -11,6 +13,7 @@ class UploadBatchFile(BaseModel):
 
 
 class CreateUploadBatchRequest(BaseModel):
+    filter_route: CompletionFilterRoute | None = None
     processing_standards: list[str] = Field(default_factory=list, max_length=2)
     filter_profile: str | None = Field(default=None, min_length=1, max_length=80)
     beautify_profile: str | None = Field(default=None, min_length=1, max_length=80)
@@ -27,11 +30,9 @@ class CreateUploadBatchRequest(BaseModel):
     @model_validator(mode="after")
     def require_processing_configuration(self):
         if not (self.filter_enabled and self.beautify_enabled and self.similarity_enabled):
-            raise ValueError("正式模式固定执行一次识别、条件筛选、美化、标签绑定和素材匹配")
-        if len(self.processing_standards) != 2:
-            raise ValueError("必须选择两套互斥且完整覆盖的过滤标准")
-        if len(set(self.processing_standards)) != 2:
-            raise ValueError("条件过滤标准不能重复")
+            raise ValueError("正式模式固定执行完工分类、分支过滤、过滤后美化和素材库匹配")
+        if self.filter_route is None:
+            raise ValueError("必须配置完工分类、完工过滤和非完工过滤标准")
         if not self.beautify_profile:
             raise ValueError("请选择独立的美化标准")
         return self

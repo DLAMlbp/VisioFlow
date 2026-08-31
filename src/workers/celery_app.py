@@ -23,6 +23,9 @@ celery_app.conf.update(
         "src.workers.control",
         "src.workers.callbacks",
         "src.workers.preprocess",
+        "src.workers.completion",
+        "src.workers.processing",
+        "src.workers.beautify_plan",
         "src.workers.enhance",
         "src.workers.analysis",
         "src.workers.matching",
@@ -32,6 +35,11 @@ celery_app.conf.update(
 )
 
 celery_app.conf.beat_schedule = {
+    "backfill-library-content-features": {
+        "task": "library.backfill_content_features",
+        "schedule": 300,
+        "options": {"queue": "library"},
+    },
     "cleanup-expired-images": {
         "task": "maintenance.cleanup_expired_images",
         "schedule": settings.cleanup_interval_seconds,
