@@ -1,12 +1,15 @@
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field, ValidationError
+from starlette.datastructures import FormData
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from src.api.jobs import JobServiceDep
 from src.api.uploads import SettingsDep, StorageDep
 from src.core.exceptions import InvalidUploadRequest
+from src.schemas.integration import IntegrationCreateResponse, IntegrationUrlJobRequest
 from src.schemas.jobs import (
     CompletionFilterRoute,
     CreateImageJobRequest,
@@ -16,10 +19,16 @@ from src.schemas.jobs import (
     ImageJobResultItemResponse,
 )
 from src.schemas.uploads import PresignedUploadRequest
+from src.services.integration_urls import (
+    IntegrationUrlDownloadError,
+    delete_staged_integration_images,
+    stage_integration_urls,
+)
 from src.services.jobs.service import InvalidJobRequest, JobNotFound
 from src.services.storage.keys import build_upload_object_key, validate_upload_request
 
 router = APIRouter()
+partner_router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
@@ -41,8 +50,101 @@ class IntegrationJobResultsResponse(BaseModel):
     images: list[IntegrationImageResultResponse]
 
 
-@router.post("/jobs", response_model=CreateImageJobResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/jobs",
+    response_model=IntegrationCreateResponse | CreateImageJobResponse,
+    response_model_by_alias=True,
+    status_code=status.HTTP_201_CREATED,
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/IntegrationUrlJobRequest"}
+                }
+            },
+        }
+    },
+)
 async def create_integration_job(
+    request: Request,
+    service: JobServiceDep,
+    settings: SettingsDep,
+    storage: StorageDep,
+) -> IntegrationCreateResponse | CreateImageJobResponse:
+    """通过 URL JSON 创建任务，同时兼容原有 multipart 文件上传。"""
+    content_type = request.headers.get("content-type", "").lower()
+    if "application/json" in content_type:
+        try:
+            payload = IntegrationUrlJobRequest.model_validate(await request.json())
+        except (ValueError, ValidationError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        return await _create_url_job(payload, service=service, settings=settings, storage=storage)
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        files = [
+            value for value in form.getlist("files") if isinstance(value, StarletteUploadFile)
+        ]
+        callback_url = _required_form_string(form, "callback_url")
+        return await create_file_integration_job(
+            files=files,
+            service=service,
+            settings=settings,
+            storage=storage,
+            callback_url=callback_url,
+            beautify_profile=_optional_form_string(form, "beautify_profile"),
+            processing_standards=_optional_form_string(form, "processing_standards"),
+            completion_profile=_optional_form_string(form, "completion_profile"),
+            completed_filter_profile=_optional_form_string(form, "completed_filter_profile"),
+            non_completed_filter_profile=_optional_form_string(
+                form, "non_completed_filter_profile"
+            ),
+            insufficient_evidence_policy=_form_string(
+                form, "insufficient_evidence_policy", "route_non_completed"
+            ),
+            low_confidence_policy=_form_string(
+                form, "low_confidence_policy", "continue_with_review"
+            ),
+            filter_profile=_optional_form_string(form, "filter_profile"),
+            filter_enabled=_form_bool(form, "filter_enabled", True),
+            beautify_enabled=_form_bool(form, "beautify_enabled", True),
+            similarity_enabled=_form_bool(form, "similarity_enabled", True),
+            similarity_profile=_form_string(
+                form, "similarity_profile", "library_similarity_v2"
+            ),
+            unmatched_standard_policy=_form_string(
+                form, "unmatched_standard_policy", "reject"
+            ),
+            enhance_level=_form_int(form, "enhance_level", 1),
+            max_selected=_form_int(form, "max_selected", 10),
+        )
+    raise HTTPException(
+        status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+        detail="Content-Type 必须是 application/json 或 multipart/form-data",
+    )
+
+
+@partner_router.post(
+    "/api/app/image/filter-requests",
+    response_model=IntegrationCreateResponse,
+    response_model_by_alias=True,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_partner_filter_request(
+    payload: IntegrationUrlJobRequest,
+    service: JobServiceDep,
+    settings: SettingsDep,
+    storage: StorageDep,
+) -> IntegrationCreateResponse:
+    """兼容客户原始 submitPath 的 URL 图片任务入口。"""
+    return await _create_url_job(payload, service=service, settings=settings, storage=storage)
+
+
+@router.post("/file-jobs", response_model=CreateImageJobResponse, status_code=status.HTTP_201_CREATED)
+async def create_file_integration_job(
     files: Annotated[list[UploadFile], File(description="待处理图片，1 至 50 张")],
     service: JobServiceDep,
     settings: SettingsDep,
@@ -142,6 +244,118 @@ async def create_integration_job(
     except Exception:
         await _delete_uploaded_objects(storage, uploaded_keys)
         raise
+
+
+async def _create_url_job(
+    payload: IntegrationUrlJobRequest,
+    *,
+    service: JobServiceDep,
+    settings: SettingsDep,
+    storage: StorageDep,
+) -> IntegrationCreateResponse:
+    if len(payload.images) > settings.integration_max_files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"集成接口单次最多支持 {settings.integration_max_files} 张图片",
+        )
+    staged = []
+    try:
+        staged = await stage_integration_urls(payload.images, storage=storage, settings=settings)
+        request = CreateImageJobRequest(
+            filter_route=CompletionFilterRoute(
+                completion_profile=(
+                    payload.completion_profile or settings.integration_completion_profile
+                ),
+                completed_filter_profile=(
+                    payload.completed_filter_profile
+                    or settings.integration_completed_filter_profile
+                ),
+                non_completed_filter_profile=(
+                    payload.non_completed_filter_profile
+                    or settings.integration_non_completed_filter_profile
+                ),
+                policy=FilterRoutingPolicy(),
+            ),
+            beautify_profile=(
+                payload.beautify_profile or settings.integration_beautify_profile
+            ),
+            similarity_profile=payload.similarity_profile,
+            enhance_level=payload.enhance_level,
+            max_selected=payload.max_selected,
+            images=[
+                {
+                    "object_key": image.object_key,
+                    "client_object_key": image.client_object_key,
+                }
+                for image in staged
+            ],
+            callback_url=payload.notify_url,
+            callback_contract="customer_v1",
+        )
+        created = await service.create_job(request)
+    except (IntegrationUrlDownloadError, InvalidJobRequest, ValidationError) as exc:
+        await delete_staged_integration_images(storage, staged)
+        detail = exc.message if isinstance(exc, InvalidJobRequest) else str(exc)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail) from exc
+    except Exception:
+        await delete_staged_integration_images(storage, staged)
+        raise
+    return IntegrationCreateResponse(
+        job_id=created.job_id,
+        task_id=created.job_id,
+        status=created.status.value,
+        total=created.total,
+    )
+
+
+def _required_form_string(form: FormData, name: str) -> str:
+    value = _optional_form_string(form, name)
+    if value is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"缺少必填字段：{name}",
+        )
+    return value
+
+
+def _optional_form_string(form: FormData, name: str) -> str | None:
+    value = form.get(name)
+    if value is None or isinstance(value, StarletteUploadFile):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _form_string(form: FormData, name: str, default: str) -> str:
+    return _optional_form_string(form, name) or default
+
+
+def _form_int(form: FormData, name: str, default: int) -> int:
+    value = _optional_form_string(form, name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"字段 {name} 必须是整数",
+        ) from exc
+
+
+def _form_bool(form: FormData, name: str, default: bool) -> bool:
+    value = _optional_form_string(form, name)
+    if value is None:
+        return default
+    normalized = value.lower()
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "off"}:
+        return False
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail=f"字段 {name} 必须是布尔值",
+    )
 
 
 @router.get("/jobs/{job_id}", response_model=ImageJobProgressResponse)

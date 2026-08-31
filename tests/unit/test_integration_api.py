@@ -5,11 +5,13 @@ from src.api.uploads import get_storage_provider
 from src.core.config import Settings, get_settings
 from src.main import app
 from src.schemas.jobs import (
+    CreateImageJobResponse,
     ImageItemStatus,
     ImageJobProgressResponse,
     ImageJobResultItemResponse,
     ImageJobResultsResponse,
 )
+from src.services.integration_urls import StagedIntegrationImage
 from src.services.storage.interfaces import StorageProvider
 
 
@@ -40,7 +42,9 @@ class FakeStorageProvider(StorageProvider):
 class FakeJobService:
     async def create_job(self, payload):
         self.payload = payload
-        return {"job_id": "job_integration", "status": "queued", "total": len(payload.images)}
+        return CreateImageJobResponse(
+            job_id="job_integration", status="queued", total=len(payload.images)
+        )
 
     async def get_progress(self, job_id: str):
         return ImageJobProgressResponse(
@@ -121,7 +125,7 @@ def test_integration_job_rejects_disabled_required_stages() -> None:
     client = TestClient(app)
 
     response = client.post(
-        "/api/v1/integration/jobs",
+        "/api/v1/integration/file-jobs",
         files=[("files", ("product.jpg", b"one", "image/jpeg"))],
         data={
             **_route_form(),
@@ -150,7 +154,7 @@ def test_integration_job_rejects_legacy_route_before_uploading() -> None:
     client = TestClient(app)
 
     response = client.post(
-        "/api/v1/integration/jobs",
+        "/api/v1/integration/file-jobs",
         files=[("files", ("product.jpg", b"one", "image/jpeg"))],
         data={
             "processing_standards": "std_finished,std_unfinished",
@@ -175,7 +179,7 @@ def test_integration_job_rejects_invalid_file_and_removes_prior_uploads() -> Non
     client = TestClient(app)
 
     response = client.post(
-        "/api/v1/integration/jobs",
+        "/api/v1/integration/file-jobs",
         files=[
             ("files", ("valid.jpg", b"one", "image/jpeg")),
             ("files", ("invalid.gif", b"two", "image/gif")),
@@ -205,7 +209,7 @@ def test_integration_job_requires_callback_url() -> None:
     client = TestClient(app)
 
     response = client.post(
-        "/api/v1/integration/jobs",
+        "/api/v1/integration/file-jobs",
         files=[("files", ("kitchen.jpg", b"one", "image/jpeg"))],
         data={
             "processing_standards": "std_finished,std_unfinished",
@@ -216,6 +220,107 @@ def test_integration_job_requires_callback_url() -> None:
 
     app.dependency_overrides.clear()
 
+    assert response.status_code == 422
+
+
+def test_integration_job_accepts_customer_image_urls(monkeypatch) -> None:
+    storage = FakeStorageProvider()
+    jobs = FakeJobService()
+
+    async def fake_stage(images, *, storage, settings):
+        assert [image.object_key for image in images] == ["customer/a.jpg", "customer/b.jpg"]
+        return [
+            StagedIntegrationImage("uploads/a.jpg", "customer/a.jpg"),
+            StagedIntegrationImage("uploads/b.jpg", "customer/b.jpg"),
+        ]
+
+    monkeypatch.setattr("src.api.integration.stage_integration_urls", fake_stage)
+    app.dependency_overrides[get_storage_provider] = lambda: storage
+    app.dependency_overrides[get_job_service] = lambda: jobs
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        integration_api_key="test-integration-key"
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/integration/jobs",
+        json={
+            "notifyUrl": "https://client.test/v1/callback/ai/theme-image/notify",
+            "images": [
+                {"objectKey": "customer/a.jpg", "imageUrl": "https://obs.test/a.jpg"},
+                {"objectKey": "customer/b.jpg", "imageUrl": "https://obs.test/b.jpg"},
+            ],
+        },
+        headers={"X-API-Key": "test-integration-key"},
+    )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 201
+    assert response.json() == {
+        "job_id": "job_integration",
+        "status": "queued",
+        "total": 2,
+        "ok": True,
+        "code": "",
+        "message": "",
+        "taskId": "job_integration",
+    }
+    assert jobs.payload.callback_contract == "customer_v1"
+    assert [image.client_object_key for image in jobs.payload.images] == [
+        "customer/a.jpg",
+        "customer/b.jpg",
+    ]
+    assert jobs.payload.filter_route.completion_profile == "completion_renovation_v1"
+    assert jobs.payload.beautify_profile == "integration_natural_v1"
+
+
+def test_customer_legacy_submit_path_accepts_same_url_contract(monkeypatch) -> None:
+    storage = FakeStorageProvider()
+    jobs = FakeJobService()
+
+    async def fake_stage(images, *, storage, settings):
+        return [StagedIntegrationImage("uploads/a.jpg", images[0].object_key)]
+
+    monkeypatch.setattr("src.api.integration.stage_integration_urls", fake_stage)
+    app.dependency_overrides[get_storage_provider] = lambda: storage
+    app.dependency_overrides[get_job_service] = lambda: jobs
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        integration_api_key="test-integration-key"
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/app/image/filter-requests",
+        json={
+            "notifyUrl": "https://client.test/callback",
+            "images": [{"objectKey": "a.jpg", "imageUrl": "https://obs.test/a.jpg"}],
+        },
+        headers={"x-api-key": "test-integration-key"},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 201
+    assert response.json()["taskId"] == "job_integration"
+
+
+def test_url_job_rejects_duplicate_customer_object_keys() -> None:
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        integration_api_key="test-integration-key"
+    )
+    client = TestClient(app)
+    response = client.post(
+        "/api/v1/integration/jobs",
+        json={
+            "notifyUrl": "https://client.test/callback",
+            "images": [
+                {"objectKey": "same.jpg", "imageUrl": "https://obs.test/a.jpg"},
+                {"objectKey": "same.jpg", "imageUrl": "https://obs.test/b.jpg"},
+            ],
+        },
+        headers={"X-API-Key": "test-integration-key"},
+    )
+    app.dependency_overrides.clear()
     assert response.status_code == 422
 
 

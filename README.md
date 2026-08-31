@@ -28,30 +28,24 @@ GET  /api/v1/integration/jobs/{job_id}/results
 
 ## 第三方平台接入
 
-第三方平台的小批量兼容接入可继续使用以下接口：
+第三方平台使用公网图片 URL 创建小批量任务：
 
 ```text
 POST /api/v1/integration/jobs
-Content-Type: multipart/form-data
+Content-Type: application/json
 X-API-Key: <服务端 API Key>
 ```
 
-正式模式固定执行“本地预检 → 完工分类 → 后端双路由过滤 → 整批过滤完成 → 逐图美化规划与本地执行 → 美化后 OpenCLIP 向量 → 素材库匹配 → 继承素材组人工标签”。分类、过滤和美化规划使用已配置的 AI API Key；素材入库、向量匹配和最终标签不调用大模型。历史阶段开关字段只为兼容保留，传 `false` 会被拒绝。成功后立即返回 `201` 及 `job_id`，任务进入后台异步处理；进入终态后由 `control` Worker 主动向 `callback_url` 推送结果。
+正式模式固定执行“下载 URL 图片 → 本地预检 → 完工分类 → 后端双路由过滤 → 整批过滤完成 → 逐图美化规划与本地执行 → 美化后 OpenCLIP 向量 → 素材库匹配 → 继承素材组人工标签”。服务端使用已配置的正式标准，客户只需提供 `notifyUrl` 以及每张图片的 `objectKey`、`imageUrl`。成功后立即返回 `201`、`job_id` 和兼容字段 `taskId`；进入终态后由 `control` Worker按客户协议回调 `results`。
 
 ```bash
 curl -X POST http://127.0.0.1:18000/api/v1/integration/jobs \
   -H "X-API-Key: <服务端 API Key>" \
-  -F "files=@product-front.jpg;type=image/jpeg" \
-  -F "files=@product-side.jpg;type=image/jpeg" \
-  -F "completion_profile=<完工分类标准 ID>" \
-  -F "completed_filter_profile=<完工过滤标准 ID>" \
-  -F "non_completed_filter_profile=<非完工过滤标准 ID>" \
-  -F "beautify_profile=<标准管理中的美化标准 ID>" \
-  -F "callback_url=https://client.example.com/api/image-callback" \
-  -F "max_selected=10"
+  -H "Content-Type: application/json" \
+  -d '{"notifyUrl":"https://client.example.com/api/image-callback","images":[{"objectKey":"customer/image-1.jpg","imageUrl":"https://obs.example.com/image-1.jpg"}]}'
 ```
 
-任务进入 `completed`、`partial_failed`、`failed` 或 `cancelled` 后，服务会向 `callback_url` 发送 `POST application/json`。回调至少投递一次，接收方应按 `event_id` 或 `job_id + completed_at` 幂等处理，并校验 `X-Callback-Timestamp` 与 `X-Callback-Signature`；HTTP 2xx 表示接收成功。生产环境必须配置 `CALLBACK_ALLOWED_HOSTS` 和 `CALLBACK_SIGNING_SECRET`。`GET /api/v1/integration/jobs/{job_id}` 与 `/results` 保留为补偿和排障接口，不再要求客户端持续轮询。所有调用必须由对方平台的服务端发起，不能在浏览器或 App 中暴露 `X-API-Key`。
+任务进入 `completed`、`partial_failed`、`failed` 或 `cancelled` 后，服务会向 `notifyUrl` 发送 `POST application/json`，回调体为 `results[].objectKey/decision/score/enhancedUrl/enhancedMd5/aiTags`。回调至少投递一次，接收方应按 `X-Callback-Id` 幂等处理，并可校验 `X-Callback-Timestamp` 与 `X-Callback-Signature`；HTTP 2xx 表示接收成功。`GET /api/v1/integration/jobs/{job_id}` 与 `/results` 保留为补偿和排障接口。原 multipart 请求仍可通过同一路径或 `/api/v1/integration/file-jobs` 使用。
 
 50 至 500 张的大批量任务使用 `POST /api/v1/upload-batches` 一次登记文件，再将文件并发直传对象存储，最后调用 `POST /api/v1/upload-batches/{batch_id}/complete`。任务内部每 25 张分片投递，用户仍只看到一个任务。结果接口支持 `limit`、`offset` 和 `decision`，默认每页 50 张。
 

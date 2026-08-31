@@ -66,6 +66,7 @@ class CallbackJob:
     status: str
     completed_at: datetime
     attempts: int
+    callback_contract: str = "native_v1"
 
 
 class ImageJobRepository:
@@ -1498,6 +1499,7 @@ class ImageJobRepository:
                 ImageJob.status,
                 ImageJob.completed_at,
                 ImageJob.callback_attempts,
+                ImageJob.callback_contract,
             )
         )
         row = result.one_or_none()
@@ -1511,6 +1513,7 @@ class ImageJobRepository:
             status=row.status,
             completed_at=row.completed_at,
             attempts=row.callback_attempts,
+            callback_contract=row.callback_contract,
         )
 
     async def mark_callback_delivered(self, job_id: str) -> None:

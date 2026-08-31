@@ -39,6 +39,7 @@ class ImageItemStatus(StrEnum):
 
 class CreateJobImage(BaseModel):
     object_key: str = Field(min_length=1, max_length=1024)
+    client_object_key: str | None = Field(default=None, min_length=1, max_length=200)
 
     @field_validator("object_key")
     @classmethod
@@ -86,6 +87,7 @@ class CreateImageJobRequest(BaseModel):
     max_selected: int = Field(default=10, ge=1)
     images: list[CreateJobImage] = Field(min_length=1)
     callback_url: HttpUrl | None = None
+    callback_contract: Literal["native_v1", "customer_v1"] = "native_v1"
 
     @model_validator(mode="after")
     def require_processing_configuration(self):
@@ -215,6 +217,7 @@ class ImageBeautifyResponse(BaseModel):
 
 class ImageJobResultItemResponse(BaseModel):
     image_id: str
+    client_object_key: str | None = None
     decision: ImageItemStatus
     score: float | None = None
     original_object_key: str

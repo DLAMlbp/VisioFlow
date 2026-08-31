@@ -13,6 +13,7 @@ from src.services.jobs.callback_security import (
 )
 from src.services.jobs.callbacks import (
     CallbackDeliveryError,
+    CustomerCallbackPayload,
     ImageJobCallbackPayload,
     build_job_callback_payload,
     post_job_callback,
@@ -117,6 +118,75 @@ async def test_callback_payload_contains_terminal_status_and_download_urls() -> 
     assert payload.status == "completed"
     assert payload.images[0].original_url.startswith("https://storage.test/")
     assert payload.images[0].enhanced_url.startswith("https://storage.test/")
+
+
+@pytest.mark.asyncio
+async def test_customer_callback_uses_object_key_and_customer_field_names() -> None:
+    completed_at = datetime(2026, 8, 29, 8, 30, tzinfo=UTC)
+    item = ImageItem(
+        id="img_customer",
+        job_id="job_customer",
+        object_key="uploads/internal.jpg",
+        client_object_key="img/2026/08/customer.jpg",
+        status="selected",
+    )
+    item.result = ImageResult(
+        id="res_customer",
+        image_id=item.id,
+        decision="selected",
+        final_score=86.5,
+        enhanced_object_key="enhanced/customer.jpg",
+        reject_codes_json=[],
+        reasons_json=["处理完成"],
+    )
+    job = ImageJob(
+        id="job_customer",
+        status="completed",
+        filter_profile_id="completion_routing_v1",
+        beautify_profile_id="integration_natural_v1",
+        similarity_profile_id="library_similarity_v2",
+        enhance_level=1,
+        max_selected=1,
+        total_count=1,
+        processed_count=1,
+        selected_count=1,
+        rejected_count=0,
+        not_selected_count=0,
+        completed_at=completed_at,
+        items=[item],
+    )
+    callback_job = CallbackJob(
+        id=job.id,
+        callback_url="https://client.test/callback",
+        status=job.status,
+        completed_at=completed_at,
+        attempts=1,
+        callback_contract="customer_v1",
+    )
+
+    payload = await build_job_callback_payload(
+        callback_job,
+        FakeCallbackRepository(job),
+        Settings(_env_file=None, s3_presign_expires_seconds=600),
+        FakeCallbackStorage(),
+    )
+
+    assert isinstance(payload, CustomerCallbackPayload)
+    body = payload.model_dump(mode="json", by_alias=True)
+    assert "event_id" not in body
+    assert body == {
+        "results": [
+            {
+                "objectKey": "img/2026/08/customer.jpg",
+                "decision": "selected",
+                "score": 86.5,
+                "enhancedUrl": "https://storage.test/enhanced/customer.jpg?expires=600",
+                "enhancedMd5": None,
+                "aiTags": [],
+            }
+        ],
+        "errorMessage": "",
+    }
 
 
 @pytest.mark.asyncio

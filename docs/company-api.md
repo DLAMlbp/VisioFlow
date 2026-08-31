@@ -29,31 +29,25 @@ CALLBACK_ALLOWED_HOSTS=client.example.com
 
 ```http
 POST /api/v1/integration/jobs
-Content-Type: multipart/form-data
+Content-Type: application/json
 X-API-Key: <INTEGRATION_API_KEY>
 ```
 
-创建请求必须包含 `callback_url`。该地址由调用方服务端提供，任务进入终态后由图片服务的 `control` Worker 主动 `POST` 完整结果。
+创建请求必须包含 `notifyUrl` 和 `images[].objectKey/imageUrl`。图片服务下载 URL 图片并保存客户 `objectKey`，任务进入终态后由 `control` Worker 按客户协议回调完整结果。
 
-正式模式固定执行“AI 完工分类 -> 完工/施工分支过滤 -> 整批过滤完成 -> AI 规划并本地美化 -> OpenCLIP 图片向量与大模型内容特征混合匹配 -> 继承素材组人工标签”。大模型内容特征只用于候选比对，不会直接生成正式标签。`completion_profile`、`completed_filter_profile`、`non_completed_filter_profile` 和 `beautify_profile` 均为必填。`processing_standards` 仅作为旧请求字段保留，不再允许用于创建新任务。历史阶段开关字段仍保留在 v1，但传 `false` 会返回参数错误。
+正式模式固定执行“下载 URL 图片 -> AI 完工分类 -> 完工/施工分支过滤 -> 整批过滤完成 -> AI 规划并本地美化 -> OpenCLIP 图片向量与大模型内容特征混合匹配 -> 继承素材组人工标签”。客户不需要传内部处理标准，服务端使用已配置的正式标准。
 
 ```bash
 curl -X POST "https://<service-host>/api/v1/integration/jobs" \
   -H "X-API-Key: $INTEGRATION_API_KEY" \
-  -F "files=@product-front.jpg;type=image/jpeg" \
-  -F "files=@product-side.png;type=image/png" \
-  -F "completion_profile=<完工分类标准 ID>" \
-  -F "completed_filter_profile=<完工过滤标准 ID>" \
-  -F "non_completed_filter_profile=<非完工过滤标准 ID>" \
-  -F "beautify_profile=<标准管理中的美化标准 ID>" \
-  -F "callback_url=https://client.example.com/api/image-callback" \
-  -F "max_selected=10"
+  -H "Content-Type: application/json" \
+  -d '{"notifyUrl":"https://client.example.com/api/image-callback","images":[{"objectKey":"customer/image-1.jpg","imageUrl":"https://obs.example.com/image-1.jpg"}]}'
 ```
 
-支持 JPEG、PNG、WebP；单张不超过 25 MB；单次最多 50 张；整个 HTTP 请求不超过 512 MB。成功返回 HTTP 201：
+支持 JPEG、PNG、WebP；单张不超过 25 MB；单次最多 50 张。成功返回 HTTP 201：
 
 ```json
-{"job_id":"job_xxx","status":"queued","total":2}
+{"job_id":"job_xxx","status":"queued","total":1,"ok":true,"code":"","message":"","taskId":"job_xxx"}
 ```
 
 ## 2. 接收结果回调
@@ -69,23 +63,21 @@ X-Callback-Timestamp: <Unix 秒时间戳>
 X-Callback-Signature: sha256=<HMAC 十六进制摘要>
 ```
 
-回调体包含 `event_id`、`job_id`、`status`、`completed_at`、结果计数、限时下载地址和逐图结果。签名原文为 UTF-8 字节串 `<timestamp>.<raw_request_body>`，使用双方共享密钥计算 HMAC-SHA256；接收方应使用常量时间比较，并拒绝时间戳偏差过大的请求。接收方返回任意 HTTP 2xx 即视为成功。非 2xx、连接失败或超时会指数退避重试，默认最多 5 次。回调采用至少一次投递语义，接收方必须按 `event_id` 幂等处理。
+回调体包含客户原始 `objectKey`、判定、0～100 质量分、美化图临时地址和标签。签名原文为 UTF-8 字节串 `<timestamp>.<raw_request_body>`，使用双方共享密钥计算 HMAC-SHA256。接收方返回任意 HTTP 2xx 即视为成功；非 2xx、连接失败或超时会指数退避重试，默认最多 5 次。接收方应按 `X-Callback-Id` 幂等处理。
 
 ```json
 {
-  "event_id": "job_xxx:2026-08-29T08:30:00+00:00",
-  "event": "image.job.finished",
-  "job_id": "job_xxx",
-  "status": "completed",
-  "completed_at": "2026-08-29T08:30:00Z",
-  "total": 2,
-  "selected": 1,
-  "rejected": 1,
-  "not_selected": 0,
-  "result_total": 2,
-  "download_expires_in": 900,
-  "images": [],
-  "error_message": null
+  "results": [
+    {
+      "objectKey": "customer/image-1.jpg",
+      "decision": "selected",
+      "score": 86.5,
+      "enhancedUrl": "https://storage.example.com/signed-result",
+      "enhancedMd5": null,
+      "aiTags": ["客厅", "采光好"]
+    }
+  ],
+  "errorMessage": ""
 }
 ```
 

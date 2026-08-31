@@ -264,7 +264,10 @@ restore_previous_release() {
   "${compose[@]}" up -d --remove-orphans
 }
 
-if [[ "$api_image" != "-" ]]; then set_env_value API_IMAGE "$api_image"; fi
+if [[ "$api_image" != "-" ]]; then
+  set_env_value API_IMAGE "$api_image"
+  set_env_value API_GATEWAY_IMAGE "$api_image"
+fi
 if [[ "$web_image" != "-" ]]; then set_env_value WEB_IMAGE "$web_image"; fi
 
 echo "Rollback snapshot: $rollback_file"
@@ -286,7 +289,7 @@ healthy=0
 for _attempt in $(seq 1 18); do
   web_ok=0
   api_ok=0
-  exited_services="$("${compose[@]}" ps --status exited --services | grep -v '^minio-init$' || true)"
+  exited_services="$("${compose[@]}" ps --status exited --services | grep -vE '^(minio-init|migrate)$' || true)"
   restarting_services="$("${compose[@]}" ps --status restarting --services 2>/dev/null || true)"
   if curl -fsS --max-time 5 "http://127.0.0.1:${web_port}/" >/dev/null; then web_ok=1; fi
   if "${compose[@]}" exec -T api python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5)" >/dev/null 2>&1; then api_ok=1; fi
@@ -414,10 +417,12 @@ try {
                 Write-Host "`n== Backend tests ==" -ForegroundColor Cyan
                 $testsPath = Join-Path $repoRoot "tests"
                 $frontendPath = Join-Path $repoRoot "frontend"
+                $scriptsPath = Join-Path $repoRoot "scripts"
                 & docker run --rm `
                     --volume "${testsPath}:/app/tests:ro" `
                     --volume "${frontendPath}:/app/frontend:ro" `
-                    $apiImage sh -c "pip install --no-cache-dir pytest==8.4.2 pytest-asyncio==1.2.0 httpx==0.28.1 && pytest -q"
+                    --volume "${scriptsPath}:/app/scripts:ro" `
+                    $apiImage sh -c "pip install --no-cache-dir pytest==8.4.2 pytest-asyncio==1.2.0 httpx==0.28.1 && python -m pytest -q"
                 Assert-ExitCode "Backend tests"
             }
             & docker push $apiImage

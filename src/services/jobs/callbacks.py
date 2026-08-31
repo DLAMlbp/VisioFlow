@@ -7,7 +7,7 @@ import urllib.request
 from datetime import datetime
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.core.config import Settings
 from src.repositories.jobs import CallbackJob, ImageJobRepository
@@ -45,12 +45,35 @@ class ImageJobCallbackPayload(BaseModel):
     error_message: str | None = None
 
 
+class CustomerCallbackResult(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
+    object_key: str = Field(serialization_alias="objectKey")
+    decision: str
+    score: float | None = None
+    enhanced_url: str | None = Field(default=None, serialization_alias="enhancedUrl")
+    enhanced_md5: str | None = Field(default=None, serialization_alias="enhancedMd5")
+    ai_tags: list[str] = Field(default_factory=list, serialization_alias="aiTags")
+
+
+class CustomerCallbackPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
+    event_id: str = Field(exclude=True)
+    event: str = Field(default="image.job.finished", exclude=True)
+    results: list[CustomerCallbackResult]
+    error_message: str = Field(default="", serialization_alias="errorMessage")
+
+
+JobCallbackPayload = ImageJobCallbackPayload | CustomerCallbackPayload
+
+
 async def build_job_callback_payload(
     callback_job: CallbackJob,
     repository: ImageJobRepository,
     settings: Settings,
     storage: StorageProvider,
-) -> ImageJobCallbackPayload:
+) -> JobCallbackPayload:
     result = await ImageJobService(repository, settings).get_results(
         callback_job.id,
         limit=max(1, settings.max_images_per_job),
@@ -75,6 +98,22 @@ async def build_job_callback_payload(
             )
         )
 
+    if callback_job.callback_contract == "customer_v1":
+        return CustomerCallbackPayload(
+            event_id=f"{callback_job.id}:{callback_job.completed_at.isoformat()}",
+            results=[
+                CustomerCallbackResult(
+                    object_key=image.client_object_key or image.original_object_key,
+                    decision=image.decision.value,
+                    score=image.score,
+                    enhanced_url=image.enhanced_url,
+                    ai_tags=image.ai_tags.tags if image.ai_tags is not None else [],
+                )
+                for image in images
+            ],
+            error_message=_job_error_message(callback_job.status) or "",
+        )
+
     return ImageJobCallbackPayload(
         event_id=f"{callback_job.id}:{callback_job.completed_at.isoformat()}",
         job_id=callback_job.id,
@@ -93,7 +132,7 @@ async def build_job_callback_payload(
 
 async def post_job_callback(
     callback_url: str,
-    payload: ImageJobCallbackPayload,
+    payload: JobCallbackPayload,
     *,
     timeout_seconds: int,
     signing_secret: str = "",
@@ -107,7 +146,7 @@ async def post_job_callback(
         )
     except CallbackConfigurationError as exc:
         raise CallbackDeliveryError(str(exc)) from exc
-    body = payload.model_dump_json(exclude_none=False).encode("utf-8")
+    body = payload.model_dump_json(exclude_none=False, by_alias=True).encode("utf-8")
     timestamp = str(int(time.time()))
     signature = _callback_signature(signing_secret, timestamp, body)
     await asyncio.to_thread(

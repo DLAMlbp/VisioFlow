@@ -28,6 +28,7 @@ class ImageItem(Base):
     analysis_object_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
     original_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    client_object_key: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
     content_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
     file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
 

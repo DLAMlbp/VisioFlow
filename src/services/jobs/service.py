@@ -81,8 +81,15 @@ class ImageJobService:
             try:
                 validate_callback_destination(
                     str(payload.callback_url),
-                    production=self.settings.app_env == "production",
-                    allowed_hosts=self.settings.callback_allowed_hosts,
+                    production=(
+                        self.settings.app_env == "production"
+                        and payload.callback_contract != "customer_v1"
+                    ),
+                    allowed_hosts=(
+                        ""
+                        if payload.callback_contract == "customer_v1"
+                        else self.settings.callback_allowed_hosts
+                    ),
                 )
             except CallbackConfigurationError as exc:
                 raise InvalidJobRequest(str(exc)) from exc
@@ -164,12 +171,14 @@ class ImageJobService:
             not_selected_count=0,
             dispatch_cursor=0,
             callback_url=str(payload.callback_url) if payload.callback_url else None,
+            callback_contract=payload.callback_contract,
         )
         items = [
             ImageItem(
                 id=build_image_id(),
                 job_id=job.id,
                 object_key=image.object_key,
+                client_object_key=image.client_object_key,
                 status=ImageItemStatus.QUEUED.value,
             )
             for image in payload.images
@@ -289,6 +298,7 @@ class ImageJobService:
             images.append(
                 ImageJobResultItemResponse(
                     image_id=item.id,
+                    client_object_key=item.client_object_key,
                     decision=ImageItemStatus(result.decision),
                     score=result.final_score,
                     original_object_key=item.object_key,

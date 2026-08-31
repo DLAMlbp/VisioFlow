@@ -63,6 +63,9 @@ class ImageJob(Base):
     dispatch_cursor: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     callback_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    callback_contract: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="native_v1", server_default="native_v1"
+    )
     callback_status: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     callback_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     callback_next_attempt_at: Mapped[datetime | None] = mapped_column(

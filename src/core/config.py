@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     api_key: str = ""
     integration_api_key: str = ""
     integration_max_files: int = 50
+    integration_url_download_timeout_seconds: int = 20
+    integration_url_download_concurrency: int = 4
+    integration_completion_profile: str = "completion_renovation_v1"
+    integration_completed_filter_profile: str = "standard_completed_v1"
+    integration_non_completed_filter_profile: str = "standard_non_completed_v1"
+    integration_beautify_profile: str = "integration_natural_v1"
     callback_timeout_seconds: int = 15
     callback_max_attempts: int = 5
     callback_retry_base_seconds: int = 5
