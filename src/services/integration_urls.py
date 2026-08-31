@@ -3,19 +3,28 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
-import mimetypes
 import socket
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from io import BytesIO
+from urllib.parse import urlsplit
+
+from PIL import Image, UnidentifiedImageError
 
 from src.core.config import Settings
 from src.schemas.integration import IntegrationUrlImage
 from src.schemas.uploads import PresignedUploadRequest
+from src.services.images.metadata import (
+    detect_image_content_type,
+    pillow_format_to_content_type,
+)
 from src.services.storage.interfaces import StorageProvider
-from src.services.storage.keys import build_upload_object_key, validate_upload_request
+from src.services.storage.keys import (
+    CONTENT_TYPE_EXTENSIONS,
+    build_upload_object_key,
+    validate_upload_request,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,13 +49,22 @@ async def stage_integration_urls(
 
     async def stage_one(image: IntegrationUrlImage) -> StagedIntegrationImage:
         async with semaphore:
-            data, content_type, filename = await asyncio.to_thread(
-                _download_image,
-                str(image.image_url),
-                max_bytes=settings.max_image_size_mb * 1024 * 1024,
-                timeout_seconds=max(1, settings.integration_url_download_timeout_seconds),
-                allowed_content_types=settings.allowed_image_content_types,
-            )
+            try:
+                data = await asyncio.to_thread(
+                    _download_image,
+                    str(image.image_url),
+                    max_bytes=settings.max_image_size_mb * 1024 * 1024,
+                    timeout_seconds=max(1, settings.integration_url_download_timeout_seconds),
+                )
+                content_type = _validated_image_content_type(
+                    data,
+                    settings.allowed_image_content_types,
+                )
+            except IntegrationUrlDownloadError as exc:
+                raise IntegrationUrlDownloadError(
+                    f"图片 URL 下载失败（objectKey={image.object_key}）：{exc}"
+                ) from exc
+            filename = f"remote-image{CONTENT_TYPE_EXTENSIONS[content_type]}"
             validate_upload_request(
                 PresignedUploadRequest(
                     filename=filename,
@@ -107,8 +125,7 @@ def _download_image(
     *,
     max_bytes: int,
     timeout_seconds: int,
-    allowed_content_types: set[str],
-) -> tuple[bytes, str, str]:
+) -> bytes:
     _validate_public_http_url(image_url)
     request = urllib.request.Request(
         image_url,
@@ -123,14 +140,6 @@ def _download_image(
             content_length = response.headers.get("Content-Length")
             if content_length and int(content_length) > max_bytes:
                 raise IntegrationUrlDownloadError("图片大小超过服务限制")
-            content_type = response.headers.get_content_type().lower()
-            filename = _filename_from_url(response.geturl() or image_url, content_type)
-            if content_type not in allowed_content_types:
-                guessed_type, _ = mimetypes.guess_type(filename)
-                if guessed_type in allowed_content_types:
-                    content_type = guessed_type
-                else:
-                    raise IntegrationUrlDownloadError(f"不支持的远程图片类型：{content_type}")
             chunks: list[bytes] = []
             total = 0
             while True:
@@ -147,19 +156,26 @@ def _download_image(
         raise IntegrationUrlDownloadError(f"图片 URL 返回 HTTP {exc.code}") from exc
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
         raise IntegrationUrlDownloadError(f"图片 URL 无法下载：{exc}") from exc
-    return b"".join(chunks), content_type, filename
+    return b"".join(chunks)
 
 
-def _filename_from_url(image_url: str, content_type: str) -> str:
-    filename = Path(unquote(urlsplit(image_url).path)).name[:255]
-    if filename:
-        return filename
-    extension = {
-        "image/jpeg": ".jpg",
-        "image/png": ".png",
-        "image/webp": ".webp",
-    }.get(content_type, "")
-    return f"remote-image{extension}"
+def _validated_image_content_type(
+    image_bytes: bytes,
+    allowed_content_types: set[str],
+) -> str:
+    content_type = detect_image_content_type(image_bytes)
+    if content_type not in allowed_content_types:
+        raise IntegrationUrlDownloadError("远程文件不是支持的 JPEG、PNG 或 WebP 图片")
+    try:
+        with Image.open(BytesIO(image_bytes)) as image:
+            image.verify()
+        with Image.open(BytesIO(image_bytes)) as image:
+            decoded_content_type = pillow_format_to_content_type(image.format)
+    except (Image.DecompressionBombError, OSError, UnidentifiedImageError) as exc:
+        raise IntegrationUrlDownloadError("远程图片无法解码或已损坏") from exc
+    if decoded_content_type != content_type:
+        raise IntegrationUrlDownloadError("远程图片格式与文件内容不一致")
+    return content_type
 
 
 def _validate_public_http_url(url: str) -> None:
