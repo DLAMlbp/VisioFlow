@@ -19,6 +19,14 @@ from src.models.image_similarity_match import ImageSimilarityMatch
 logger = logging.getLogger(__name__)
 
 
+def terminal_job_status(*, total_count: int, failed_count: int) -> str:
+    if total_count > 0 and failed_count >= total_count:
+        return "failed"
+    if failed_count:
+        return "partial_failed"
+    return "completed"
+
+
 @dataclass(frozen=True)
 class JobConfig:
     id: str
@@ -942,8 +950,13 @@ class ImageJobRepository:
             prompt_version=prompt_version,
             status="pending",
         )
+        routing_mode = await self.session.scalar(
+            select(ImageJob.routing_mode).where(ImageJob.id == item.job_id)
+        )
         await self.session.execute(
-            update(ImageJob).where(ImageJob.id == item.job_id).values(status="tagging")
+            update(ImageJob)
+            .where(ImageJob.id == item.job_id)
+            .values(status="processing" if routing_mode == "streaming_v2" else "tagging")
         )
         await self.session.commit()
         return True
@@ -970,7 +983,7 @@ class ImageJobRepository:
         formal_tags = bool((tag_json or {}).get("tags"))
         formal_categories = bool((tag_json or {}).get("categories"))
         candidate_tags = bool((tag_json or {}).get("candidate_tags"))
-        if routing_mode == "completion" and provider != "library" and (
+        if routing_mode in {"completion", "streaming_v2"} and provider != "library" and (
             formal_tags or formal_categories or candidate_tags
         ):
             emit_metric(
@@ -1084,6 +1097,7 @@ class ImageJobRepository:
             .where(
                 ImageJob.id == job_id,
                 ImageJob.cancel_requested_at.is_(None),
+                ImageJob.routing_mode != "streaming_v2",
                 ImageJob.status == "processing",
             )
             .values(status="ranking")
@@ -1404,10 +1418,17 @@ class ImageJobRepository:
         if counters is None or counters.processed_count < counters.total_count:
             return False
 
-        failed_item = await self.session.scalar(
-            select(ImageItem.id)
-            .where(ImageItem.job_id == job_id, ImageItem.status == "failed")
-            .limit(1)
+        failed_count = int(
+            await self.session.scalar(
+                select(func.count())
+                .select_from(ImageItem)
+                .where(ImageItem.job_id == job_id, ImageItem.status == "failed")
+            )
+            or 0
+        )
+        final_status = terminal_job_status(
+            total_count=counters.total_count,
+            failed_count=failed_count,
         )
         result = await self.session.execute(
             update(ImageJob)
@@ -1419,7 +1440,7 @@ class ImageJobRepository:
                 ),
             )
             .values(
-                status="partial_failed" if failed_item is not None else "completed",
+                status=final_status,
                 completed_at=func.now(),
             )
         )

@@ -19,7 +19,7 @@ from src.services.images.tagging import (
     _safe_error_message,
 )
 
-COMPLETION_PROMPT_VERSION = "renovation_completion_v2"
+COMPLETION_PROMPT_VERSION = "renovation_completion_v3"
 
 
 class CompletionFacts(BaseModel):
@@ -207,6 +207,12 @@ class CompletionVisionService:
 不得把非实拍、室外、效果图、图纸或无关图片判断为完工；
 范围太小、严重模糊、过暗或遮挡导致主要空间不可判断时，is_assessable 必须为 false。
 只有无明显施工、硬装完整、有成品空间证据且可使用或展示时，才可输出 completed。
+
+reason 必须先描述图片中直接可见的主体、部位和状态，再说明判断边界。
+无法确定的物体或用途必须使用“疑似”，不得把测量、施工或验收用途写成确定事实。
+拍摄范围不足时，只能说明“现有信息不足以判断整体装修是否完成”；证据不足不等于确认尚未完工。
+除非有明确视觉证据，不得使用“虚假”“不是真实室内”“未完成装修”等确定性结论，
+也不得照抄“真实室内成品空间”等抽象分类措辞替代可见依据。
 
 只返回以下 JSON：
 {{

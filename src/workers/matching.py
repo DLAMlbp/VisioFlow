@@ -75,7 +75,7 @@ async def _generate_image_embedding(image_id: str) -> None:
             MatchTaskPublisher().publish(item.id)
 
 
-@celery_app.task(name="image.match_library", queue="embedding", max_retries=1)
+@celery_app.task(name="image.match_library", queue="matching", max_retries=1)
 def match_image_library(image_id: str) -> None:
     asyncio.run(_match_image_library(image_id))
 

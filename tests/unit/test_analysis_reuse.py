@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.services.images.tagging import TagPayload, TaggingOutcome
+from src.repositories.jobs import ImageJobRepository
 from src.workers import analysis
 
 
@@ -114,3 +115,31 @@ async def test_analysis_recognizes_beautified_image_without_writing_model_tags(
     assert _Repository.saved["model_name"] == "gpt-5.6-sol"
     assert _Repository.saved["duration_ms"] == 800
     assert published == ["img_test"]
+
+
+@pytest.mark.asyncio
+async def test_analysis_embedding_join_claims_match_exactly_once() -> None:
+    class Result:
+        def __init__(self, rowcount: int) -> None:
+            self.rowcount = rowcount
+
+    class Session:
+        def __init__(self) -> None:
+            self.rowcounts = iter((1, 0))
+            self.commits = 0
+
+        async def execute(self, _statement):
+            return Result(next(self.rowcounts))
+
+        async def commit(self) -> None:
+            self.commits += 1
+
+    session = Session()
+    repository = ImageJobRepository(session)  # type: ignore[arg-type]
+
+    analysis_claim = await repository.claim_match_if_ready("img_test")
+    embedding_claim = await repository.claim_match_if_ready("img_test")
+
+    assert analysis_claim is True
+    assert embedding_claim is False
+    assert session.commits == 2

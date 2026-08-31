@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -82,14 +82,16 @@ class LibraryRepository:
         )
         return result.scalar_one_or_none()
 
-    async def find_duplicate_asset(
-        self, asset_id: str, sha256: str, phash: str
+    async def find_reusable_exact_asset(
+        self, asset_id: str, sha256: str
     ) -> LibraryAsset | None:
         result = await self.session.execute(
             select(LibraryAsset).where(
                 LibraryAsset.id != asset_id,
-                or_(LibraryAsset.sha256 == sha256, LibraryAsset.phash == phash),
-                LibraryAsset.status.in_(("pending", "active", "disabled")),
+                LibraryAsset.sha256 == sha256,
+                LibraryAsset.status.in_(("active", "disabled")),
+                LibraryAsset.analysis_json.is_not(None),
+                LibraryAsset.embedding.is_not(None),
             )
         )
         return result.scalars().first()

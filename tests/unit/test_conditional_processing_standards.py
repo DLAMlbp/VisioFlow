@@ -9,6 +9,7 @@ from src.schemas.jobs import CreateImageJobRequest
 from src.services.images.processing_vision import ProcessingVisionService
 from src.services.managed_profiles import ManagedProfileService, standards_from_snapshots
 from src.services.profiles import ProcessingStandard
+from src.services.profiles import ProfileNotFoundError
 
 
 def _standard(standard_id: str, priority: int) -> ProcessingStandard:
@@ -130,39 +131,46 @@ async def test_ai_selection_rejects_multiple_matching_standards(
     assert outcome.payload is None
 
 
-def test_new_job_rejects_legacy_conditional_standard_configuration() -> None:
-    with pytest.raises(ValidationError, match="必须配置完工分类"):
-        CreateImageJobRequest(
-            processing_standards=["std_high", "std_low"],
-            beautify_profile="bty_natural",
-            images=[{"object_key": "uploads/test/image.jpg"}],
-        )
+def test_new_job_accepts_paired_filter_standards() -> None:
+    payload = CreateImageJobRequest(
+        processing_standards=["std_high", "std_low"],
+        beautify_profile="bty_natural",
+        images=[{"object_key": "uploads/test/image.jpg"}],
+    )
+
+    assert payload.processing_standards == ["std_high", "std_low"]
 
 
-def test_job_requires_completion_routing_configuration() -> None:
-    with pytest.raises(ValidationError, match="必须配置完工分类"):
-        CreateImageJobRequest(images=[{"object_key": "uploads/test/image.jpg"}])
+def test_job_request_does_not_require_manual_standard_selection() -> None:
+    payload = CreateImageJobRequest(
+        beautify_profile="bty_natural",
+        images=[{"object_key": "uploads/test/image.jpg"}],
+    )
+
+    assert payload.processing_standards == []
 
 
-def test_standard_preview_keeps_activation_and_filter_rules() -> None:
+def test_standard_preview_keeps_classification_and_filter_rules() -> None:
     compiled = ManagedProfileService(SimpleNamespace(), Settings()).compile_standard(
-        activation_rule="图片主体是商品",
+        classification_rule="图片主体是商品",
         filter_rule="过滤严重模糊或主体遮挡的图片",
         priority=300,
     )
 
-    assert compiled.config["activation_rule"] == "图片主体是商品"
+    assert compiled.config["classification_rule"] == "图片主体是商品"
     assert compiled.config["filter_rule"] == "过滤严重模糊或主体遮挡的图片"
     assert compiled.config["priority"] == 300
+    assert compiled.config["is_fallback"] is False
 
 
-def test_new_job_requires_route_and_beautify_profile() -> None:
-    with pytest.raises(ValidationError, match="必须配置完工分类"):
-        CreateImageJobRequest(
-            processing_standards=["std_product"],
-            beautify_profile="bty_natural",
-            images=[{"object_key": "uploads/test/image.jpg"}],
-        )
+def test_new_job_accepts_one_legacy_standard_field_but_requires_beautify_profile() -> None:
+    payload = CreateImageJobRequest(
+        processing_standards=["std_product"],
+        beautify_profile="bty_natural",
+        images=[{"object_key": "uploads/test/image.jpg"}],
+    )
+
+    assert payload.processing_standards == ["std_product"]
 
     with pytest.raises(ValidationError, match="请选择独立的美化标准"):
         CreateImageJobRequest(
@@ -215,3 +223,38 @@ async def test_ai_selection_rejects_zero_matching_standards(
 
     assert outcome.status == "failed"
     assert outcome.payload is None
+
+
+@pytest.mark.asyncio
+async def test_active_standard_resolution_requires_exactly_one_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    regular = _standard("std_regular", 100)
+    fallback = _standard("std_fallback", 10).model_copy(update={"is_fallback": True})
+    rows = [
+        SimpleNamespace(
+            id=profile.id,
+            name=profile.name,
+            version=profile.version,
+            instruction=profile.classification_rule,
+            config_json=profile.model_dump(mode="json"),
+        )
+        for profile in (regular, fallback)
+    ]
+
+    async def list_rows(_self, _profile_type, *, include_inactive=False):
+        assert include_inactive is False
+        return rows
+
+    monkeypatch.setattr(ManagedProfileService, "list", list_rows)
+    resolved = await ManagedProfileService(
+        SimpleNamespace(), Settings()
+    ).resolve_standards(require_fallback=True)
+
+    assert [profile.id for profile, _ in resolved] == ["std_regular", "std_fallback"]
+
+    rows[1].config_json["is_fallback"] = False
+    with pytest.raises(ProfileNotFoundError, match="必须且只能设置一条兜底分类"):
+        await ManagedProfileService(SimpleNamespace(), Settings()).resolve_standards(
+            require_fallback=True
+        )

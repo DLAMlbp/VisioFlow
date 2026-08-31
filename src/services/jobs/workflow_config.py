@@ -4,7 +4,6 @@ from src.core.config import Settings
 
 REQUIRED_WORKFLOW_SWITCHES: tuple[tuple[str, str], ...] = (
     ("completion_routing_enabled", "完工分类与双路由过滤"),
-    ("batch_filter_barrier_enabled", "整批过滤完成屏障"),
     ("post_filter_beautify_plan_enabled", "过滤后 AI 美化规划"),
     ("library_image_only_matching_enabled", "图片向量与大模型内容特征混合匹配"),
     ("library_only_tags_enabled", "仅继承素材库人工标签"),

@@ -9,7 +9,7 @@ from src.models.image_item import ImageItem
 from src.models.image_job import ImageJob
 from src.models.image_metric import ImageMetric
 from src.models.image_result import ImageResult
-from src.repositories.jobs import JobProgressSnapshot
+from src.repositories.jobs import JobProgressSnapshot, terminal_job_status
 from src.schemas.jobs import CreateImageJobRequest
 from src.services.jobs.service import (
     ImageJobService,
@@ -97,6 +97,12 @@ def make_payload(image_count: int = 2) -> CreateImageJobRequest:
     )
 
 
+def test_terminal_job_status_distinguishes_all_failed_and_partial_failed() -> None:
+    assert terminal_job_status(total_count=3, failed_count=3) == "failed"
+    assert terminal_job_status(total_count=3, failed_count=1) == "partial_failed"
+    assert terminal_job_status(total_count=3, failed_count=0) == "completed"
+
+
 @pytest.mark.asyncio
 async def test_create_job_persists_job_and_image_items() -> None:
     repository = FakeJobRepository()
@@ -133,12 +139,10 @@ async def test_create_job_snapshots_managed_profiles(
     repository = FakeJobRepository()
     repository.session = object()
 
-    async def resolve_routing_profiles(_self, **_kwargs):
-        return (
-            (
-                SimpleNamespace(id="completion_renovation_v1"),
-                {"id": "completion_renovation_v1", "instruction": "completion"},
-            ),
+    async def resolve_standards(_self, profile_ids=None, *, require_fallback=False):
+        assert profile_ids is None
+        assert require_fallback is True
+        return [
             (
                 SimpleNamespace(id="std_finished"),
                 {"id": "std_finished", "instruction": "standard-std_finished"},
@@ -147,12 +151,12 @@ async def test_create_job_snapshots_managed_profiles(
                 SimpleNamespace(id="std_unfinished"),
                 {"id": "std_unfinished", "instruction": "standard-std_unfinished"},
             ),
-        )
+        ]
 
     async def resolve_beautify(_self, profile_id: str):
         return object(), {"id": profile_id, "instruction": "自然提亮", "config": {}}
 
-    monkeypatch.setattr(ManagedProfileService, "resolve_routing_profiles", resolve_routing_profiles)
+    monkeypatch.setattr(ManagedProfileService, "resolve_standards", resolve_standards)
     monkeypatch.setattr(ManagedProfileService, "resolve_beautify", resolve_beautify)
     monkeypatch.setattr(ProfileLoader, "get_similarity_profile", lambda *_args: object())
     service = ImageJobService(
@@ -167,6 +171,8 @@ async def test_create_job_snapshots_managed_profiles(
     response = await service.create_job(payload)
 
     stored = repository.jobs[response.job_id]
+    assert stored.routing_mode == "streaming_v2"
+    assert stored.max_selected == len(payload.images)
     assert stored.similarity_profile_id == "library_similarity_v1"
     assert stored.processing_standard_snapshots is not None
     assert [item["id"] for item in stored.processing_standard_snapshots] == [
@@ -178,34 +184,37 @@ async def test_create_job_snapshots_managed_profiles(
 
 
 @pytest.mark.asyncio
-async def test_create_job_fails_closed_when_required_workflow_switch_is_disabled() -> None:
+async def test_streaming_job_does_not_require_legacy_batch_barrier() -> None:
     service = ImageJobService(
         repository=FakeJobRepository(),
         settings=Settings(batch_filter_barrier_enabled=False),
     )
 
-    with pytest.raises(InvalidJobRequest, match="整批过滤完成屏障"):
-        await service.create_job(make_payload())
+    response = await service.create_job(make_payload())
+
+    assert service.repository.jobs[response.job_id].routing_mode == "streaming_v2"
 
 
 @pytest.mark.asyncio
-async def test_create_job_snapshots_completion_and_both_filter_branches(
+async def test_legacy_request_fields_do_not_override_all_active_standards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository = FakeJobRepository()
     repository.session = object()
 
-    async def resolve_routing_profiles(_self, **_kwargs):
-        return (
-            (SimpleNamespace(id="cmp"), {"id": "cmp", "version": 2}),
+    async def resolve_standards(_self, profile_ids=None, *, require_fallback=False):
+        assert profile_ids is None
+        assert require_fallback is True
+        return [
             (SimpleNamespace(id="done"), {"id": "done", "version": 3}),
             (SimpleNamespace(id="work"), {"id": "work", "version": 4}),
-        )
+            (SimpleNamespace(id="other"), {"id": "other", "version": 5}),
+        ]
 
     async def resolve_beautify(_self, profile_id: str):
         return object(), {"id": profile_id, "instruction": "自然提亮", "config": {}}
 
-    monkeypatch.setattr(ManagedProfileService, "resolve_routing_profiles", resolve_routing_profiles)
+    monkeypatch.setattr(ManagedProfileService, "resolve_standards", resolve_standards)
     monkeypatch.setattr(ManagedProfileService, "resolve_beautify", resolve_beautify)
     monkeypatch.setattr(ProfileLoader, "get_similarity_profile", lambda *_args: object())
     service = ImageJobService(
@@ -226,10 +235,13 @@ async def test_create_job_snapshots_completion_and_both_filter_branches(
     response = await service.create_job(payload)
     stored = repository.jobs[response.job_id]
 
-    assert stored.routing_mode == "completion"
-    assert stored.completion_profile_snapshot["version"] == 2
-    assert stored.completed_filter_profile_snapshot["version"] == 3
-    assert stored.non_completed_filter_profile_snapshot["version"] == 4
+    assert stored.routing_mode == "streaming_v2"
+    assert [snapshot["id"] for snapshot in stored.processing_standard_snapshots] == [
+        "done",
+        "work",
+        "other",
+    ]
+    assert stored.completion_profile_snapshot is None
 
 
 @pytest.mark.asyncio
@@ -351,15 +363,13 @@ async def test_create_job_rejects_missing_managed_profile(
     async def missing_standards(*_args, **_kwargs):
         raise ProfileNotFoundError("筛选标准不存在或已停用: missing")
 
-    monkeypatch.setattr(ManagedProfileService, "resolve_routing_profiles", missing_standards)
+    monkeypatch.setattr(ManagedProfileService, "resolve_standards", missing_standards)
     service = ImageJobService(
         repository=repository,
         settings=Settings(max_images_per_job=50, profiles_directory="profiles"),
         profile_loader=ProfileLoader(Settings(profiles_directory="profiles")),
     )
     payload = make_payload()
-    payload.filter_route.completed_filter_profile = "missing"
-
     with pytest.raises(InvalidJobRequest, match="筛选标准不存在"):
         await service.create_job(payload)
 

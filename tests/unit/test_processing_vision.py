@@ -14,10 +14,13 @@ from src.services.images.beautify_planning import (
     build_stored_plan,
 )
 from src.services.images.processing_vision import (
+    FilterDecision,
     ProcessingVisionPayload,
     ProcessingVisionService,
     _strict_processing_response_format,
+    compatibility_route_label,
     content_from_processing_json,
+    precise_filter_reason,
 )
 from src.services.managed_profiles import ManagedProfileService
 from src.services.profiles import BeautifyProfile, ProcessingStandard
@@ -253,6 +256,41 @@ def test_filter_requires_dimensions() -> None:
     payload["filter"]["dimensions"] = []
     with pytest.raises(ValidationError):
         ProcessingVisionPayload.model_validate(payload)
+
+
+def test_precise_filter_reason_uses_failed_dimension_and_valid_context() -> None:
+    decision = FilterDecision.model_validate({
+        "decision": "reject",
+        "reason": "图片总体不符合要求",
+        "confidence": 0.98,
+        "dimensions": [
+            {
+                "dimension": "构图、角度与空间感维度",
+                "passed": False,
+                "reason": "画面仅展示局部地面，缺少周边空间信息。",
+            },
+            {
+                "dimension": "内容相关性维度",
+                "passed": True,
+                "reason": "空鼓锤和标注能够确认这是瓦工验收节点。",
+            },
+        ],
+    })
+
+    assert precise_filter_reason(
+        decision,
+        standard_name="非完工图片过滤",
+    ) == (
+        "按「非完工图片过滤」标准，未通过「构图、角度与空间感」要求："
+        "画面仅展示局部地面，缺少周边空间信息。"
+        "已识别的有效内容：空鼓锤和标注能够确认这是瓦工验收节点。"
+    )
+
+
+def test_builtin_standard_ids_restore_compatibility_route_labels() -> None:
+    assert compatibility_route_label("standard_completed_v1") == "completed"
+    assert compatibility_route_label("standard_non_completed_v1") == "non_completed"
+    assert compatibility_route_label("custom_standard") is None
 
 
 def test_legacy_content_helper_is_read_only_compatible() -> None:

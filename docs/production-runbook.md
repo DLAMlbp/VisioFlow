@@ -66,15 +66,15 @@ curl --fail --silent https://<service-host>/health/ready
 
 ## 发布验证
 
-- 创建一套仅含测试图片的正式任务，确认两套启动规则必须且只能命中一套。
-- 核对结果页与历史记录的 `selected`、`rejected`、`not_selected` 数量一致。
-- 确认完工分类与分支过滤都完成后才启动美化规划。
-- 确认所有 `non_completed` 子类型都进入非完工过滤分支；不得在完工分类阶段直接淘汰，且“未完工”本身不得成为非完工分支的拒绝理由。
+- 确认启用中的过滤标准恰好有一条兜底分类，再创建仅含测试图片的正式任务。
+- 核对新任务自动冻结全部启用标准，`routing_mode` 为 `streaming_v2`，且不会产生 `not_selected`。
+- 确认一张图片过滤通过后立即启动美化规划，不等待同批其他图片完成过滤。
+- 确认分类阶段仅选择标准而不淘汰图片；图片是否保留必须由命中标准的过滤规则决定。
 - 确认素材匹配使用美化图向量和大模型内容特征，最终标签仍只来自素材组人工标签。
-- 确认 `worker-vision` 和 `worker-beautify-plan` 健康，旧 `worker-analysis` 只服务历史任务。
+- 确认 `worker-classification`、`worker-filter`、`worker-beautify-plan`、`worker-analysis`、`worker-embedding` 和 `worker-matching` 均健康；`worker-vision` 仅消费历史消息。
 - 确认回调包含时间戳和 HMAC 签名，接收方完成签名、时效和幂等校验。
 - 检查 API、控制 Worker、各处理 Worker 和 beat 的有限量日志，不输出完整环境变量或密钥。
-- 检查结构化日志中的 `completion_requests_total`、`routed_filter_requests_total`、`filter_barrier_trigger_total`、`beautify_plan_failures_total`、`enhancement_failures_total`、`embedding_failures_total`、`library_match_total` 和 `forbidden_llm_tag_write_total`；最后一项必须为零。
+- 检查结构化日志中的 `filter_classification_requests_total`、`routed_filter_requests_total`、`beautify_plan_failures_total`、`enhancement_failures_total`、`embedding_failures_total`、`library_match_total` 和 `forbidden_llm_tag_write_total`；新任务不应出现 `filter_barrier_trigger_total`，最后一项必须为零。
 
 ## 回滚
 

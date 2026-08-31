@@ -54,6 +54,8 @@ async def _rank_job(job_id: str) -> None:
         job = await repository.get_config(job_id)
         if job is None or job.cancel_requested_at is not None:
             return
+        if getattr(job, "routing_mode", "legacy") == "streaming_v2":
+            return
         filtered = await repository.list_filtered_items_by_score(job_id)
         selected = filtered[: job.max_selected]
         not_selected = filtered[job.max_selected :]

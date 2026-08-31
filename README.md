@@ -4,7 +4,7 @@
 
 生产发布、健康验证、回滚和备份要求见 [`docs/production-runbook.md`](docs/production-runbook.md)。
 
-面向装修图片的完工分类、双路由过滤、统一美化与素材库相似匹配服务。
+面向装修图片的统一过滤标准、统一美化与素材库相似匹配服务。
 
 ## 已实现接口
 
@@ -36,19 +36,15 @@ Content-Type: multipart/form-data
 X-API-Key: <服务端 API Key>
 ```
 
-正式模式固定执行“本地预检 → 完工分类 → 后端双路由过滤 → 整批过滤完成 → 逐图美化规划与本地执行 → 美化后 OpenCLIP 向量 → 素材库匹配 → 继承素材组人工标签”。分类、过滤和美化规划使用已配置的 AI API Key；素材入库、向量匹配和最终标签不调用大模型。历史阶段开关字段只为兼容保留，传 `false` 会被拒绝。成功后立即返回 `201` 及 `job_id`，任务进入后台异步处理；进入终态后由 `control` Worker 主动向 `callback_url` 推送结果。
+正式模式固定执行“本地预检 → AI 在全部启用标准中唯一分类 → 只执行该标准的对应过滤规则 → 单图通过后立即美化 → 美化后并行生成 OpenCLIP 向量与大模型内容特征 → 素材库匹配 → 继承素材组人工标签”。分类、过滤、美化规划和内容特征识别使用已配置的 AI API Key；图片向量和最终标签不由大模型生成。新任务自动冻结全部启用标准，且必须配置恰好一条兜底分类；`processing_standards`、历史路由字段和 `max_selected` 只为旧客户端兼容，新任务会忽略。成功后立即返回 `201` 及 `job_id`，每张图片独立连续处理；进入终态后由 `control` Worker 主动向 `callback_url` 推送结果。
 
 ```bash
 curl -X POST http://127.0.0.1:18000/api/v1/integration/jobs \
   -H "X-API-Key: <服务端 API Key>" \
   -F "files=@product-front.jpg;type=image/jpeg" \
   -F "files=@product-side.jpg;type=image/jpeg" \
-  -F "completion_profile=<完工分类标准 ID>" \
-  -F "completed_filter_profile=<完工过滤标准 ID>" \
-  -F "non_completed_filter_profile=<非完工过滤标准 ID>" \
   -F "beautify_profile=<标准管理中的美化标准 ID>" \
-  -F "callback_url=https://client.example.com/api/image-callback" \
-  -F "max_selected=10"
+  -F "callback_url=https://client.example.com/api/image-callback"
 ```
 
 任务进入 `completed`、`partial_failed`、`failed` 或 `cancelled` 后，服务会向 `callback_url` 发送 `POST application/json`。回调至少投递一次，接收方应按 `event_id` 或 `job_id + completed_at` 幂等处理，并校验 `X-Callback-Timestamp` 与 `X-Callback-Signature`；HTTP 2xx 表示接收成功。生产环境必须配置 `CALLBACK_ALLOWED_HOSTS` 和 `CALLBACK_SIGNING_SECRET`。`GET /api/v1/integration/jobs/{job_id}` 与 `/results` 保留为补偿和排障接口，不再要求客户端持续轮询。所有调用必须由对方平台的服务端发起，不能在浏览器或 App 中暴露 `X-API-Key`。
@@ -61,9 +57,9 @@ curl -X POST http://127.0.0.1:18000/api/v1/integration/jobs \
 
 本地预处理只拦截无法解码、超过系统资源上限或完全重复的文件，不再执行固定的业务过滤规则。
 
-图片会计算清晰度、曝光、对比度和噪声评分，全部归一化为 0-100。视觉 AI 先独立判定完工状态，后端据此只调用完工或非完工过滤标准；凡是不满足全部完工事实的结果，包括施工中、证据不足、非实拍或无关内容，统一进入非完工过滤分支，不在分类阶段直接淘汰。非完工分支不得把“施工中、半成品、没有完工效果”本身作为拒绝理由，只能按该分支的有效过滤条件决定是否保留。整批图片结束过滤后，AI 再根据统一美化标准为每张通过图片规划安全参数。AI 失败时任务明确失败并可重试，不会回退到内置业务标准。通过本地策略校验的参数由本地执行器应用，输出 JPEG 存储在 `enhanced/` 前缀下。
+图片会计算清晰度、曝光、对比度和噪声评分，全部归一化为 0-100。视觉 AI 先只根据任务冻结的全部标准评估图片，并唯一命中一条标准；零条明确标准命中时进入唯一兜底分类。分类阶段不执行过滤。后端锁定命中的标准后，AI 仅执行该标准的“对应过滤规则”决定是否保留。单张图片过滤通过后立即按统一美化标准规划并执行，不等待同批其他图片。AI 调用或协议失败时只将当前图片标记失败并可重试，不会阻塞批次或回退到内置业务标准。输出 JPEG 存储在 `enhanced/` 前缀下。
 
-分支过滤请求优先使用严格 JSON Schema，强制模型返回完整的 `standard_selection` 和 `filter`。兼容接口若以 HTTP 400/422 拒绝严格 Schema，系统会自动退回 `json_object`；返回 JSON 缺字段或字段类型不合法时，默认携带错误字段和脱敏后的上次输出纠错一次。最终仍不合法时图片明确失败，诊断写入 `image_items.ai_processing_diagnostic_json`，业务结果字段不会混入异常响应正文。纠错会产生一次额外 AI 调用，可通过 `AI_PROCESSING_SCHEMA_MAX_RETRIES` 调整；`AI_PROCESSING_MAX_COMPLETION_TOKENS` 控制响应上限，`AI_PROCESSING_STRICT_JSON_SCHEMA_ENABLED` 控制是否优先使用严格 Schema。
+分类与过滤请求优先使用严格 JSON Schema：分类阶段强制模型返回全部候选标准评估及唯一命中的 `standard_selection`，过滤阶段只接收命中标准的 `filter_rule`。兼容接口若以 HTTP 400/422 拒绝严格 Schema，系统会自动退回 `json_object`；返回 JSON 缺字段或字段类型不合法时，默认携带错误字段和脱敏后的上次输出纠错一次。最终仍不合法时图片明确失败，诊断写入 `image_items.ai_processing_diagnostic_json`，业务结果字段不会混入异常响应正文。纠错会产生一次额外 AI 调用，可通过 `AI_PROCESSING_SCHEMA_MAX_RETRIES` 调整；`AI_PROCESSING_MAX_COMPLETION_TOKENS` 控制响应上限，`AI_PROCESSING_STRICT_JSON_SCHEMA_ENABLED` 控制是否优先使用严格 Schema。
 
 需要相似匹配时，系统会从美化后图片并行生成 OpenCLIP 向量和大模型结构化内容特征。OpenCLIP 先通过 pgvector 召回已启用素材组中的候选参考图，再按 70% 图片向量和 30% 内容特征计算综合分。图片分和综合分均达到 60% 时继承命中素材组的整套人工标签；内容特征缺失或候选不够明确时进入复核，低可信候选返回未匹配。大模型只描述场景、空间、状态、主体、对象、属性、OCR 和视角，不直接生成正式业务标签；匹配失败不影响图片保留和交付。
 
@@ -94,7 +90,7 @@ python scripts/calibrate_library_matching.py labels.csv --target-precision 0.97 
 
 脚本输出每组 Top-1、Top-2、Top-5 和 margin，并且只会在至少 300 组正样本、300 组负样本确实达到目标精确率与复核召回率时给出 `auto_threshold`、`review_threshold` 和 `min_margin` 建议；样本不足或达不到目标时返回 `insufficient_evidence`，不会把测试目标当成生产准确率。
 
-完工分类、完工过滤、非完工过滤与美化标准分开管理。后端根据独立分类结果选择唯一过滤分支，整批过滤结束后才启动统一美化。美化后图片通过 OpenCLIP 图片向量和大模型内容特征混合匹配素材库；自动匹配成功后继承素材组人工标签，待复核和未匹配结果的正式标签为空。任务创建时冻结全部标准快照，后续编辑不会改变历史任务。
+标准管理只维护“过滤标准”和“美化标准”。每条过滤标准包含标准名称、分类标准、对应过滤规则和兜底标记，分类与过滤一一对应；启用中的标准必须且只能有一条兜底分类。任务自动冻结全部启用标准，逐图选择唯一标准，过滤通过后立即启动统一美化。美化后图片通过 OpenCLIP 图片向量和大模型内容特征混合匹配素材库；自动匹配成功后只继承素材组人工标签，待复核和未匹配结果的正式标签为空。后续编辑不会改变历史任务。
 
 ## 本地启动
 

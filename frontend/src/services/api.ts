@@ -51,9 +51,17 @@ interface BackendResultImage {
     reason: string;
   }>;
   completion: JobResults["images"][number]["completion"] | null;
+  classification: JobResults["images"][number]["classification"] | null;
   beautify: JobResults["images"][number]["beautify"] | null;
   routed_filter_profile_id: string | null;
   routed_filter_profile_version: number | null;
+  pipeline_stage: string;
+  classification_status: string | null;
+  filter_status: string | null;
+  beautify_status: string | null;
+  analysis_status: string | null;
+  embedding_status: string | null;
+  match_status: string | null;
 }
 
 interface BackendJobResults {
@@ -126,14 +134,14 @@ export const api = {
       },
       createUploadBatch(payload: {
         filter_route?: CreateJobRequest["filter_route"];
-        processing_standards: string[];
+        processing_standards?: string[];
         beautify_profile?: string;
         filter_enabled: boolean;
         beautify_enabled: boolean;
         similarity_enabled: boolean;
         unmatched_standard_policy: "reject";
         enhance_level: number;
-        max_selected: number;
+        max_selected?: number;
         files: PresignRequest[];
       }): Promise<UploadBatchRegistration> {
         return request<UploadBatchRegistration>("/api/v1/upload-batches", {
@@ -201,9 +209,17 @@ export const api = {
             activation_reason: image.activation_reason,
             audit_dimensions: image.audit_dimensions ?? [],
             completion: image.completion ?? undefined,
+            classification: image.classification ?? undefined,
             beautify: image.beautify ?? undefined,
             routed_filter_profile_id: image.routed_filter_profile_id,
-            routed_filter_profile_version: image.routed_filter_profile_version
+            routed_filter_profile_version: image.routed_filter_profile_version,
+            pipeline_stage: image.pipeline_stage,
+            classification_status: image.classification_status,
+            filter_status: image.filter_status,
+            beautify_status: image.beautify_status,
+            analysis_status: image.analysis_status,
+            embedding_status: image.embedding_status,
+            match_status: image.match_status
           }));
         return {
           job_id: result.job_id,
@@ -241,9 +257,10 @@ export const api = {
         return request<ProcessingStandard>(`/api/v1/processing-standards/${profileId}`);
       },
       previewProcessingStandard(payload: {
-        activation_rule: string;
+        classification_rule: string;
         filter_rule: string;
         priority: number;
+        is_fallback: boolean;
       }): Promise<ProfilePreview> {
         return request<ProfilePreview>("/api/v1/processing-standards/preview", {
           method: "POST",

@@ -232,6 +232,21 @@ async def _recover_stalled_images() -> None:
                 )
             ).scalars()
         )
+        unqueued_streaming_beautify = list(
+            (
+                await session.execute(
+                    select(ImageItem.id)
+                    .join(ImageJob, ImageJob.id == ImageItem.job_id)
+                    .where(
+                        ImageJob.routing_mode == "streaming_v2",
+                        ImageJob.cancel_requested_at.is_(None),
+                        ImageItem.status == "filtered",
+                        ImageItem.beautify_plan_status.is_(None),
+                        ImageItem.updated_at < cutoff,
+                    )
+                )
+            ).scalars()
+        )
         completed_beautify_plans = list(
             (
                 await session.execute(
@@ -313,6 +328,7 @@ async def _recover_stalled_images() -> None:
                 await session.execute(
                     select(ImageJob.id).where(
                         ImageJob.cancel_requested_at.is_(None),
+                        ImageJob.routing_mode != "streaming_v2",
                         ImageJob.status == "processing",
                         ~ImageJob.items.any(ImageItem.status.in_(("queued", "analyzing"))),
                         ImageJob.items.any(ImageItem.status == "filtered"),
@@ -324,6 +340,11 @@ async def _recover_stalled_images() -> None:
             job_id
             for job_id in barrier_candidates
             if await repository.claim_ranking_if_filtering_complete(job_id)
+        ]
+        recovered_streaming_beautify = [
+            image_id
+            for image_id in unqueued_streaming_beautify
+            if await repository.queue_beautify_plan(image_id)
         ]
         newly_queued_matches = [
             image_id
@@ -345,7 +366,11 @@ async def _recover_stalled_images() -> None:
         completion=[*classifying, *pending_completion],
         routed_processing=[*routed_processing, *pending_routed_processing],
         ranking=[*ranking_jobs, *barrier_ranking_jobs],
-        beautify_plan=[*beautify_planning, *pending_beautify_plans],
+        beautify_plan=[
+            *beautify_planning,
+            *pending_beautify_plans,
+            *recovered_streaming_beautify,
+        ],
         enhancement=[*enhancing, *completed_beautify_plans],
         analysis=analyzing,
         embedding=embedding,

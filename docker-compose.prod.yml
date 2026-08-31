@@ -91,6 +91,18 @@ services:
     mem_limit: 768m
     cpus: 1.0
 
+  worker-classification:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q classification -l info --concurrency=2
+    mem_limit: 768m
+    cpus: 1.0
+
+  worker-filter:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q filtering -l info --concurrency=2
+    mem_limit: 768m
+    cpus: 1.0
+
   worker-beautify-plan:
     <<: *worker
     command: celery -A src.workers.celery_app worker -Q beautify_plan -l info --concurrency=2
@@ -116,6 +128,12 @@ services:
       WORKER_ROLE: embedding
     mem_limit: 2048m
     cpus: 1.5
+
+  worker-matching:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q matching -l info --concurrency=2
+    mem_limit: 768m
+    cpus: 1.0
 
   worker-library:
     <<: *worker

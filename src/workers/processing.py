@@ -14,6 +14,8 @@ from src.services.images.hard_filter import RejectCode
 from src.services.images.processing_vision import (
     PROCESSING_PROMPT_VERSION,
     ProcessingVisionService,
+    compatibility_route_label,
+    precise_filter_reason,
 )
 from src.services.images.quality import QualityEngine
 from src.services.images.vision_rate_limit import acquire_vision_rate_slot
@@ -39,7 +41,7 @@ class RoutedProcessingTask(Task):
     bind=True,
     base=RoutedProcessingTask,
     name="image.apply_routed_processing",
-    queue="vision",
+    queue="filtering",
     max_retries=3,
     default_retry_delay=10,
 )
@@ -91,7 +93,10 @@ async def _apply_routed_processing(image_id: str) -> None:
             standards=standards,
             unmatched_standard_policy="reject",
             image_context=_image_context(item),
-            route_label=item.completion_label,
+            route_label=(
+                item.completion_label
+                or compatibility_route_label(standards[0].id)
+            ),
             before_schema_retry=lambda: acquire_vision_rate_slot(settings),
         )
         if outcome.status != "completed" or outcome.payload is None:
@@ -125,10 +130,14 @@ async def _apply_routed_processing(image_id: str) -> None:
             error_message=None,
         )
         if outcome.payload.filter.rejected:
+            standard_name = standards[0].name or standards[0].description
             await repository.reject_item(
                 item,
                 [RejectCode.AI_FILTER_REJECTED],
-                reason=outcome.payload.filter.reason,
+                reason=precise_filter_reason(
+                    outcome.payload.filter,
+                    standard_name=standard_name,
+                ),
             )
             await _advance_after_preprocess(repository, item)
             return
@@ -139,7 +148,7 @@ async def _apply_routed_processing(image_id: str) -> None:
             item,
             final_score=final_score,
             reasons=[
-                f"完工分类：{completion_reason}",
+                f"图片分类：{completion_reason}",
                 f"后端路由：{standards[0].name or standards[0].description}",
                 f"AI 筛选：{outcome.payload.filter.reason}",
             ],
@@ -157,6 +166,9 @@ async def _mark_processing_failed(image_id: str) -> None:
 
 
 def _routed_snapshot(job, profile_id: str | None) -> dict[str, object] | None:
+    for snapshot in job.processing_standard_snapshots or []:
+        if str(snapshot.get("id") or "") == profile_id:
+            return snapshot
     if profile_id == job.completed_filter_profile_id:
         return job.completed_filter_profile_snapshot
     if profile_id == job.non_completed_filter_profile_id:

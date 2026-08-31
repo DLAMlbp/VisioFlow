@@ -19,12 +19,16 @@ class MetadataTaskPublisher:
 
 class CompletionTaskPublisher:
     def publish(self, image_id: str) -> None:
-        celery_app.send_task("image.classify_completion", args=[image_id], queue="vision")
+        celery_app.send_task(
+            "image.classify_completion", args=[image_id], queue="classification"
+        )
 
 
 class RoutedProcessingTaskPublisher:
     def publish(self, image_id: str) -> None:
-        celery_app.send_task("image.apply_routed_processing", args=[image_id], queue="vision")
+        celery_app.send_task(
+            "image.apply_routed_processing", args=[image_id], queue="filtering"
+        )
 
 
 class AnalysisTaskPublisher:
@@ -41,7 +45,7 @@ class EmbeddingTaskPublisher:
 
 class MatchTaskPublisher:
     def publish(self, image_id: str) -> None:
-        celery_app.send_task("image.match_library", args=[image_id], queue="embedding")
+        celery_app.send_task("image.match_library", args=[image_id], queue="matching")
 
 
 class LibraryAssetTaskPublisher:

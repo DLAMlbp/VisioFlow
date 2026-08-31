@@ -93,6 +93,141 @@ async def test_ranking_publishes_beautify_plans_before_enhancement(
 
 
 @pytest.mark.asyncio
+async def test_streaming_image_queues_beautify_while_another_image_is_filtering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    published: list[str] = []
+
+    class StreamingRepository:
+        other_image_status = "analyzing"
+
+        async def get_config(self, job_id: str):
+            return SimpleNamespace(
+                id=job_id,
+                routing_mode="streaming_v2",
+                cancel_requested_at=None,
+            )
+
+        async def queue_beautify_plan(self, image_id: str) -> bool:
+            assert self.other_image_status == "analyzing"
+            assert image_id == "img_ready"
+            return True
+
+        async def claim_ranking_if_filtering_complete(self, _job_id: str) -> bool:
+            raise AssertionError("streaming jobs must never enter batch ranking")
+
+    monkeypatch.setattr(
+        preprocess,
+        "BeautifyPlanTaskPublisher",
+        lambda: SimpleNamespace(publish=lambda image_id: published.append(image_id)),
+    )
+
+    await preprocess._advance_after_preprocess(
+        StreamingRepository(),
+        SimpleNamespace(job_id="job_stream", id="img_ready", status="filtered"),
+    )
+
+    assert published == ["img_ready"]
+
+
+@pytest.mark.asyncio
+async def test_streaming_failed_image_does_not_block_or_schedule_other_stages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    published: list[str] = []
+
+    class StreamingRepository:
+        async def get_config(self, job_id: str):
+            return SimpleNamespace(
+                id=job_id,
+                routing_mode="streaming_v2",
+                cancel_requested_at=None,
+            )
+
+        async def queue_beautify_plan(self, _image_id: str) -> bool:
+            raise AssertionError("failed images must not be beautified")
+
+    monkeypatch.setattr(
+        preprocess,
+        "BeautifyPlanTaskPublisher",
+        lambda: SimpleNamespace(publish=lambda image_id: published.append(image_id)),
+    )
+
+    await preprocess._advance_after_preprocess(
+        StreamingRepository(),
+        SimpleNamespace(job_id="job_stream", id="img_failed", status="failed"),
+    )
+
+    assert published == []
+
+
+@pytest.mark.asyncio
+async def test_streaming_job_never_runs_ranking_or_marks_not_selected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class StreamingRankRepository:
+        def __init__(self, _session) -> None:
+            pass
+
+        async def get_config(self, _job_id: str):
+            return SimpleNamespace(
+                routing_mode="streaming_v2",
+                cancel_requested_at=None,
+                max_selected=1,
+            )
+
+        async def list_filtered_items_by_score(self, _job_id: str):
+            raise AssertionError("streaming jobs must not query batch ranking candidates")
+
+    monkeypatch.setattr(control, "AsyncSessionLocal", lambda: _SessionContext())
+    monkeypatch.setattr(control, "ImageJobRepository", StreamingRankRepository)
+
+    await control._rank_job("job_stream")
+
+
+@pytest.mark.asyncio
+async def test_streaming_job_is_dispatched_to_preprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    published: list[str] = []
+
+    class StreamingDispatchRepository:
+        def __init__(self, _session) -> None:
+            pass
+
+        async def get_config(self, _job_id: str):
+            return SimpleNamespace(
+                routing_mode="streaming_v2",
+                cancel_requested_at=None,
+                dispatch_cursor=0,
+                total_count=1,
+            )
+
+        async def list_item_ids_for_dispatch(self, _job_id: str, *, offset: int, limit: int):
+            assert offset == 0
+            assert limit > 0
+            return ["img_stream"]
+
+        async def mark_preprocess_dispatched(self, image_ids: list[str]) -> None:
+            assert image_ids == ["img_stream"]
+
+        async def advance_dispatch_cursor(self, _job_id: str, cursor: int) -> None:
+            assert cursor == 1
+
+    monkeypatch.setattr(control, "AsyncSessionLocal", lambda: _SessionContext())
+    monkeypatch.setattr(control, "ImageJobRepository", StreamingDispatchRepository)
+    monkeypatch.setattr(
+        control,
+        "MetadataTaskPublisher",
+        lambda: SimpleNamespace(publish=lambda image_id: published.append(image_id)),
+    )
+
+    await control._dispatch_job("job_stream")
+
+    assert published == ["img_stream"]
+
+
+@pytest.mark.asyncio
 async def test_concurrent_barrier_attempts_publish_ranking_exactly_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -8,7 +8,7 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import Settings
@@ -112,27 +112,34 @@ class ManagedProfileService:
         return completion, branches[0], branches[1]
 
     async def resolve_standards(
-        self, profile_ids: list[str] | None = None
+        self,
+        profile_ids: list[str] | None = None,
+        *,
+        require_fallback: bool = False,
     ) -> list[tuple[ProcessingStandard, dict[str, object]]]:
         if profile_ids:
-            if len(profile_ids) != 2:
-                raise ProfileNotFoundError("每个任务必须选择两套互斥且完整覆盖的条件过滤标准")
+            if not 1 <= len(profile_ids) <= 20:
+                raise ProfileNotFoundError("每个任务支持 1 至 20 套分类过滤标准")
             if len(set(profile_ids)) != len(profile_ids):
-                raise ProfileNotFoundError("条件处理标准不能重复")
+                raise ProfileNotFoundError("过滤标准不能重复")
             rows: list[ProcessingProfile] = []
             for profile_id in profile_ids:
                 row = await self.get("standard", profile_id)
                 if row is None or row.status != "active":
-                    raise ProfileNotFoundError(f"条件处理标准不存在或已停用: {profile_id}")
+                    raise ProfileNotFoundError(f"过滤标准不存在或已停用: {profile_id}")
                 rows.append(row)
         else:
             rows = await self.list("standard")
-        if len(rows) != 2:
-            raise ProfileNotFoundError("请先配置且仅启用两套互斥、完整覆盖的条件过滤标准")
+        if not 1 <= len(rows) <= 20:
+            raise ProfileNotFoundError("请先配置 1 至 20 套启用中的分类过滤标准")
         resolved = [
             (ProcessingStandard.model_validate(row.config_json), self._snapshot(row))
             for row in rows
         ]
+        if require_fallback:
+            fallback_count = sum(profile.is_fallback for profile, _ in resolved)
+            if fallback_count != 1:
+                raise ProfileNotFoundError("启用中的过滤标准必须且只能设置一条兜底分类")
         return sorted(resolved, key=lambda entry: (-entry[0].priority, entry[0].id))
 
     async def create(
@@ -153,6 +160,8 @@ class ManagedProfileService:
         profile_id = f"{prefix}_{uuid4().hex}"
         candidate = {**config, "id": profile_id, "version": 1, "description": description.strip()}
         validated = self._validate(profile_type, candidate)
+        if profile_type == "standard" and validated.is_fallback:
+            await self._ensure_single_active_fallback()
         row = ProcessingProfile(
             id=profile_id,
             profile_type=profile_type,
@@ -195,6 +204,8 @@ class ManagedProfileService:
             "description": description.strip(),
         }
         validated = self._validate(profile_type, candidate)
+        if profile_type == "standard" and validated.is_fallback:
+            await self._ensure_single_active_fallback(exclude_profile_id=profile_id)
         row.name = name.strip()
         row.instruction = instruction.strip()
         row.description = description.strip()
@@ -217,7 +228,7 @@ class ManagedProfileService:
 
     async def compile(self, profile_type: ProfileType, instruction: str) -> CompiledProfile:
         if profile_type == "standard":
-            raise ManagedProfileError("条件过滤标准需要分别填写启动规则和过滤规则")
+            raise ManagedProfileError("过滤标准需要分别填写分类标准和过滤规则")
         if profile_type == "completion":
             description = instruction.strip()[:500]
             profile = CompletionProfile(
@@ -251,20 +262,24 @@ class ManagedProfileService:
     def compile_standard(
         self,
         *,
-        activation_rule: str,
         filter_rule: str,
         priority: int,
+        classification_rule: str | None = None,
+        activation_rule: str | None = None,
+        is_fallback: bool = False,
     ) -> CompiledStandard:
+        rule = (classification_rule or activation_rule or "").strip()
         description = (
-            f"当{activation_rule.strip()}时启用，并按对应过滤规则判断。"
+            f"分类为“{rule}”时，执行与其一一对应的过滤规则。"
         )[:500]
         candidate = ProcessingStandard(
             id="preview",
             version=1,
             description=description,
-            activation_rule=activation_rule.strip(),
+            classification_rule=rule,
             filter_rule=filter_rule.strip(),
             priority=priority,
+            is_fallback=is_fallback,
         )
         return CompiledStandard(
             description=description,
@@ -284,6 +299,18 @@ class ManagedProfileService:
             return ProcessingStandard.model_validate(config)
         except ValidationError as exc:
             raise ManagedProfileError("标准参数超出允许范围") from exc
+
+    async def _ensure_single_active_fallback(
+        self, *, exclude_profile_id: str | None = None
+    ) -> None:
+        await self.session.execute(
+            select(func.pg_advisory_xact_lock(func.hashtext("processing_standard_fallback")))
+        )
+        for row in await self.list("standard"):
+            if row.id == exclude_profile_id:
+                continue
+            if bool(row.config_json.get("is_fallback")):
+                raise ManagedProfileError("启用中的过滤标准只能设置一条兜底分类")
 
     @staticmethod
     def _snapshot(row: ProcessingProfile) -> dict[str, object]:
@@ -346,7 +373,7 @@ def legacy_standard_from_snapshots(
         id="legacy_standard",
         version=1,
         description="历史任务兼容标准",
-        activation_rule="始终启用这套历史处理标准",
+        classification_rule="始终选中这套历史处理标准",
         filter_rule=filter_rule,
     )
 
@@ -358,7 +385,7 @@ def passthrough_standard() -> ProcessingStandard:
         name="不执行条件筛选",
         version=1,
         description="跳过业务条件筛选",
-        activation_rule="始终启用",
+        classification_rule="始终选中",
         filter_rule="保留图片并继续后续处理",
         priority=10000,
     )

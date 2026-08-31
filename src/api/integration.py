@@ -50,7 +50,7 @@ async def create_integration_job(
     callback_url: Annotated[str, Form(min_length=1)],
     beautify_profile: Annotated[str | None, Form(min_length=1)] = None,
     processing_standards: Annotated[
-        str | None, Form(description="逗号分隔的两套互斥且完整覆盖的过滤标准 ID")
+        str | None, Form(description="兼容字段；新任务自动使用全部启用标准")
     ] = None,
     completion_profile: Annotated[str | None, Form(min_length=1)] = None,
     completed_filter_profile: Annotated[str | None, Form(min_length=1)] = None,
@@ -81,12 +81,11 @@ async def create_integration_job(
         completed_filter_profile,
         non_completed_filter_profile,
     )
-    if not all(route_values):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="新任务必须同时提供完工分类、完工过滤和非完工过滤标准",
-        )
-
+    standard_ids = [
+        value.strip()
+        for value in (processing_standards or "").split(",")
+        if value.strip()
+    ]
     uploaded_keys: list[str] = []
     try:
         image_keys: list[str] = []
@@ -117,11 +116,7 @@ async def create_integration_job(
                 if all(route_values)
                 else None
             ),
-            processing_standards=[
-                value.strip()
-                for value in (processing_standards or "").split(",")
-                if value.strip()
-            ],
+            processing_standards=standard_ids,
             filter_profile=filter_profile,
             beautify_profile=beautify_profile,
             filter_enabled=filter_enabled,

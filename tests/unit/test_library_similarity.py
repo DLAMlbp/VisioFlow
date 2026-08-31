@@ -44,6 +44,27 @@ def test_close_candidates_require_review_without_final_tags() -> None:
     assert result.candidates[0]["tags"] == ["完工", "厨房"]
 
 
+def test_same_reference_image_prefers_the_broader_tag_set() -> None:
+    result = decide_similarity(
+        candidates=[
+            _candidate("ast_narrow", ["日常", "新房"], 0.91, 0.90, sha256="same-image"),
+            _candidate(
+                "ast_broad",
+                ["日常", "新房", "精装房", "旧房", "改建"],
+                0.90,
+                0.89,
+                sha256="same-image",
+            ),
+        ],
+        settings=_policy().model_copy(update={"similarity_min_margin": 0.05}),
+    )
+
+    assert result.decision == "matched"
+    assert result.matched_asset_id == "ast_broad"
+    assert result.tags == ["日常", "新房", "精装房", "旧房", "改建"]
+    assert "标签范围更广" in result.message
+
+
 def test_missing_content_features_require_review_without_final_tags() -> None:
     result = decide_similarity(
         candidates=[_candidate("ast_1", ["施工", "水电"], 0.78, None)],
@@ -126,10 +147,11 @@ def _candidate(
     tags: list[str],
     image_score: float,
     content_score: float | None,
+    sha256: str | None = None,
 ) -> ScoredCandidate:
     group = LibraryAssetGroup(id=f"grp_{asset_id}", tags=tags, tag_key="\x1f".join(tags), status="active")
     asset = LibraryAsset(id=asset_id, original_object_key=f"uploads/{asset_id}.jpg",
-        group_id=group.id, group=group, status="active")
+        group_id=group.id, group=group, status="active", sha256=sha256)
     policy = _policy()
     return ScoredCandidate(
         asset=asset,
