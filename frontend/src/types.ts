@@ -56,7 +56,7 @@ export interface PresignResponse {
 
 export interface CreateJobRequest {
   filter_route?: CompletionFilterRoute;
-  processing_standards: string[];
+  processing_standards?: string[];
   beautify_profile?: string;
   filter_enabled: boolean;
   beautify_enabled: boolean;
@@ -64,7 +64,7 @@ export interface CreateJobRequest {
   similarity_profile: string;
   unmatched_standard_policy: "reject";
   enhance_level: number;
-  max_selected: number;
+  max_selected?: number;
   images: Array<{ object_key: string }>;
   callback_url?: string;
 }
@@ -225,9 +225,23 @@ export interface ResultImage {
     reason_codes: string[];
     review_required: boolean;
   };
+  classification?: {
+    standard_id: string;
+    standard_name: string;
+    confidence: number;
+    reason: string;
+    review_required: boolean;
+  };
   beautify?: BeautifyAudit;
   routed_filter_profile_id?: string | null;
   routed_filter_profile_version?: number | null;
+  pipeline_stage: string;
+  classification_status?: string | null;
+  filter_status?: string | null;
+  beautify_status?: string | null;
+  analysis_status?: string | null;
+  embedding_status?: string | null;
+  match_status?: string | null;
 }
 
 export interface JobResults {
@@ -265,6 +279,7 @@ export interface ProfileOption {
   version?: number;
   status?: string;
   editable?: boolean;
+  is_fallback?: boolean | null;
 }
 
 export type ProcessingProfileType = "filter" | "beautify" | "completion";
@@ -278,17 +293,19 @@ export interface ProcessingProfile extends ProfileOption {
 
 export interface ProcessingStandard extends ProfileOption {
   profile_type: "standard";
-  activation_rule: string;
+  classification_rule: string;
   filter_rule: string;
   priority: number;
+  is_fallback: boolean;
   version: number;
 }
 
 export interface SaveProcessingStandard {
   name: string;
-  activation_rule: string;
+  classification_rule: string;
   filter_rule: string;
   priority: number;
+  is_fallback: boolean;
   description: string;
   expected_version?: number;
 }

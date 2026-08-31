@@ -78,6 +78,8 @@ services:
     <<: *worker
     image: ${API_GATEWAY_IMAGE:?API_GATEWAY_IMAGE must be a versioned image reference}
     command: celery -A src.workers.celery_app worker -Q control -l info --concurrency=1
+    environment:
+      WORKER_ROLE: control
     mem_limit: 384m
     cpus: 0.5
 
@@ -90,6 +92,18 @@ services:
   worker-vision:
     <<: *worker
     command: celery -A src.workers.celery_app worker -Q vision -l info --concurrency=2
+    mem_limit: 768m
+    cpus: 1.0
+
+  worker-classification:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q classification -l info --concurrency=2
+    mem_limit: 768m
+    cpus: 1.0
+
+  worker-filter:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q filtering -l info --concurrency=2
     mem_limit: 768m
     cpus: 1.0
 
@@ -119,6 +133,12 @@ services:
     mem_limit: 2048m
     cpus: 1.5
 
+  worker-matching:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q matching -l info --concurrency=2
+    mem_limit: 768m
+    cpus: 1.0
+
   worker-library:
     <<: *worker
     command: celery -A src.workers.celery_app worker -Q library -l info --concurrency=1
@@ -135,6 +155,8 @@ services:
     <<: *app
     image: ${API_GATEWAY_IMAGE:?API_GATEWAY_IMAGE must be a versioned image reference}
     command: celery -A src.workers.celery_app beat -l info
+    environment:
+      WORKER_ROLE: beat
     depends_on:
       migrate:
         condition: service_completed_successfully

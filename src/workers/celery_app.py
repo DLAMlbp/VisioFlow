@@ -8,6 +8,28 @@ from src.core.config import get_settings
 
 settings = get_settings()
 
+_ALL_TASK_IMPORTS = (
+    "src.workers.control",
+    "src.workers.callbacks",
+    "src.workers.preprocess",
+    "src.workers.completion",
+    "src.workers.processing",
+    "src.workers.beautify_plan",
+    "src.workers.enhance",
+    "src.workers.analysis",
+    "src.workers.matching",
+    "src.workers.library",
+    "src.workers.cleanup",
+)
+
+
+def _task_imports(worker_role: str) -> tuple[str, ...]:
+    if worker_role == "control":
+        return ("src.workers.control", "src.workers.callbacks")
+    if worker_role == "beat":
+        return ()
+    return _ALL_TASK_IMPORTS
+
 celery_app = Celery(
     "image_intelligence_service",
     broker=settings.redis_url,
@@ -19,19 +41,7 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     task_track_started=True,
     worker_prefetch_multiplier=1,
-    imports=(
-        "src.workers.control",
-        "src.workers.callbacks",
-        "src.workers.preprocess",
-        "src.workers.completion",
-        "src.workers.processing",
-        "src.workers.beautify_plan",
-        "src.workers.enhance",
-        "src.workers.analysis",
-        "src.workers.matching",
-        "src.workers.library",
-        "src.workers.cleanup",
-    ),
+    imports=_task_imports(os.getenv("WORKER_ROLE", "").strip()),
 )
 
 celery_app.conf.beat_schedule = {

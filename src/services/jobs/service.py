@@ -16,6 +16,7 @@ from src.schemas.jobs import (
     ImageAITagsResponse,
     ImageAuditDimensionResponse,
     ImageBeautifyResponse,
+    ImageClassificationResponse,
     ImageCompletionResponse,
     ImageItemStatus,
     ImageJobHistoryItemResponse,
@@ -75,8 +76,6 @@ class ImageJobService:
             raise InvalidJobRequest(workflow_error + "；新任务已拒绝，系统不会回退旧流程")
         if len(payload.images) > self.settings.max_images_per_job:
             raise InvalidJobRequest(f"单个 Job 最多支持 {self.settings.max_images_per_job} 张图片")
-        if payload.filter_route is None:
-            raise InvalidJobRequest("新任务必须使用完工分类和双路由过滤配置")
         if payload.callback_url:
             try:
                 validate_callback_destination(
@@ -96,7 +95,7 @@ class ImageJobService:
         filter_snapshot = None
         beautify_snapshot = None if payload.beautify_enabled else neutral_beautify_snapshot()
         standard_snapshots = None
-        routing_mode = "completion"
+        routing_mode = "streaming_v2"
         completion_profile_id = None
         completion_snapshot = None
         completed_filter_profile_id = None
@@ -108,20 +107,8 @@ class ImageJobService:
             try:
                 if hasattr(self.repository, "session"):
                     manager = ManagedProfileService(self.repository.session, self.settings)
-                    route = payload.filter_route
-                    completion, completed, non_completed = await manager.resolve_routing_profiles(
-                        completion_profile_id=route.completion_profile,
-                        completed_filter_profile_id=route.completed_filter_profile,
-                        non_completed_filter_profile_id=route.non_completed_filter_profile,
-                    )
-                    completion_profile_id = completion[0].id
-                    completion_snapshot = completion[1]
-                    completed_filter_profile_id = completed[0].id
-                    completed_filter_snapshot = completed[1]
-                    non_completed_filter_profile_id = non_completed[0].id
-                    non_completed_filter_snapshot = non_completed[1]
-                    routing_policy = route.policy.model_dump(mode="json")
-                    standard_snapshots = [completed[1], non_completed[1]]
+                    standards = await manager.resolve_standards(require_fallback=True)
+                    standard_snapshots = [snapshot for _, snapshot in standards]
                     if payload.beautify_enabled:
                         _, beautify_snapshot = await manager.resolve_beautify(
                             payload.beautify_profile or ""
@@ -138,7 +125,7 @@ class ImageJobService:
         job = ImageJob(
             id=build_job_id(),
             status=JobStatus.QUEUED.value,
-            filter_profile_id=(payload.filter_profile or "completion_routing_v1"),
+            filter_profile_id="per_image_streaming_v2",
             beautify_profile_id=(
                 payload.beautify_profile
                 or ("conditional_standard_v1" if payload.beautify_enabled else "system_delivery")
@@ -163,7 +150,7 @@ class ImageJobService:
             if self.settings.ai_tagging_enabled
             else None,
             enhance_level=payload.enhance_level,
-            max_selected=payload.max_selected,
+            max_selected=len(payload.images),
             total_count=len(payload.images),
             processed_count=0,
             selected_count=0,
@@ -387,9 +374,17 @@ class ImageJobService:
                         for dimension in audit_dimensions
                     ],
                     completion=_completion_response(item),
+                    classification=_classification_response(item, standard_names),
                     beautify=_beautify_response(item, result),
                     routed_filter_profile_id=item.routed_filter_profile_id,
                     routed_filter_profile_version=item.routed_filter_profile_version,
+                    pipeline_stage=_pipeline_stage(item),
+                    classification_status=item.completion_status,
+                    filter_status=item.ai_processing_status,
+                    beautify_status=_beautify_stage_status(item),
+                    analysis_status=item.analysis_status,
+                    embedding_status=item.embedding_status,
+                    match_status=item.match_status,
                 )
             )
         return ImageJobResultsResponse(
@@ -463,6 +458,21 @@ def _completion_response(item: ImageItem) -> ImageCompletionResponse | None:
     )
 
 
+def _classification_response(
+    item: ImageItem, standard_names: dict[str, str]
+) -> ImageClassificationResponse | None:
+    standard_id = item.routed_filter_profile_id
+    if not standard_id:
+        return None
+    return ImageClassificationResponse(
+        standard_id=standard_id,
+        standard_name=standard_names.get(standard_id, standard_id),
+        confidence=float(item.completion_confidence or 0),
+        reason=_completion_reason(item.completion_json) or "已选择对应过滤标准",
+        review_required=bool(item.review_required),
+    )
+
+
 def _beautify_response(item: ImageItem, result) -> ImageBeautifyResponse | None:
     if item.beautify_plan_status is None:
         return None
@@ -509,6 +519,48 @@ def _completion_reason(payload: object) -> str | None:
         return None
     reason = normalized.get("reason")
     return str(reason) if reason else None
+
+
+def _pipeline_stage(item: ImageItem) -> str:
+    if item.status == "queued":
+        return "waiting"
+    if item.status == "analyzing":
+        if item.completion_status in {None, "pending", "processing"}:
+            return "classifying"
+        return "filtering"
+    if item.status == "beautify_planning" or (
+        item.status == "filtered"
+        and item.beautify_plan_status in {None, "pending", "processing"}
+    ):
+        return "beautify_planning"
+    if item.status in {"filtered", "enhancing", "enhanced"}:
+        return "beautifying"
+    if item.status == "tagging":
+        if item.analysis_status in {"pending", "processing"} or item.embedding_status in {
+            "pending",
+            "processing",
+        }:
+            return "content_analysis_and_embedding"
+        return "matching"
+    return {
+        "selected": "completed",
+        "rejected": "rejected",
+        "not_selected": "not_selected",
+        "failed": "failed",
+        "cancelled": "cancelled",
+    }.get(item.status, item.status)
+
+
+def _beautify_stage_status(item: ImageItem) -> str | None:
+    if item.beautify_plan_status == "failed":
+        return "failed"
+    if item.status in {"enhanced", "tagging", "selected"}:
+        return "completed"
+    if item.status in {"beautify_planning", "enhancing"}:
+        return "processing"
+    if item.status == "filtered" or item.beautify_plan_status == "pending":
+        return "pending"
+    return None
 
 
 def get_job_service(

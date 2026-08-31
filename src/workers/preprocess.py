@@ -24,10 +24,12 @@ from src.services.images.metadata import (
 from src.services.images.processing_vision import (
     PROCESSING_PROMPT_VERSION,
     ProcessingVisionService,
+    precise_filter_reason,
 )
 from src.services.images.quality import QualityEngine
 from src.services.images.vision_rate_limit import acquire_vision_rate_slot
 from src.services.jobs.dispatch import (
+    BeautifyPlanTaskPublisher,
     CompletionTaskPublisher,
     RankingTaskPublisher,
 )
@@ -179,7 +181,7 @@ async def _preprocess_image_metadata(image_id: str) -> None:
             contrast=quality_metrics.contrast_score,
             noise=quality_metrics.noise_score,
         )
-        if job.routing_mode == "completion":
+        if job.routing_mode in {"completion", "standards", "streaming_v2"}:
             if await repository.complete_metadata_for_completion(item):
                 CompletionTaskPublisher().publish(item.id)
             return
@@ -236,10 +238,18 @@ async def _preprocess_image_metadata(image_id: str) -> None:
             and ai_outcome.status == "completed"
             and ai_outcome.payload.filter.rejected
         ):
+            standard_name = (
+                selected_standard.name or selected_standard.description
+                if selected_standard is not None
+                else None
+            )
             await repository.reject_item(
                 item,
                 [RejectCode.AI_FILTER_REJECTED],
-                reason=ai_outcome.payload.filter.reason,
+                reason=precise_filter_reason(
+                    ai_outcome.payload.filter,
+                    standard_name=standard_name,
+                ),
             )
             await _advance_after_preprocess(repository, item)
             return
@@ -264,10 +274,16 @@ async def _preprocess_image_metadata(image_id: str) -> None:
 
 
 async def _advance_after_preprocess(repository: ImageJobRepository, item) -> None:
-    if not get_settings().batch_filter_barrier_enabled:
-        return
     job = await repository.get_config(item.job_id)
     if job is None or job.cancel_requested_at is not None:
+        return
+    if getattr(job, "routing_mode", "legacy") == "streaming_v2":
+        if item.status == ImageItemStatus.FILTERED.value and await repository.queue_beautify_plan(
+            item.id
+        ):
+            BeautifyPlanTaskPublisher().publish(item.id)
+        return
+    if not get_settings().batch_filter_barrier_enabled:
         return
     if await repository.claim_ranking_if_filtering_complete(job.id):
         waited = max(

@@ -260,6 +260,12 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
 
   async function updateAssetStatus(asset: LibraryAsset) {
     try {
+      if (asset.status === "failed") {
+        await api.reindexLibraryAsset(asset.id);
+        await loadAssets();
+        onMessage("重复素材已重新分析，完成后会自动启用为可匹配素材。");
+        return;
+      }
       await api.updateLibraryAsset(asset.id, {
         status: asset.status === "disabled" ? "active" : "disabled"
       });
@@ -406,7 +412,7 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
                   <div className="library-asset-actions">
                     <select aria-label={`修改 ${asset.original_filename ?? asset.id} 所属素材组`} title="移动到其他标签组合" value={asset.group_id} onChange={(event) => void moveAsset(asset, event.target.value)}>{groups.filter((group) => group.status === "active").map((group) => <option key={group.id} value={group.id}>{group.tags.join("、")}</option>)}</select>
                     <button type="button" aria-label="重新分析素材" title="重新分析" onClick={() => void reindexAsset(asset.id)}><RotateCcw size={15} /></button>
-                    <button type="button" aria-label={asset.status === "disabled" ? "启用素材" : "停用素材"} title={asset.status === "disabled" ? "启用素材" : "停用素材"} onClick={() => void updateAssetStatus(asset)} disabled={asset.status === "pending" || asset.status === "failed"}><Power size={15} /></button>
+                    <button type="button" aria-label={asset.status === "failed" ? "重新启用素材" : asset.status === "disabled" ? "启用素材" : "停用素材"} title={asset.status === "failed" ? "重新启用素材" : asset.status === "disabled" ? "启用素材" : "停用素材"} onClick={() => void updateAssetStatus(asset)} disabled={asset.status === "pending"}><Power size={15} /></button>
                     <button className="danger-icon-button" type="button" aria-label={`删除素材 ${asset.original_filename ?? asset.id}`} title="删除素材" onClick={() => void deleteAsset(asset)} disabled={deletingAssetId === asset.id}>{deletingAssetId === asset.id ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}</button>
                   </div>
                 </article>

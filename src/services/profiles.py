@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import AliasChoices, BaseModel, Field, ValidationError
 
 from src.core.config import Settings
 
@@ -72,15 +72,25 @@ class BeautifyProfile(BaseModel):
 
 
 class ProcessingStandard(BaseModel):
-    """One conditional filter standard evaluated independently for every image."""
+    """One classification rule paired with exactly one filter rule."""
 
     id: str
     name: str = ""
     version: int = Field(ge=1)
     description: str
-    activation_rule: str = Field(min_length=3, max_length=2000)
+    classification_rule: str = Field(
+        min_length=3,
+        max_length=2000,
+        validation_alias=AliasChoices("classification_rule", "activation_rule"),
+    )
     filter_rule: str = Field(min_length=3, max_length=2000)
     priority: int = Field(default=100, ge=0, le=10000)
+    is_fallback: bool = False
+
+    @property
+    def activation_rule(self) -> str:
+        """Read snapshots created before classification_rule was introduced."""
+        return self.classification_rule
 
 
 class CompletionProfile(BaseModel):

@@ -72,23 +72,24 @@ async def _process_library_asset(asset_id: str) -> None:
                 raise ValueError(f"素材大小不符合限制（最大 {settings.max_image_size_mb}MB）")
             original_bytes = await storage.download(asset.original_object_key)
             prepared = _prepare_library_image(original_bytes)
-            duplicate = await repository.find_duplicate_asset(
-                asset.id, prepared.sha256, prepared.phash
-            )
-            if duplicate is not None:
-                raise ValueError(f"素材库已存在相同图片：{duplicate.id}")
-
-            analysis = await analyze_with_retries(
-                get_tag_provider(settings),
-                prepared.normalized_bytes,
-                settings.ai_tagging_max_retries,
-            )
-            if analysis.status != "completed" or analysis.payload is None:
-                raise ValueError(analysis.error_message or "素材内容特征识别失败")
-            content = matching_content_payload(analysis.payload)
-            embedding = await OpenClipImageEmbedder(settings).embed(
-                prepared.normalized_bytes
-            )
+            reusable = await repository.find_reusable_exact_asset(asset.id, prepared.sha256)
+            if reusable is not None:
+                content = reusable.analysis_json
+                embedding = list(reusable.embedding)
+                embedding_version = reusable.embedding_version
+            else:
+                analysis = await analyze_with_retries(
+                    get_tag_provider(settings),
+                    prepared.normalized_bytes,
+                    settings.ai_tagging_max_retries,
+                )
+                if analysis.status != "completed" or analysis.payload is None:
+                    raise ValueError(analysis.error_message or "素材内容特征识别失败")
+                content = matching_content_payload(analysis.payload).model_dump(mode="json")
+                embedding = await OpenClipImageEmbedder(settings).embed(
+                    prepared.normalized_bytes
+                )
+                embedding_version = settings.image_embedding_version
             thumbnail_object_key = build_library_thumbnail_object_key(asset.id)
             await storage.upload(
                 thumbnail_object_key,
@@ -105,9 +106,9 @@ async def _process_library_asset(asset_id: str) -> None:
                     "sha256": prepared.sha256,
                     "phash": prepared.phash,
                     "thumbnail_object_key": thumbnail_object_key,
-                    "analysis_json": content.model_dump(mode="json"),
+                    "analysis_json": content,
                     "embedding": embedding,
-                    "embedding_version": settings.image_embedding_version,
+                    "embedding_version": embedding_version,
                     "status": "active",
                     "error_message": None,
                 },

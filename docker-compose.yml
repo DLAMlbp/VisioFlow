@@ -66,6 +66,14 @@ services:
     <<: *worker
     command: celery -A src.workers.celery_app worker -Q vision -l info --concurrency=4
 
+  worker-classification:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q classification -l info --concurrency=4
+
+  worker-filter:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q filtering -l info --concurrency=4
+
   worker-beautify-plan:
     <<: *worker
     command: celery -A src.workers.celery_app worker -Q beautify_plan -l info --concurrency=4
@@ -83,6 +91,10 @@ services:
     command: celery -A src.workers.celery_app worker -Q embedding -l info --concurrency=1
     environment:
       WORKER_ROLE: embedding
+
+  worker-matching:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q matching -l info --concurrency=2
 
   worker-library:
     <<: *worker

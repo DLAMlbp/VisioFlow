@@ -1,3 +1,4 @@
+from src.services.jobs import dispatch
 from src.workers import cleanup
 
 
@@ -26,3 +27,27 @@ def test_recovery_republishes_lost_messages_for_each_pipeline_stage(monkeypatch)
     assert published["EnhancementTaskPublisher"] == ["img_enhance"]
     assert published["EmbeddingTaskPublisher"] == ["img_embedding"]
     assert published["MatchTaskPublisher"] == ["img_match"]
+
+
+def test_pipeline_publishers_use_independent_stage_queues(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def send_task(name, *, args, queue, **_kwargs):
+        assert args == ["img_test"]
+        calls.append((name, queue))
+
+    monkeypatch.setattr(dispatch.celery_app, "send_task", send_task)
+
+    dispatch.CompletionTaskPublisher().publish("img_test")
+    dispatch.RoutedProcessingTaskPublisher().publish("img_test")
+    dispatch.AnalysisTaskPublisher().publish("img_test")
+    dispatch.EmbeddingTaskPublisher().publish("img_test")
+    dispatch.MatchTaskPublisher().publish("img_test")
+
+    assert calls == [
+        ("image.classify_completion", "classification"),
+        ("image.apply_routed_processing", "filtering"),
+        ("image.analyze_content", "analysis"),
+        ("image.generate_embedding", "embedding"),
+        ("image.match_library", "matching"),
+    ]

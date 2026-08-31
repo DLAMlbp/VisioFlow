@@ -97,7 +97,7 @@ curl "https://<service-host>/api/v1/integration/jobs/job_xxx/results?limit=50&of
   -H "X-API-Key: $INTEGRATION_API_KEY"
 ```
 
-结果包含完工分类、实际过滤分支、质量分、美化说明和素材库匹配标签，以及 `original_url`、`enhanced_url` 两个限时下载地址。正式标签只读取 `library_tags.tags`；待复核或未匹配时该数组为空。下载地址有效期见响应中的 `download_expires_in`，过期后重新请求结果即可获得新地址。
+结果包含 `pipeline_stage`、分类/过滤/美化/内容分析/向量/匹配子状态、命中的过滤标准、实际过滤结论、质量分、美化说明和素材库匹配标签，以及 `original_url`、`enhanced_url` 两个限时下载地址。正式标签只读取 `library_tags.tags`；待复核或未匹配时该数组为空。下载地址有效期见响应中的 `download_expires_in`，过期后重新请求结果即可获得新地址。
 
 ## 状态码
 

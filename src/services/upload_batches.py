@@ -61,8 +61,6 @@ class UploadBatchService:
             raise InvalidUploadBatch(
                 f"单个上传批次最多支持 {self.settings.max_upload_batch_size} 张图片"
             )
-        if payload.filter_route is None:
-            raise InvalidUploadBatch("新任务必须使用完工分类和双路由过滤配置")
         if payload.callback_url:
             try:
                 validate_callback_destination(
@@ -78,7 +76,7 @@ class UploadBatchService:
             filter_snapshot = None
             beautify_snapshot = None
             standard_snapshots = None
-            routing_mode = "completion"
+            routing_mode = "streaming_v2"
             completion_profile_id = None
             completion_snapshot = None
             completed_filter_profile_id = None
@@ -86,22 +84,8 @@ class UploadBatchService:
             non_completed_filter_profile_id = None
             non_completed_filter_snapshot = None
             routing_policy = None
-            route = payload.filter_route
-            completion, completed, non_completed = (
-                await manager.resolve_routing_profiles(
-                    completion_profile_id=route.completion_profile,
-                    completed_filter_profile_id=route.completed_filter_profile,
-                    non_completed_filter_profile_id=route.non_completed_filter_profile,
-                )
-            )
-            completion_profile_id = completion[0].id
-            completion_snapshot = completion[1]
-            completed_filter_profile_id = completed[0].id
-            completed_filter_snapshot = completed[1]
-            non_completed_filter_profile_id = non_completed[0].id
-            non_completed_filter_snapshot = non_completed[1]
-            routing_policy = route.policy.model_dump(mode="json")
-            standard_snapshots = [completed[1], non_completed[1]]
+            standards = await manager.resolve_standards(require_fallback=True)
+            standard_snapshots = [snapshot for _, snapshot in standards]
             if payload.beautify_enabled:
                 _, beautify_snapshot = await manager.resolve_beautify(
                     payload.beautify_profile or ""
@@ -117,9 +101,7 @@ class UploadBatchService:
         batch = UploadBatch(
             id=build_upload_batch_id(),
             status="registered",
-            filter_profile_id=(
-                payload.filter_profile or "completion_routing_v1"
-            ),
+            filter_profile_id="per_image_streaming_v2",
             beautify_profile_id=(
                 payload.beautify_profile or ("conditional_standard_v1" if payload.beautify_enabled else "system_delivery")
             ),
@@ -140,7 +122,7 @@ class UploadBatchService:
             similarity_profile_id=payload.similarity_profile,
             unmatched_standard_policy=payload.unmatched_standard_policy,
             enhance_level=payload.enhance_level,
-            max_selected=payload.max_selected or len(payload.files),
+            max_selected=len(payload.files),
             callback_url=str(payload.callback_url) if payload.callback_url else None,
             expires_at=now + timedelta(hours=self.settings.upload_batch_expiry_hours),
         )
@@ -253,7 +235,7 @@ class UploadBatchService:
                 self.settings.ai_tagging_model if self.settings.ai_tagging_enabled else None
             ),
             enhance_level=batch.enhance_level,
-            max_selected=min(batch.max_selected, len(items)),
+            max_selected=len(items),
             total_count=len(items),
             processed_count=0,
             selected_count=0,

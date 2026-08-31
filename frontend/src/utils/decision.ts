@@ -1,4 +1,33 @@
-import type { Decision, JobStatus } from "../types";
+import type { Decision, JobStatus, ResultImage } from "../types";
+
+function trimSentence(value: string): string {
+  return value.trim().replace(/[。；;\s]+$/u, "");
+}
+
+export function processingReasons(image: ResultImage): string[] {
+  const failed = (image.audit_dimensions ?? []).filter((dimension) => !dimension.passed);
+  if (
+    image.decision !== "rejected"
+    || !image.reject_codes?.includes("AI_FILTER_REJECTED")
+    || !failed.length
+  ) {
+    return image.reasons;
+  }
+
+  const details = failed.slice(0, 3).map((dimension) => {
+    const label = dimension.dimension.trim().replace(/维度$/u, "").trim();
+    return `「${label}」：${trimSentence(dimension.reason)}`;
+  });
+  const conclusion = failed.length === 1
+    ? `未通过「${failed[0].dimension.trim().replace(/维度$/u, "").trim()}」要求：${trimSentence(failed[0].reason)}`
+    : `未通过 ${failed.length} 项要求：${details.join("；")}${failed.length > details.length ? `；另有 ${failed.length - details.length} 项未通过` : ""}`;
+  const context = (image.audit_dimensions ?? []).find((dimension) => (
+    dimension.passed && /内容相关|施工阶段|场景/u.test(dimension.dimension)
+  ));
+  const prefix = image.processing_standard_name ? `按「${image.processing_standard_name}」标准，` : "";
+  const contextText = context ? `。已识别的有效内容：${trimSentence(context.reason)}` : "";
+  return [`${prefix}${conclusion}${contextText}。`];
+}
 
 export function decisionLabel(decision: Decision): string {
   const labels: Record<Decision, string> = {

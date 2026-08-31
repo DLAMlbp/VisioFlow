@@ -84,7 +84,7 @@ def decide_similarity(
     if not candidates:
         return unmatched_decision("无法识别")
 
-    ranked = sorted(candidates, key=lambda item: item.final_score, reverse=True)
+    ranked, collapsed_same_image = _collapse_same_image_candidates(candidates)
     best = ranked[0]
     margin = (
         best.final_score - ranked[1].final_score
@@ -102,7 +102,11 @@ def decide_similarity(
         and margin >= settings.similarity_min_margin
     ):
         decision = "matched"
-        message = "已通过图片向量与内容特征匹配到相似素材"
+        message = (
+            "已匹配到相同素材，已采用标签范围更广的素材组"
+            if collapsed_same_image
+            else "已通过图片向量与内容特征匹配到相似素材"
+        )
     elif (
         best.similarity_score >= settings.similarity_review_threshold
         or best.final_score >= settings.similarity_review_threshold
@@ -176,6 +180,38 @@ def unmatched_decision(message: str) -> SimilarityDecision:
         final_score=None,
         candidates=[],
     )
+
+
+def _collapse_same_image_candidates(
+    candidates: list[ScoredCandidate],
+) -> tuple[list[ScoredCandidate], bool]:
+    """Treat byte-identical reference images as one candidate with the broadest tags."""
+    grouped: dict[str, list[ScoredCandidate]] = {}
+    for candidate in candidates:
+        sha256 = candidate.asset.sha256
+        key = f"sha256:{sha256}" if sha256 else f"asset:{candidate.asset.id}"
+        grouped.setdefault(key, []).append(candidate)
+
+    collapsed = [
+        max(
+            group,
+            key=lambda item: (
+                _tag_scope_size(item.tags),
+                item.final_score,
+                item.similarity_score,
+                item.asset.id,
+            ),
+        )
+        for group in grouped.values()
+    ]
+    return (
+        sorted(collapsed, key=lambda item: item.final_score, reverse=True),
+        any(len(group) > 1 for group in grouped.values()),
+    )
+
+
+def _tag_scope_size(tags: list[str]) -> int:
+    return len({tag.strip().casefold() for tag in tags if tag.strip()})
 
 
 def apply_shadow_mode(

@@ -144,7 +144,7 @@ def test_integration_job_rejects_disabled_required_stages() -> None:
     assert "正式模式固定执行" in response.json()["detail"]
 
 
-def test_integration_job_rejects_legacy_route_before_uploading() -> None:
+def test_integration_job_accepts_paired_filter_standards() -> None:
     storage = FakeStorageProvider()
     app.dependency_overrides[get_storage_provider] = lambda: storage
     app.dependency_overrides[get_job_service] = lambda: FakeJobService()
@@ -166,9 +166,9 @@ def test_integration_job_rejects_legacy_route_before_uploading() -> None:
 
     app.dependency_overrides.clear()
 
-    assert response.status_code == 400
-    assert "必须同时提供完工分类" in response.json()["detail"]
-    assert storage.uploaded == []
+    assert response.status_code == 201
+    assert response.json()["job_id"] == "job_integration"
+    assert len(storage.uploaded) == 1
 
 
 def test_integration_job_rejects_invalid_file_and_removes_prior_uploads() -> None:

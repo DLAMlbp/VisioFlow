@@ -75,7 +75,7 @@ class CompletionFilterRoute(BaseModel):
 
 class CreateImageJobRequest(BaseModel):
     filter_route: CompletionFilterRoute | None = None
-    processing_standards: list[str] = Field(default_factory=list, max_length=2)
+    processing_standards: list[str] = Field(default_factory=list, max_length=20)
     filter_profile: str | None = Field(default=None, min_length=1, max_length=80)
     beautify_profile: str | None = Field(default=None, min_length=1, max_length=80)
     filter_enabled: bool = True
@@ -84,7 +84,7 @@ class CreateImageJobRequest(BaseModel):
     similarity_profile: str = Field(default="library_similarity_v2", min_length=1, max_length=80)
     unmatched_standard_policy: Literal["reject"] = "reject"
     enhance_level: int = Field(default=1, ge=0, le=2)
-    max_selected: int = Field(default=10, ge=1)
+    max_selected: int | None = Field(default=None, ge=1)
     images: list[CreateJobImage] = Field(min_length=1)
     callback_url: HttpUrl | None = None
     callback_contract: Literal["native_v1", "customer_v1"] = "native_v1"
@@ -93,8 +93,8 @@ class CreateImageJobRequest(BaseModel):
     def require_processing_configuration(self):
         if not (self.filter_enabled and self.beautify_enabled and self.similarity_enabled):
             raise ValueError("正式模式固定执行完工分类、分支过滤、过滤后美化和素材库匹配")
-        if self.filter_route is None:
-            raise ValueError("必须配置完工分类、完工过滤和非完工过滤标准")
+        if len(set(self.processing_standards)) != len(self.processing_standards):
+            raise ValueError("过滤标准不能重复")
         if not self.beautify_profile:
             raise ValueError("请选择独立的美化标准")
         return self
@@ -189,6 +189,14 @@ class ImageCompletionResponse(BaseModel):
     review_required: bool = False
 
 
+class ImageClassificationResponse(BaseModel):
+    standard_id: str
+    standard_name: str
+    confidence: float = Field(ge=0, le=1)
+    reason: str
+    review_required: bool = False
+
+
 class BeautifyAcceptanceCheckResponse(BaseModel):
     name: Literal["exposure", "color", "noise", "sharpening"]
     passed: bool
@@ -237,9 +245,17 @@ class ImageJobResultItemResponse(BaseModel):
     activation_reason: str | None = None
     audit_dimensions: list[ImageAuditDimensionResponse] = Field(default_factory=list)
     completion: ImageCompletionResponse | None = None
+    classification: ImageClassificationResponse | None = None
     beautify: ImageBeautifyResponse | None = None
     routed_filter_profile_id: str | None = None
     routed_filter_profile_version: int | None = None
+    pipeline_stage: str = "unknown"
+    classification_status: str | None = None
+    filter_status: str | None = None
+    beautify_status: str | None = None
+    analysis_status: str | None = None
+    embedding_status: str | None = None
+    match_status: str | None = None
 
 
 class ImageJobResultsResponse(BaseModel):

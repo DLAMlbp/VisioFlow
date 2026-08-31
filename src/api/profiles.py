@@ -1,7 +1,7 @@
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import Settings, get_settings
@@ -22,6 +22,7 @@ class ProfileOptionResponse(BaseModel):
     version: int = 1
     status: str = "active"
     editable: bool = True
+    is_fallback: bool | None = None
 
 
 class ProfileDetailResponse(ProfileOptionResponse):
@@ -50,9 +51,14 @@ class SaveProfileRequest(BaseModel):
 
 
 class ProcessingStandardPreviewRequest(BaseModel):
-    activation_rule: str = Field(min_length=3, max_length=2000)
+    classification_rule: str = Field(
+        min_length=3,
+        max_length=2000,
+        validation_alias=AliasChoices("classification_rule", "activation_rule"),
+    )
     filter_rule: str = Field(min_length=3, max_length=2000)
     priority: int = Field(default=100, ge=0, le=10000)
+    is_fallback: bool = False
 
 
 class SaveProcessingStandardRequest(ProcessingStandardPreviewRequest):
@@ -63,9 +69,10 @@ class SaveProcessingStandardRequest(ProcessingStandardPreviewRequest):
 
 class ProcessingStandardDetailResponse(ProfileOptionResponse):
     profile_type: Literal["standard"] = "standard"
-    activation_rule: str
+    classification_rule: str
     filter_rule: str
     priority: int
+    is_fallback: bool
 
 
 @router.get("/filter-profiles", response_model=list[ProfileOptionResponse])
@@ -121,7 +128,7 @@ async def create_processing_standard(
         row = await ManagedProfileService(session, settings).create(
             "standard",
             name=payload.name,
-            instruction=payload.activation_rule,
+            instruction=payload.classification_rule,
             description=payload.description,
             config=config,
         )
@@ -161,7 +168,7 @@ async def update_processing_standard(
             profile_id,
             expected_version=payload.expected_version,
             name=payload.name,
-            instruction=payload.activation_rule,
+            instruction=payload.classification_rule,
             description=payload.description,
             config=_standard_config(payload),
         )
@@ -358,6 +365,11 @@ def _option(row: ProcessingProfile) -> ProfileOptionResponse:
         description=row.description,
         version=row.version,
         status=row.status,
+        is_fallback=(
+            bool(getattr(row, "config_json", {}).get("is_fallback"))
+            if getattr(row, "profile_type", None) == "standard"
+            else None
+        ),
     )
 
 
@@ -377,9 +389,10 @@ def _detail(row: ProcessingProfile) -> ProfileDetailResponse:
 
 def _standard_config(payload: ProcessingStandardPreviewRequest) -> dict[str, object]:
     return {
-        "activation_rule": payload.activation_rule.strip(),
+        "classification_rule": payload.classification_rule.strip(),
         "filter_rule": payload.filter_rule.strip(),
         "priority": payload.priority,
+        "is_fallback": payload.is_fallback,
     }
 
 
@@ -391,7 +404,8 @@ def _standard_detail(row: ProcessingProfile) -> ProcessingStandardDetailResponse
         description=row.description,
         version=row.version,
         status=row.status,
-        activation_rule=standard.activation_rule,
+        classification_rule=standard.classification_rule,
         filter_rule=standard.filter_rule,
         priority=standard.priority,
+        is_fallback=standard.is_fallback,
     )

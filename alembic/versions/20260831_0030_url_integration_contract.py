@@ -1,7 +1,7 @@
 """add URL integration contract and customer object-key passthrough
 
-Revision ID: 20260831_0026
-Revises: 20260831_0025
+Revision ID: 20260831_0030
+Revises: 20260831_0029
 """
 
 from collections.abc import Sequence
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "20260831_0026"
-down_revision: str | None = "20260831_0025"
+revision: str = "20260831_0030"
+down_revision: str | None = "20260831_0029"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

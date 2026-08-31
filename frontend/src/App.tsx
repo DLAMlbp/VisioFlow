@@ -40,7 +40,7 @@ import type {
   SimilarityTaggingResult,
   UploadItem
 } from "./types";
-import { decisionLabel, isTerminalStatus, rejectCodeLabel, statusLabel } from "./utils/decision";
+import { decisionLabel, isTerminalStatus, processingReasons, rejectCodeLabel, statusLabel } from "./utils/decision";
 import { createClientId } from "./utils/id";
 
 const MAX_IMAGES = 500;
@@ -65,11 +65,7 @@ function App() {
   const operationVersionRef = useRef(0);
   const [items, setItems] = useState<UploadItem[]>([]);
   const [processingStandards, setProcessingStandards] = useState<ProfileOption[]>([]);
-  const [completionProfiles, setCompletionProfiles] = useState<ProfileOption[]>([]);
   const [beautifyProfiles, setBeautifyProfiles] = useState<ProfileOption[]>([]);
-  const [completionProfile, setCompletionProfile] = useState("");
-  const [completedFilterProfile, setCompletedFilterProfile] = useState("");
-  const [nonCompletedFilterProfile, setNonCompletedFilterProfile] = useState("");
   const [beautifyProfile, setBeautifyProfile] = useState("");
   const filterEnabled = true;
   const beautifyEnabled = true;
@@ -96,17 +92,12 @@ function App() {
 
   const uploadedCount = items.filter((item) => item.status === "uploaded").length;
   const failedCount = items.filter((item) => item.status === "failed").length;
+  const hasFallbackStandard = processingStandards.some((item) => item.is_fallback);
   const canCreateJob = items.some((item) => item.file)
-    && (!filterEnabled || Boolean(
-      completionProfile && completedFilterProfile && nonCompletedFilterProfile
-      && completedFilterProfile !== nonCompletedFilterProfile
-    ))
+    && processingStandards.length > 0
+    && hasFallbackStandard
     && (!beautifyEnabled || Boolean(beautifyProfile))
     && !busy;
-  const selectedCompletionProfile = completionProfiles.find((item) => item.id === completionProfile);
-  const selectedCompletedFilter = processingStandards.find((item) => item.id === completedFilterProfile);
-  const selectedNonCompletedFilter = processingStandards.find((item) => item.id === nonCompletedFilterProfile);
-  const selectedStandards = [selectedCompletedFilter, selectedNonCompletedFilter].filter(Boolean) as ProfileOption[];
   const selectedBeautifyProfile = beautifyProfiles.find((profile) => profile.id === beautifyProfile);
   const estimatedMinutes = Math.max(1, Math.ceil(Math.max(items.length, 1) / 25));
   const averageScore = useMemo(() => {
@@ -143,20 +134,12 @@ function App() {
   }
 
   async function reloadProcessingProfiles() {
-    const [completion, standards, beautify] = await Promise.all([
-      api.getCompletionProfiles(),
+    const [standards, beautify] = await Promise.all([
       api.getProcessingStandards(),
       api.getBeautifyProfiles()
     ]);
-    setCompletionProfiles(completion);
     setProcessingStandards(standards);
     setBeautifyProfiles(beautify);
-    setCompletionProfile((current) => completion.some((item) => item.id === current) ? current : (completion[0]?.id ?? ""));
-    setCompletedFilterProfile((current) => standards.some((item) => item.id === current) ? current : (standards[0]?.id ?? ""));
-    setNonCompletedFilterProfile((current) => {
-      if (standards.some((item) => item.id === current) && current !== completedFilterProfile) return current;
-      return standards.find((item) => item.id !== (standards[0]?.id ?? ""))?.id ?? "";
-    });
     setBeautifyProfile((current) => (
       beautify.some((item) => item.id === current) ? current : (beautify[0]?.id ?? "")
     ));
@@ -485,23 +468,12 @@ function App() {
       const uploadable = items.filter((item) => item.file);
       uploadable.forEach((item) => updateItem(item.id, { status: "presigning", error: undefined }, operationVersion));
       const batch = await api.createUploadBatch({
-        processing_standards: [],
-        filter_route: {
-          completion_profile: completionProfile,
-          completed_filter_profile: completedFilterProfile,
-          non_completed_filter_profile: nonCompletedFilterProfile,
-          policy: {
-            insufficient_evidence_policy: "route_non_completed",
-            low_confidence_policy: "continue_with_review"
-          }
-        },
         beautify_profile: beautifyEnabled ? beautifyProfile : undefined,
         filter_enabled: filterEnabled,
         beautify_enabled: beautifyEnabled,
         similarity_enabled: similarityEnabled,
         unmatched_standard_policy: "reject",
         enhance_level: 1,
-        max_selected: uploadable.length,
         files: uploadable.map((item) => ({
           filename: item.filename,
           content_type: item.contentType,
@@ -629,7 +601,7 @@ function App() {
               <button className="icon-button" type="button" aria-label="关闭 AI 配置" onClick={() => setModelConfigOpen(false)} disabled={modelConfigSaving}><X size={17} aria-hidden="true" /></button>
             </div>
             {modelConfigLoading || !modelConfig ? <div className="model-config-loading"><Loader2 className="spin" size={20} aria-hidden="true" />正在读取配置</div> : <>
-              <label className="config-toggle"><input type="checkbox" checked={modelConfig.enabled} onChange={(event) => setModelConfig({ ...modelConfig, enabled: event.target.checked })} /><span>启用 AI 完工分类、分支过滤与美化规划</span></label>
+              <label className="config-toggle"><input type="checkbox" checked={modelConfig.enabled} onChange={(event) => setModelConfig({ ...modelConfig, enabled: event.target.checked })} /><span>启用 AI 分类、规则过滤与美化规划</span></label>
               <label className="config-field">模型<input value={modelConfig.model} maxLength={120} onChange={(event) => setModelConfig({ ...modelConfig, model: event.target.value })} /></label>
               <label className="config-field">接口地址<input value={modelConfig.base_url} readOnly /></label>
               <label className="config-field">API Key<input type="password" value={modelApiKey} onChange={(event) => setModelApiKey(event.target.value)} placeholder={modelConfig.api_key_configured ? "已配置，留空则保持不变" : "请输入 API Key"} autoComplete="new-password" /></label>
@@ -711,35 +683,19 @@ function App() {
               <header className="sop-stage-heading">
                 <button className="back-link" type="button" onClick={() => setWorkflowStep(1)}><ChevronLeft size={16} />返回导入</button>
                 <span>步骤 2 / 6</span>
-                <h2>选择处理方案</h2>
-                <p>选择完工分类标准，并分别指定完工与非完工过滤分支。</p>
+                <h2>确认处理方案</h2>
+                <p>系统自动使用全部启用标准，逐图分类并执行唯一对应的过滤规则。</p>
               </header>
               <section className="plan-section">
-                <div className="section-title"><div><span>01</span><div><h3>完工分类与过滤路由</h3><p>分类完成后由后端确定执行分支</p></div></div></div>
-                <div className="route-profile-grid">
-                  <label className="select-field">完工分类标准
-                    <select value={completionProfile} onChange={(event) => setCompletionProfile(event.target.value)}>
-                      <option value="" disabled>请选择完工分类标准</option>
-                      {completionProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
-                    </select>
-                    <small>{selectedCompletionProfile?.description ?? "逐图判断完工或非完工。"}</small>
-                  </label>
-                  <label className="select-field">完工图片过滤标准
-                    <select value={completedFilterProfile} onChange={(event) => setCompletedFilterProfile(event.target.value)}>
-                      <option value="" disabled>请选择完工过滤标准</option>
-                      {processingStandards.map((standard) => <option key={standard.id} value={standard.id} disabled={standard.id === nonCompletedFilterProfile}>{standard.name}</option>)}
-                    </select>
-                    <small>{selectedCompletedFilter?.description ?? "仅用于已经判定为完工的图片。"}</small>
-                  </label>
-                  <label className="select-field">非完工图片过滤标准
-                    <select value={nonCompletedFilterProfile} onChange={(event) => setNonCompletedFilterProfile(event.target.value)}>
-                      <option value="" disabled>请选择非完工过滤标准</option>
-                      {processingStandards.map((standard) => <option key={standard.id} value={standard.id} disabled={standard.id === completedFilterProfile}>{standard.name}</option>)}
-                    </select>
-                    <small>{selectedNonCompletedFilter?.description ?? "仅用于真实、可判断的施工中图片。"}</small>
-                  </label>
+                <div className="section-title"><div><span>01</span><div><h3>自动分类与过滤</h3><p>任务创建时锁定全部启用标准版本</p></div></div><b>启用 {processingStandards.length} 项</b></div>
+                <div className="automatic-standard-band">
+                  <div><Check size={18} aria-hidden="true" /><span><strong>全部启用标准自动生效</strong><small>每张图片只会命中一条分类标准，并执行与它一一对应的过滤规则。</small></span></div>
+                  <ul>
+                    {processingStandards.map((standard) => <li key={standard.id}><span>{standard.name}</span>{standard.is_fallback && <b>兜底分类</b>}</li>)}
+                  </ul>
                 </div>
-                {(!completionProfiles.length || processingStandards.length < 2) && <p className="inline-warning">分类标准或分支过滤标准不足，请前往“标准管理”完成配置。</p>}
+                {!processingStandards.length && <p className="inline-warning">没有启用中的过滤标准，请先在“标准管理”中配置。</p>}
+                {processingStandards.length > 0 && !hasFallbackStandard && <p className="inline-warning">缺少兜底分类，请在“标准管理”中将一条标准设为兜底分类。</p>}
               </section>
               <section className="plan-section">
                 <div className="section-title"><div><span>02</span><div><h3>美化方案</h3><p>过滤通过后统一执行</p></div></div></div>
@@ -751,7 +707,7 @@ function App() {
                   <small>{selectedBeautifyProfile?.description ?? "请选择本次任务的美化方案。"}</small>
                 </label>
               </section>
-              <section className="pipeline-note"><Sparkles size={20} aria-hidden="true" /><div><strong>正式处理流水线</strong><p>完工事实分类 → 后端路由 → 分支过滤 → 整批过滤完成 → 独立美化 → 素材库匹配 → 继承标签。</p></div></section>
+              <section className="pipeline-note"><Sparkles size={20} aria-hidden="true" /><div><strong>逐图连续流水线</strong><p>唯一分类 → 对应过滤 → 立即美化 → 内容特征与图片向量并行 → 素材库匹配 → 继承人工标签。图片之间互不等待。</p></div></section>
             </>}
 
             {workflowStep === 3 && <>
@@ -763,7 +719,7 @@ function App() {
               </header>
               <div className="preflight-list">
                 <PreflightRow icon={<Images size={20} />} title="图片清单" detail={`${items.length} 张图片已就绪`} valid={items.length > 0} action="返回修改" onAction={() => setWorkflowStep(1)} />
-                <PreflightRow icon={<Check size={20} />} title="分类与分支标准" detail={[selectedCompletionProfile?.name, ...selectedStandards.map((item) => item.name)].filter(Boolean).join("、") || "尚未选择"} valid={Boolean(completionProfile && completedFilterProfile && nonCompletedFilterProfile && completedFilterProfile !== nonCompletedFilterProfile)} action="修改" onAction={() => setWorkflowStep(2)} />
+                <PreflightRow icon={<Check size={20} />} title="分类与过滤标准" detail={`自动使用全部 ${processingStandards.length} 条启用标准`} valid={processingStandards.length > 0 && hasFallbackStandard} action="查看" onAction={() => setWorkflowStep(2)} />
                 <PreflightRow icon={<Sparkles size={20} />} title="AI 与美化方案" detail={`AI 识别已启用 · ${selectedBeautifyProfile?.name ?? "尚未选择"}`} valid={Boolean(beautifyProfile)} action="修改" onAction={() => setWorkflowStep(2)} />
                 <PreflightRow icon={<Database size={20} />} title="素材库匹配" detail="独立美化后自动匹配，未匹配项进入人工复核" valid action="查看素材库" onAction={() => setActiveWorkspace("library")} />
               </div>
@@ -783,11 +739,11 @@ function App() {
                 <p>{job ? `${job.processed}/${job.total} 已处理` : `${uploadedCount}/${items.length} 已上传`}</p>
               </div>
               <div className="processing-stages">
-                {["上传校验", "完工分类", "分支过滤", "整批美化", "素材匹配", "汇总结果"].map((label, index) => {
+                {["上传校验", "标准分类", "规则过滤", "逐图美化", "内容与向量", "素材匹配", "汇总结果"].map((label, index) => {
                   const progress = job?.progress ?? (busy ? 8 : 0);
-                  const threshold = [5, 18, 38, 58, 78, 96][index];
+                  const threshold = [5, 18, 34, 54, 72, 88, 96][index];
                   const done = progress >= threshold;
-                  const active = !done && (index === 0 || progress >= [0, 5, 18, 38, 58, 78][index]);
+                  const active = !done && (index === 0 || progress >= [0, 5, 18, 34, 54, 72, 88][index]);
                   return <div key={label} className={`${done ? "done" : ""} ${active ? "active" : ""}`}><span>{done ? <Check size={15} /> : index + 1}</span><strong>{label}</strong></div>;
                 })}
               </div>
@@ -809,7 +765,7 @@ function App() {
               <div className="delivery-summary">
                 <span className="delivery-icon"><Check size={32} aria-hidden="true" /></span>
                 <p>处理流程已完成，可以下载交付文件。</p>
-                <div><Metric label="总图片" value={results?.summary.total ?? 0} /><Metric label="保留并美化" value={results?.summary.selected ?? 0} tone="selected" /><Metric label="分支过滤未通过" value={results?.summary.rejected ?? 0} tone="rejected" /><Metric label="合格未入选" value={results?.summary.not_selected ?? 0} /></div>
+                <div><Metric label="总图片" value={results?.summary.total ?? 0} /><Metric label="保留并美化" value={results?.summary.selected ?? 0} tone="selected" /><Metric label="过滤未通过" value={results?.summary.rejected ?? 0} tone="rejected" /><Metric label="合格未入选" value={results?.summary.not_selected ?? 0} /></div>
                 <button className="primary-inline delivery-download" type="button" disabled={!results?.images.some((image) => image.enhanced_url ?? image.original_url)} onClick={() => results && downloadCurrentPage(results.images)}><ArrowDownToLine size={17} />下载当前结果</button>
                 <button className="ghost-button" type="button" onClick={resetWorkspace}>创建新任务</button>
               </div>
@@ -820,12 +776,12 @@ function App() {
             <h2>本次任务</h2>
             <dl>
               <div><dt>图片数量</dt><dd><strong>{items.length}</strong> 张{items.length > 0 && <small className="summary-file-status"><em>{items.length - failedCount} 张已校验</em>{failedCount > 0 && <b>{failedCount} 张需处理</b>}</small>}</dd></div>
-              <div><dt>分类与过滤</dt><dd>{workflowStep === 1 ? "待选择" : [selectedCompletionProfile?.name, ...selectedStandards.map((item) => item.name)].filter(Boolean).join("、") || "待选择"}</dd></div>
+              <div><dt>分类与过滤</dt><dd>{workflowStep === 1 ? "自动配置" : `全部 ${processingStandards.length} 条启用标准`}</dd></div>
               <div><dt>美化方案</dt><dd>{workflowStep === 1 ? "待选择" : selectedBeautifyProfile?.name ?? "待选择"}</dd></div>
               <div><dt>预计处理</dt><dd><Clock3 size={15} aria-hidden="true" />约 {estimatedMinutes}–{estimatedMinutes + 2} 分钟</dd></div>
             </dl>
             {workflowStep === 1 && <button className="summary-primary" type="button" disabled={!items.length} onClick={() => setWorkflowStep(2)}>继续选择方案<ChevronRight size={17} /></button>}
-            {workflowStep === 2 && <button className="summary-primary" type="button" disabled={!completionProfile || !completedFilterProfile || !nonCompletedFilterProfile || completedFilterProfile === nonCompletedFilterProfile || !beautifyProfile} onClick={() => setWorkflowStep(3)}>进入执行检查<ChevronRight size={17} /></button>}
+            {workflowStep === 2 && <button className="summary-primary" type="button" disabled={!processingStandards.length || !hasFallbackStandard || !beautifyProfile} onClick={() => setWorkflowStep(3)}>进入执行检查<ChevronRight size={17} /></button>}
             {workflowStep === 3 && <button className="summary-primary" type="button" disabled={!canCreateJob} onClick={() => void startJob()}>{busy ? <Loader2 className="spin" size={17} /> : <Sparkles size={17} />}确认并开始处理</button>}
           </aside>}
         </div>
@@ -875,13 +831,13 @@ function ResultsPanel({
       <div className="results-summary">
         <Metric label="总图片" value={results.summary.total} />
         <Metric label="保留并美化" value={results.summary.selected} tone="selected" />
-        <Metric label="分支过滤未通过" value={results.summary.rejected} tone="rejected" />
+        <Metric label="过滤未通过" value={results.summary.rejected} tone="rejected" />
         <Metric label="合格未入选" value={results.summary.not_selected} />
         <Metric label="保留图平均分" value={averageScore} />
       </div>
       <div className="result-toolbar">
         <div className="tabs" role="tablist" aria-label="结果筛选">
-          {[["all", "全部"], ["completed", "完工"], ["non_completed", "非完工"], ["review", "建议复核"], ["selected", "保留并美化"], ["rejected", "分支过滤未通过"], ["not_selected", "合格未入选"], ["failed", "处理失败"]].map(([value, label]) => (
+          {[["all", "全部"], ["review", "建议复核"], ["selected", "保留并美化"], ["rejected", "过滤未通过"], ["not_selected", "合格未入选"], ["failed", "处理失败"]].map(([value, label]) => (
             <button key={value} className={resultFilter === value ? "active" : ""} type="button" role="tab" aria-selected={resultFilter === value} onClick={() => onFilterChange(value as ResultFilter)}>{label}</button>
           ))}
         </div>
@@ -1004,8 +960,9 @@ function SimilarityScore({ result }: { result?: SimilarityTaggingResult }) {
 function ResultCard({ image, active, onOpen }: { image: ResultImage; active: boolean; onOpen: () => void }) {
   const previewUrl = image.enhanced_url ?? image.original_url;
   const taggingResult = image.library_tags ?? image.tagging_result;
+  const preciseReasons = processingReasons(image);
   const primaryReason = image.reject_codes?.[0] === "AI_FILTER_REJECTED"
-    ? image.reasons[0]
+    ? preciseReasons[0]
     : image.reject_codes?.[0]
       ? rejectCodeLabel(image.reject_codes[0])
       : image.reasons[0] ?? "基础质量达标";
@@ -1027,9 +984,17 @@ function ResultCard({ image, active, onOpen }: { image: ResultImage; active: boo
         </div>
         <SimilarityScore result={taggingResult} />
       </div>
+      <span className={`pipeline-stage-badge ${image.pipeline_stage}`}>{pipelineStageLabel(image.pipeline_stage)}</span>
       <p>{primaryReason}</p>
-      {image.completion && <p className="completion-note"><strong>{image.completion.label === "completed" ? "完工" : "非完工"}</strong><span>{Math.round(image.completion.confidence * 100)}%</span>{image.completion.review_required && <em>建议复核</em>}</p>}
-      {image.processing_standard_name && <p className="standard-match-note">处理标准：{image.processing_standard_name}</p>}
+      {image.classification ? (
+        <p className="classification-note">
+          <span>命中分类标准</span>
+          <strong>{image.classification.standard_name}</strong>
+          <em>置信度 {Math.round(image.classification.confidence * 100)}%</em>
+          {image.classification.review_required && <b>建议复核</b>}
+        </p>
+      ) : image.completion && <p className="completion-note"><strong>{image.completion.label === "completed" ? "完工" : "非完工"}</strong><span>{Math.round(image.completion.confidence * 100)}%</span>{image.completion.review_required && <em>建议复核</em>}</p>}
+      {image.processing_standard_name && image.processing_standard_name !== image.classification?.standard_name && <p className="standard-match-note">执行过滤标准：{image.processing_standard_name}</p>}
       {taggingResult?.decision === "matched" && taggingResult.tags.length ? (
         <div className="tag-row" aria-label="素材库匹配标签">
           {taggingResult.tags.slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}
@@ -1051,6 +1016,7 @@ function ImageDetail({ image, onReviewResolved, onRetry }: { image: ResultImage;
     ?? image.enhanced_url ?? image.original_url;
   const taggingResult = image.library_tags ?? image.tagging_result;
   const auditDimensions = image.audit_dimensions ?? [];
+  const preciseReasons = processingReasons(image);
   const failedAuditCount = auditDimensions.filter((dimension) => !dimension.passed).length;
   const auditRegionId = `audit-dimensions-${image.image_id}`;
   const beautifyRegionId = `beautify-details-${image.image_id}`;
@@ -1117,8 +1083,27 @@ function ImageDetail({ image, onReviewResolved, onRetry }: { image: ResultImage;
         </div>
         <SimilarityScore result={taggingResult} />
       </div>
+      <section className="image-pipeline-status" aria-label="图片流水线状态">
+        <header><span>当前阶段</span><strong>{pipelineStageLabel(image.pipeline_stage)}</strong></header>
+        <div>
+          {[
+            ["分类", image.classification_status],
+            ["过滤", image.filter_status],
+            ["美化", image.beautify_status],
+            ["内容分析", image.analysis_status],
+            ["图片向量", image.embedding_status],
+            ["素材匹配", image.match_status]
+          ].map(([label, status]) => <span key={label}><small>{label}</small><b className={status ?? "waiting"}>{substageStatusLabel(status)}</b></span>)}
+        </div>
+      </section>
       {image.decision === "failed" && <button className="retry-image-button" type="button" onClick={() => onRetry(image.image_id)}><RefreshCw size={15} aria-hidden="true" />重试这张图片</button>}
-      {image.completion && <div className="completion-detail"><strong>{image.completion.label === "completed" ? "完工" : "非完工"} · {Math.round(image.completion.confidence * 100)}%</strong><p>{image.completion.reason}</p>{image.completion.review_required && <span>建议人工复核</span>}</div>}
+      {image.classification ? (
+        <div className="classification-detail">
+          <div><span>命中分类标准</span><strong>{image.classification.standard_name}</strong><em>分类置信度 {Math.round(image.classification.confidence * 100)}%</em></div>
+          <p>{image.classification.reason}</p>
+          {image.classification.review_required && <b>建议人工复核</b>}
+        </div>
+      ) : image.completion && <div className="completion-detail"><strong>{image.completion.label === "completed" ? "完工" : "非完工"} · {Math.round(image.completion.confidence * 100)}%</strong><p>{image.completion.reason}</p>{image.completion.review_required && <span>建议人工复核</span>}</div>}
       {auditDimensions.length > 0 && (
         <DetailDisclosure
           className="audit-dimensions"
@@ -1156,24 +1141,19 @@ function ImageDetail({ image, onReviewResolved, onRetry }: { image: ResultImage;
         <DetailDisclosure
           className="processing-explanation"
           title="处理说明"
-          summary={image.reasons.length ? `${image.reasons.length} 条` : "暂无"}
+          summary={preciseReasons.length ? `${preciseReasons.length} 条` : "暂无"}
           expanded={processingExpanded}
           regionId={processingRegionId}
           onToggle={() => setProcessingExpanded((current) => !current)}
         >
           <div className="processing-explanation-content">
-            {image.reasons.length ? (
-              <ul>{image.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+            {preciseReasons.length ? (
+              <ul>{preciseReasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
             ) : (
               <p>暂无处理说明</p>
             )}
           </div>
         </DetailDisclosure>
-        <Explanation
-          title="淘汰原因"
-          items={(image.reject_codes ?? []).map(rejectCodeLabel)}
-          empty="无淘汰原因"
-        />
       </div>
       <SimilarityMatch imageId={image.image_id} result={taggingResult} onResolved={onReviewResolved} />
     </>
@@ -1383,23 +1363,6 @@ function MetricList({ title, metrics }: { title: string; metrics?: ImageMetrics 
   );
 }
 
-function Explanation({ title, items, empty }: { title: string; items: string[]; empty: string }) {
-  return (
-    <section className="explanation">
-      <h3>{title}</h3>
-      {items.length ? (
-        <ul>
-          {items.map((item) => (
-            <li key={item}>{item}</li>
-          ))}
-        </ul>
-      ) : (
-        <p>{empty}</p>
-      )}
-    </section>
-  );
-}
-
 function EmptyDetail() {
   return (
     <div className="empty-detail">
@@ -1453,10 +1416,11 @@ function Pagination({ page, total, pageSize, onChange, label }: { page: number; 
 function stageCountLabel(stage: string): string {
   return {
     waiting: "等待",
+    classifying: "分类",
     filtering: "过滤",
     beautify_planning: "美化规划",
     beautifying: "美化",
-    content_analysis: "素材匹配",
+    content_analysis: "内容与向量",
     matching: "匹配",
     completed: "完成",
     rejected: "淘汰",
@@ -1464,6 +1428,33 @@ function stageCountLabel(stage: string): string {
     failed: "失败",
     cancelled: "取消"
   }[stage] ?? stage;
+}
+
+function pipelineStageLabel(stage: string): string {
+  return {
+    waiting: "等待校验",
+    classifying: "分类识别",
+    filtering: "规则过滤",
+    beautify_planning: "美化规划",
+    beautifying: "图片美化",
+    content_analysis_and_embedding: "内容与向量并行处理",
+    matching: "素材库匹配",
+    completed: "处理完成",
+    rejected: "过滤未通过",
+    not_selected: "历史任务未入选",
+    failed: "处理失败",
+    cancelled: "已取消"
+  }[stage] ?? stage;
+}
+
+function substageStatusLabel(status?: string | null): string {
+  return {
+    pending: "等待",
+    queued: "已排队",
+    processing: "处理中",
+    completed: "完成",
+    failed: "失败"
+  }[status ?? ""] ?? "未开始";
 }
 
 function downloadCurrentPage(images: ResultImage[]) {
