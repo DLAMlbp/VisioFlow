@@ -25,7 +25,7 @@ from src.services.images.tagging import (
 from src.services.images.vision_rate_limit import run_vision_request
 from src.services.profiles import ProcessingStandard
 
-PROCESSING_PROMPT_VERSION = "paired_filter_v10"
+PROCESSING_PROMPT_VERSION = "paired_filter_v11"
 logger = logging.getLogger(__name__)
 
 _DIAGNOSTIC_CONTENT_LIMIT = 2000
@@ -503,6 +503,8 @@ def _processing_error_message(error: Exception) -> str:
         return f"AI 图片处理响应字段不合法：{fields}" if fields else "AI 图片处理响应格式不合法"
     if isinstance(error, json.JSONDecodeError):
         return "AI 图片处理响应不是有效 JSON"
+    if isinstance(error, ValueError):
+        return f"AI 图片处理响应不一致：{str(error)[:300]}"
     return _safe_error_message(error).replace("AI 标签", "AI 图片处理")
 
 
@@ -547,45 +549,48 @@ def _normalize_standard_selection(
     if len(fallbacks) > 1:
         raise ValueError("任务包含多条兜底分类标准")
     fallback_id = fallbacks[0].id if fallbacks else None
-    missing_ids = expected_ids - set(returned_ids)
-    if missing_ids:
-        # Some JSON-schema-compatible vision providers consistently omit the
-        # fallback evaluation after selecting exactly one explicit category.
-        # This is semantically unambiguous: a fallback cannot be active when a
-        # specific category is active. Fill only that single safe case; never
-        # infer a missing business category or a missing selected evaluation.
-        returned_specific_matches = [
-            evaluation
+    evaluations_by_id = {
+        evaluation.standard_id: evaluation for evaluation in selection.evaluations
+    }
+    selected_id = selection.selected_standard_id
+    if selected_id is not None:
+        if selected_id not in expected_ids:
+            raise ValueError("AI 选择了任务之外的分类标准")
+        if selected_id not in evaluations_by_id:
+            raise ValueError("AI 选择的分类标准缺少对应评估")
+        if selected_id == fallback_id and any(
+            evaluation.matched and evaluation.standard_id != fallback_id
             for evaluation in selection.evaluations
-            if evaluation.matched and evaluation.standard_id != fallback_id
-        ]
-        can_complete_fallback = (
-            fallback_id is not None
-            and missing_ids == {fallback_id}
-            and len(returned_specific_matches) == 1
-            and selection.selected_standard_id
-            == returned_specific_matches[0].standard_id
+        ):
+            raise ValueError("明确分类与兜底分类不能同时命中")
+
+        normalized_evaluations = []
+        for standard in standards:
+            evaluation = evaluations_by_id.get(standard.id)
+            if evaluation is None:
+                evaluation = ActivationEvaluation(
+                    standard_id=standard.id,
+                    matched=False,
+                    reason="模型已选择其他唯一分类，本分类不适用",
+                    confidence=1.0,
+                )
+            elif standard.id == selected_id and not evaluation.matched:
+                evaluation = evaluation.model_copy(
+                    update={"matched": True, "reason": selection.reason}
+                )
+            elif standard.id != selected_id and evaluation.matched:
+                evaluation = evaluation.model_copy(
+                    update={
+                        "matched": False,
+                        "reason": "模型最终选择其他分类，本分类不作为路由结果",
+                    }
+                )
+            normalized_evaluations.append(evaluation)
+        normalized_selection = selection.model_copy(
+            update={"evaluations": normalized_evaluations}
         )
-        if not can_complete_fallback:
-            raise ValueError("AI 返回的分类标准评估不完整")
-        fallback_evaluation = ActivationEvaluation(
-            standard_id=fallback_id,
-            matched=False,
-            reason="已命中明确分类，兜底分类不适用",
-            confidence=1.0,
-        )
-        evaluations_by_id = {
-            evaluation.standard_id: evaluation for evaluation in selection.evaluations
-        }
-        evaluations_by_id[fallback_id] = fallback_evaluation
-        selection = selection.model_copy(
-            update={
-                "evaluations": [
-                    evaluations_by_id[standard.id] for standard in standards
-                ]
-            }
-        )
-        payload = payload.model_copy(update={"standard_selection": selection})
+        return payload.model_copy(update={"standard_selection": normalized_selection})
+
     matched_specific = [
         evaluation
         for evaluation in selection.evaluations
@@ -602,25 +607,37 @@ def _normalize_standard_selection(
     if len(matched_specific) > 1:
         raise ValueError("多个明确分类标准同时命中")
     if len(matched_specific) == 1:
-        selected = matched_specific[0]
+        selected_id = matched_specific[0].standard_id
         if fallback_evaluation is not None and fallback_evaluation.matched:
             raise ValueError("明确分类与兜底分类不能同时命中")
-        if selection.selected_standard_id != selected.standard_id:
-            raise ValueError("AI 选择的过滤标准与分类评估不一致")
-        return payload
-    if fallback_evaluation is None:
+    elif fallback_id is not None:
+        selected_id = fallback_id
+    else:
         raise ValueError("分类标准必须且只能命中一套")
-    if selection.selected_standard_id not in {None, fallback_id}:
-        raise ValueError("AI 选择的过滤标准与分类评估不一致")
-    normalized_fallback = fallback_evaluation.model_copy(update={"matched": True})
+
+    normalized_evaluations = []
+    for standard in standards:
+        evaluation = evaluations_by_id.get(standard.id)
+        if evaluation is None:
+            evaluation = ActivationEvaluation(
+                standard_id=standard.id,
+                matched=standard.id == selected_id,
+                reason=(
+                    selection.reason
+                    if standard.id == selected_id
+                    else "模型已选择其他唯一分类，本分类不适用"
+                ),
+                confidence=1.0,
+            )
+        elif evaluation.matched != (standard.id == selected_id):
+            evaluation = evaluation.model_copy(
+                update={"matched": standard.id == selected_id}
+            )
+        normalized_evaluations.append(evaluation)
     normalized_selection = selection.model_copy(
         update={
-            "evaluations": [
-                normalized_fallback if item.standard_id == fallback_id else item
-                for item in selection.evaluations
-            ],
-            "selected_standard_id": fallback_id,
-            "reason": selection.reason or normalized_fallback.reason,
+            "evaluations": normalized_evaluations,
+            "selected_standard_id": selected_id,
         }
     )
     return payload.model_copy(update={"standard_selection": normalized_selection})

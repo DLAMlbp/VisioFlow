@@ -138,7 +138,7 @@ def test_selection_safely_completes_only_an_omitted_fallback() -> None:
     assert normalized.standard_selection.evaluations[1].matched is False
 
 
-def test_selection_never_infers_an_omitted_business_category() -> None:
+def test_selection_completes_an_omitted_nonselected_business_category() -> None:
     standards = [
         ProcessingStandard(
             id=standard_id,
@@ -177,8 +177,70 @@ def test_selection_never_infers_an_omitted_business_category() -> None:
         filter=FilterDecision.model_validate(_filter_payload()["filter"]),
     )
 
-    with pytest.raises(ValueError, match="评估不完整"):
-        _normalize_standard_selection(payload, standards)
+    normalized = _normalize_standard_selection(payload, standards)
+
+    assert normalized.standard_selection is not None
+    assert [item.standard_id for item in normalized.standard_selection.evaluations] == [
+        "std_selected",
+        "std_omitted",
+        "std_fallback",
+    ]
+    assert normalized.standard_selection.evaluations[1].matched is False
+
+
+def test_selection_uses_explicit_selected_id_to_resolve_redundant_matches() -> None:
+    standards = [
+        ProcessingStandard(
+            id=standard_id,
+            name=standard_id,
+            version=1,
+            description=standard_id,
+            classification_rule=standard_id,
+            filter_rule="审核画质",
+            is_fallback=is_fallback,
+        )
+        for standard_id, is_fallback in (
+            ("std_selected", False),
+            ("std_other", False),
+            ("std_fallback", True),
+        )
+    ]
+    payload = ProcessingVisionPayload(
+        standard_selection=StandardSelection(
+            evaluations=[
+                ActivationEvaluation(
+                    standard_id="std_selected",
+                    matched=True,
+                    reason="最终选择",
+                    confidence=0.92,
+                ),
+                ActivationEvaluation(
+                    standard_id="std_other",
+                    matched=True,
+                    reason="存在部分重叠",
+                    confidence=0.75,
+                ),
+                ActivationEvaluation(
+                    standard_id="std_fallback",
+                    matched=False,
+                    reason="不适用",
+                    confidence=0.9,
+                ),
+            ],
+            selected_standard_id="std_selected",
+            reason="最终唯一分类为 std_selected",
+        ),
+        filter=FilterDecision.model_validate(_filter_payload()["filter"]),
+    )
+
+    normalized = _normalize_standard_selection(payload, standards)
+
+    assert normalized.standard_selection is not None
+    assert [
+        item.standard_id
+        for item in normalized.standard_selection.evaluations
+        if item.matched
+    ] == ["std_selected"]
 
 
 @pytest.mark.asyncio
