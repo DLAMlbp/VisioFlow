@@ -18,7 +18,7 @@ def _production_settings(**updates) -> Settings:
         "trusted_hosts": "images.example.com",
     }
     values.update(updates)
-    return Settings(**values)
+    return Settings(**values, _env_file=None)
 
 
 def test_production_configuration_accepts_explicit_secrets() -> None:

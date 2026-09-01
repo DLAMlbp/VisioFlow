@@ -13,7 +13,9 @@ param(
 
     [switch]$RequireCleanGit,
     [switch]$SkipTests,
-    [switch]$BuildOnly
+    [switch]$BuildOnly,
+    [switch]$RetireLegacyWorkers,
+    [string]$PrebuiltApiImage = ""
 )
 
 Set-StrictMode -Version Latest
@@ -111,6 +113,14 @@ function Get-PinnedImageReference {
 function Invoke-ServerPrecheck {
     Write-Host "`n== Server safety precheck ==" -ForegroundColor Cyan
     Invoke-RemoteBash -Script $script:PrecheckScript -Arguments @($RemoteDirectory)
+}
+
+function Restore-LegacyWorkers {
+    if (-not $RetireLegacyWorkers) {
+        return
+    }
+    Write-Warning "Restoring legacy workers because the topology transition did not complete."
+    Invoke-RemoteBash -Script $script:RestoreLegacyWorkersScript -Arguments @($RemoteDirectory)
 }
 
 $PrecheckScript = @'
@@ -216,6 +226,90 @@ fi
 echo "SAFETY CHECK PASSED: deployment operations are allowed."
 '@
 
+$RetireLegacyWorkersScript = @'
+set -euo pipefail
+
+remote_dir="$1"
+transition_mode="${2:-verify}"
+resolved_dir="$(cd "$remote_dir" && pwd -P)"
+if [[ "$resolved_dir" != "$remote_dir" || ! -f "$resolved_dir/docker-compose.prod.yml" || ! -f "$resolved_dir/.env.production" ]]; then
+  echo "ERROR: refusing to transition workers outside the validated production directory" >&2
+  exit 2
+fi
+
+cd "$resolved_dir"
+compose=(docker compose --env-file .env.production -f docker-compose.prod.yml)
+legacy_services=(worker-embedding worker-library worker-filter worker-vision)
+queue_names=(embedding library filtering vision)
+
+active_jobs="$("${compose[@]}" exec -T postgres sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -A -c "SELECT count(*) FROM image_jobs WHERE status IN (CHR(113)||CHR(117)||CHR(101)||CHR(117)||CHR(101)||CHR(100), CHR(112)||CHR(114)||CHR(111)||CHR(99)||CHR(101)||CHR(115)||CHR(115)||CHR(105)||CHR(110)||CHR(103), CHR(99)||CHR(97)||CHR(110)||CHR(99)||CHR(101)||CHR(108)||CHR(108)||CHR(105)||CHR(110)||CHR(103));"' < /dev/null | tr -d '[:space:]')"
+if [[ ! "$active_jobs" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: unable to verify active production jobs" >&2
+  exit 2
+fi
+if (( active_jobs != 0 )); then
+  echo "ERROR: refusing to stop legacy workers while $active_jobs image job(s) are active" >&2
+  exit 42
+fi
+
+for queue in "${queue_names[@]}"; do
+  length="$("${compose[@]}" exec -T redis redis-cli LLEN "$queue" < /dev/null | tr -d '[:space:]')"
+  if [[ ! "$length" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: unable to verify Celery queue $queue" >&2
+    exit 2
+  fi
+  if (( length != 0 )); then
+    echo "ERROR: refusing to stop legacy workers while queue $queue contains $length task(s)" >&2
+    exit 42
+  fi
+done
+
+defined_services="$("${compose[@]}" config --services)"
+services_to_stop=()
+for service in "${legacy_services[@]}"; do
+  if grep -Fxq "$service" <<<"$defined_services"; then
+    services_to_stop+=("$service")
+  fi
+done
+if (( ${#services_to_stop[@]} == 0 )); then
+  echo "Legacy workers are already absent; no topology transition is required."
+  exit 0
+fi
+
+if [[ "$transition_mode" != "execute" ]]; then
+  echo "Legacy worker retirement verification passed: ${services_to_stop[*]}"
+  exit 0
+fi
+
+echo "Stopping verified-idle legacy workers: ${services_to_stop[*]}"
+"${compose[@]}" stop --timeout 30 "${services_to_stop[@]}"
+echo "Legacy workers stopped. The full deployment safety gate must pass before release."
+'@
+
+$RestoreLegacyWorkersScript = @'
+set -euo pipefail
+
+remote_dir="$1"
+resolved_dir="$(cd "$remote_dir" && pwd -P)"
+cd "$resolved_dir"
+legacy_containers=(
+  image-intelligence-worker-embedding-1
+  image-intelligence-worker-library-1
+  image-intelligence-worker-filter-1
+  image-intelligence-worker-vision-1
+)
+containers_to_start=()
+for container in "${legacy_containers[@]}"; do
+  if docker container inspect "$container" >/dev/null 2>&1; then
+    containers_to_start+=("$container")
+  fi
+done
+if (( ${#containers_to_start[@]} > 0 )); then
+  docker start "${containers_to_start[@]}" >/dev/null
+  echo "Legacy workers restored: ${containers_to_start[*]}"
+fi
+'@
+
 $DeployScript = @'
 set -euo pipefail
 
@@ -224,6 +318,8 @@ api_image="$2"
 web_image="$3"
 web_port="$4"
 deployment_id="$5"
+compose_payload="$6"
+compose_sha256="$7"
 
 resolved_dir="$(cd "$remote_dir" && pwd -P)"
 if [[ "$resolved_dir" != "$remote_dir" || ! -f "$resolved_dir/docker-compose.prod.yml" || ! -f "$resolved_dir/.env.production" ]]; then
@@ -237,8 +333,46 @@ deployments_dir="$resolved_dir/.deployments"
 mkdir -p "$deployments_dir"
 chmod 700 "$deployments_dir"
 rollback_file="$deployments_dir/${deployment_id}.env.production"
+rollback_compose="$deployments_dir/${deployment_id}.docker-compose.prod.yml"
 cp --preserve=mode,ownership .env.production "$rollback_file"
+cp --preserve=mode,ownership docker-compose.prod.yml "$rollback_compose"
 chmod 600 "$rollback_file"
+chmod 600 "$rollback_compose"
+release_committed=0
+
+restore_config_files() {
+  cp --preserve=mode,ownership "$rollback_file" .env.production
+  cp --preserve=mode,ownership "$rollback_compose" docker-compose.prod.yml
+}
+
+restore_config_on_error() {
+  local exit_code="$?"
+  if (( exit_code != 0 && release_committed == 0 )); then
+    restore_config_files
+  fi
+  trap - EXIT
+  exit "$exit_code"
+}
+trap restore_config_on_error EXIT
+
+if [[ "$compose_payload" != "-" ]]; then
+  compose_temporary="$(mktemp "$resolved_dir/docker-compose.prod.yml.XXXXXX")"
+  printf '%s' "$compose_payload" | base64 -d > "$compose_temporary"
+  actual_compose_sha256="$(sha256sum "$compose_temporary" | awk '{print $1}')"
+  if [[ "$actual_compose_sha256" != "$compose_sha256" ]]; then
+    rm -f "$compose_temporary"
+    echo "ERROR: uploaded production compose checksum mismatch" >&2
+    exit 2
+  fi
+  chmod --reference=docker-compose.prod.yml "$compose_temporary"
+  chown --reference=docker-compose.prod.yml "$compose_temporary"
+  if ! docker compose --env-file .env.production -f "$compose_temporary" config --quiet; then
+    rm -f "$compose_temporary"
+    echo "ERROR: uploaded production compose is invalid" >&2
+    exit 2
+  fi
+  mv "$compose_temporary" docker-compose.prod.yml
+fi
 
 set_env_value() {
   local key="$1"
@@ -259,7 +393,7 @@ set_env_value() {
 
 restore_previous_release() {
   echo "Restoring the previous image references..." >&2
-  cp --preserve=mode,ownership "$rollback_file" .env.production
+  restore_config_files
   "${compose[@]}" pull
   "${compose[@]}" up -d --remove-orphans
 }
@@ -271,9 +405,10 @@ fi
 if [[ "$web_image" != "-" ]]; then set_env_value WEB_IMAGE "$web_image"; fi
 
 echo "Rollback snapshot: $rollback_file"
+echo "Compose rollback snapshot: $rollback_compose"
 echo "Pulling immutable images..."
 if ! "${compose[@]}" pull; then
-  cp --preserve=mode,ownership "$rollback_file" .env.production
+  restore_config_files
   echo "Image pull failed; production configuration was restored." >&2
   exit 1
 fi
@@ -292,7 +427,7 @@ for _attempt in $(seq 1 18); do
   exited_services="$("${compose[@]}" ps --status exited --services | grep -vE '^(minio-init|migrate)$' || true)"
   restarting_services="$("${compose[@]}" ps --status restarting --services 2>/dev/null || true)"
   if curl -fsS --max-time 5 "http://127.0.0.1:${web_port}/" >/dev/null; then web_ok=1; fi
-  if "${compose[@]}" exec -T api python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5)" >/dev/null 2>&1; then api_ok=1; fi
+  if "${compose[@]}" exec -T api python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5)" </dev/null >/dev/null 2>&1; then api_ok=1; fi
   if (( web_ok == 1 && api_ok == 1 )) && [[ -z "$exited_services" && -z "$restarting_services" ]]; then
     healthy=1
     break
@@ -309,7 +444,7 @@ if (( healthy != 1 )); then
   rollback_web_ok=0
   rollback_api_ok=0
   if curl -fsS --max-time 5 "http://127.0.0.1:${web_port}/" >/dev/null; then rollback_web_ok=1; fi
-  if "${compose[@]}" exec -T api python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5)" >/dev/null 2>&1; then rollback_api_ok=1; fi
+  if "${compose[@]}" exec -T api python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5)" </dev/null >/dev/null 2>&1; then rollback_api_ok=1; fi
   if (( rollback_web_ok != 1 || rollback_api_ok != 1 )); then
     echo "Rollback completed, but the previous release is not healthy." >&2
     exit 3
@@ -322,8 +457,10 @@ echo "-- deployed compose status"
 "${compose[@]}" ps
 echo "WEB HEALTH: HTTP 200"
 echo "API HEALTH: ready"
+release_committed=1
+trap - EXIT
 echo "Manual rollback command:"
-printf 'cd %q && cp --preserve=mode,ownership %q .env.production && docker compose --env-file .env.production -f docker-compose.prod.yml pull && docker compose --env-file .env.production -f docker-compose.prod.yml up -d --remove-orphans\n' "$resolved_dir" "$rollback_file"
+printf 'cd %q && cp --preserve=mode,ownership %q .env.production && cp --preserve=mode,ownership %q docker-compose.prod.yml && docker compose --env-file .env.production -f docker-compose.prod.yml pull && docker compose --env-file .env.production -f docker-compose.prod.yml up -d --remove-orphans\n' "$resolved_dir" "$rollback_file" "$rollback_compose"
 '@
 
 Assert-Command git
@@ -366,6 +503,18 @@ try {
     $webImage = "${webRepository}:$version"
     $deployApi = $Component -in @("All", "Api")
     $deployWeb = $Component -in @("All", "Web")
+    if ($RetireLegacyWorkers -and -not $deployApi) {
+        throw "RetireLegacyWorkers can only be used when the API component is deployed."
+    }
+    if ($PrebuiltApiImage -and -not $deployApi) {
+        throw "PrebuiltApiImage can only be used when the API component is deployed."
+    }
+    if ($PrebuiltApiImage) {
+        $expectedDigestPrefix = [Regex]::Escape("$apiRepository@sha256:")
+        if ($PrebuiltApiImage -notmatch "^${expectedDigestPrefix}[0-9a-f]{64}$") {
+            throw "PrebuiltApiImage must be an immutable lowercase SHA-256 digest from ${apiRepository}."
+        }
+    }
 
     if (-not $BuildOnly) {
         Assert-Command ssh
@@ -399,6 +548,8 @@ try {
             "-o", "StrictHostKeyChecking=yes",
             "-i", $resolvedIdentity
         )
+        # Every remote mutation, including stopping the legacy topology, is
+        # gated by the full read-only production safety check.
         Invoke-ServerPrecheck
     }
 
@@ -406,30 +557,40 @@ try {
     Assert-ExitCode "Connect to the local Docker engine"
 
     if ($deployApi) {
-        if ($isCleanRelease -and (Test-RemoteImageExists $apiImage)) {
-            Write-Host "Reusing existing immutable API image: $apiImage"
+        if ($PrebuiltApiImage) {
+            $apiPinnedImage = $PrebuiltApiImage
+            Write-Host "Using prebuilt, already-verified API image: $apiPinnedImage"
         }
         else {
-            Write-Host "`n== Build API image $apiImage ==" -ForegroundColor Cyan
-            & docker build --pull --tag $apiImage .
-            Assert-ExitCode "Build API image"
-            if (-not $SkipTests) {
-                Write-Host "`n== Backend tests ==" -ForegroundColor Cyan
-                $testsPath = Join-Path $repoRoot "tests"
-                $frontendPath = Join-Path $repoRoot "frontend"
-                $scriptsPath = Join-Path $repoRoot "scripts"
-                & docker run --rm `
-                    --volume "${testsPath}:/app/tests:ro" `
-                    --volume "${frontendPath}:/app/frontend:ro" `
-                    --volume "${scriptsPath}:/app/scripts:ro" `
-                    $apiImage sh -c "pip install --no-cache-dir pytest==8.4.2 pytest-asyncio==1.2.0 httpx==0.28.1 && python -m pytest -q"
-                Assert-ExitCode "Backend tests"
+            if ($isCleanRelease -and (Test-RemoteImageExists $apiImage)) {
+                Write-Host "Reusing existing immutable API image: $apiImage"
             }
-            & docker push $apiImage
-            Assert-ExitCode "Push API image"
+            else {
+                Write-Host "`n== Build API image $apiImage ==" -ForegroundColor Cyan
+                & docker build --pull --tag $apiImage .
+                Assert-ExitCode "Build API image"
+                if (-not $SkipTests) {
+                    Write-Host "`n== Backend tests ==" -ForegroundColor Cyan
+                    $testsPath = Join-Path $repoRoot "tests"
+                    $frontendPath = Join-Path $repoRoot "frontend"
+                    $scriptsPath = Join-Path $repoRoot "scripts"
+                    $productionComposePath = Join-Path $repoRoot "docker-compose.prod.yml"
+                    $dockerfilePath = Join-Path $repoRoot "Dockerfile"
+                    & docker run --rm `
+                        --volume "${testsPath}:/app/tests:ro" `
+                        --volume "${frontendPath}:/app/frontend:ro" `
+                        --volume "${scriptsPath}:/app/scripts:ro" `
+                        --volume "${productionComposePath}:/app/docker-compose.prod.yml:ro" `
+                        --volume "${dockerfilePath}:/app/Dockerfile:ro" `
+                        $apiImage sh -c "pip install --no-cache-dir pytest==8.4.2 pytest-asyncio==1.2.0 httpx==0.28.1 && python -m pytest -q"
+                    Assert-ExitCode "Backend tests"
+                }
+                & docker push $apiImage
+                Assert-ExitCode "Push API image"
+            }
+            $apiPinnedImage = Get-PinnedImageReference -Image $apiImage -Repository $apiRepository
+            Write-Host "Pinned API image: $apiPinnedImage"
         }
-        $apiPinnedImage = Get-PinnedImageReference -Image $apiImage -Repository $apiRepository
-        Write-Host "Pinned API image: $apiPinnedImage"
     }
 
     if ($deployWeb) {
@@ -462,19 +623,82 @@ try {
         exit 0
     }
 
-    Invoke-ServerPrecheck
+    $composePayload = "-"
+    $composeSha256 = "-"
+    if ($deployApi) {
+        # Validate and serialize the topology before stopping any production
+        # worker. Local .env.production intentionally does not carry release
+        # image references, so use temporary non-secret validation values.
+        $composePath = Join-Path $repoRoot "docker-compose.prod.yml"
+        $savedImageEnvironment = @{
+            API_IMAGE = $env:API_IMAGE
+            API_GATEWAY_IMAGE = $env:API_GATEWAY_IMAGE
+            WEB_IMAGE = $env:WEB_IMAGE
+        }
+        try {
+            $env:API_IMAGE = $apiPinnedImage
+            $env:API_GATEWAY_IMAGE = $apiPinnedImage
+            $env:WEB_IMAGE = if ($deployWeb) {
+                $webPinnedImage
+            }
+            else {
+                "example.invalid/preserved-web@sha256:" + ("0" * 64)
+            }
+            & docker compose --env-file .env.production -f $composePath config --quiet
+            Assert-ExitCode "Validate production compose"
+        }
+        finally {
+            foreach ($name in $savedImageEnvironment.Keys) {
+                $value = $savedImageEnvironment[$name]
+                if ($null -eq $value) {
+                    Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+                }
+                else {
+                    Set-Item -LiteralPath "Env:$name" -Value $value
+                }
+            }
+        }
+        $composePayload = [Convert]::ToBase64String([IO.File]::ReadAllBytes($composePath))
+        $composeSha256 = (Get-FileHash -LiteralPath $composePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+
+    if ($RetireLegacyWorkers) {
+        Write-Host "`n== Retire verified-idle legacy workers ==" -ForegroundColor Cyan
+        Invoke-RemoteBash -Script $RetireLegacyWorkersScript -Arguments @(
+            $RemoteDirectory,
+            "execute"
+        )
+        try {
+            Invoke-ServerPrecheck
+        }
+        catch {
+            Restore-LegacyWorkers
+            throw
+        }
+    }
+    else {
+        Invoke-ServerPrecheck
+    }
     $deploymentId = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ") + "-$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
     $apiArgument = if ($deployApi) { $apiPinnedImage } else { "-" }
     $webArgument = if ($deployWeb) { $webPinnedImage } else { "-" }
 
     Write-Host "`n== Deploy $version ==" -ForegroundColor Cyan
-    Invoke-RemoteBash -Script $DeployScript -Arguments @(
-        $RemoteDirectory,
-        $apiArgument,
-        $webArgument,
-        "$WebPort",
-        $deploymentId
-    )
+    try {
+        Invoke-RemoteBash -Script $DeployScript -Arguments @(
+            $RemoteDirectory,
+            $apiArgument,
+            $webArgument,
+            "$WebPort",
+            $deploymentId,
+            $composePayload,
+            $composeSha256
+        )
+    }
+    catch {
+        Restore-LegacyWorkers
+        throw
+    }
 
     Write-Host "`nDeployment completed successfully: $version" -ForegroundColor Green
 }

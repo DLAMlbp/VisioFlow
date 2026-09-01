@@ -162,7 +162,7 @@ def test_standard_preview_keeps_classification_and_filter_rules() -> None:
     assert compiled.config["is_fallback"] is False
 
 
-def test_new_job_accepts_one_legacy_standard_field_but_requires_beautify_profile() -> None:
+def test_new_job_accepts_one_legacy_standard_field_and_server_default_beautify() -> None:
     payload = CreateImageJobRequest(
         processing_standards=["std_product"],
         beautify_profile="bty_natural",
@@ -171,11 +171,12 @@ def test_new_job_accepts_one_legacy_standard_field_but_requires_beautify_profile
 
     assert payload.processing_standards == ["std_product"]
 
-    with pytest.raises(ValidationError, match="请选择独立的美化标准"):
-        CreateImageJobRequest(
-            filter_route=_route(),
-            images=[{"object_key": "uploads/test/image.jpg"}],
-        )
+    defaulted = CreateImageJobRequest(
+        filter_route=_route(),
+        images=[{"object_key": "uploads/test/image.jpg"}],
+    )
+
+    assert defaulted.beautify_profile is None
 
 
 def test_formal_job_cannot_disable_required_processing_stages() -> None:
@@ -222,6 +223,51 @@ async def test_ai_selection_rejects_zero_matching_standards(
 
     assert outcome.status == "failed"
     assert outcome.payload is None
+
+
+@pytest.mark.asyncio
+async def test_combined_selection_routes_zero_specific_matches_to_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    regular = _standard("std_regular", 100)
+    fallback = _standard("std_fallback", 10).model_copy(update={"is_fallback": True})
+    payload = _payload(None)
+    payload["standard_selection"]["evaluations"] = [
+        {
+            "standard_id": regular.id,
+            "matched": False,
+            "reason": "没有明确命中",
+            "confidence": 0.82,
+        },
+        {
+            "standard_id": fallback.id,
+            "matched": False,
+            "reason": "使用兜底标准",
+            "confidence": 0.8,
+        },
+    ]
+    payload["standard_selection"]["selected_standard_id"] = fallback.id
+    service = ProcessingVisionService(
+        Settings(ai_tagging_enabled=True, ai_tagging_api_key="test-key")
+    )
+    monkeypatch.setattr(
+        service,
+        "_request",
+        lambda *_args: {
+            "choices": [{"message": {"content": json.dumps(payload, ensure_ascii=False)}}]
+        },
+    )
+
+    outcome = await service.analyze(b"image", standards=[regular, fallback])
+
+    assert outcome.status == "completed"
+    assert outcome.payload is not None
+    selection = outcome.payload.standard_selection
+    assert selection is not None
+    assert selection.selected_standard_id == fallback.id
+    assert [item.standard_id for item in selection.evaluations if item.matched] == [
+        fallback.id
+    ]
 
 
 @pytest.mark.asyncio

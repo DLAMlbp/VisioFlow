@@ -18,6 +18,14 @@ from src.models.image_similarity_match import ImageSimilarityMatch
 
 logger = logging.getLogger(__name__)
 
+_POST_FILTER_ACTIVE_STATUSES = (
+    "filtered",
+    "beautify_planning",
+    "enhancing",
+    "enhanced",
+    "tagging",
+)
+
 
 def terminal_job_status(*, total_count: int, failed_count: int) -> str:
     if total_count > 0 and failed_count >= total_count:
@@ -380,6 +388,190 @@ class ImageJobRepository:
         await self.session.commit()
         return result.rowcount == 1
 
+    async def queue_post_filter_branches(
+        self,
+        image_id: str,
+        *,
+        similarity_enabled: bool,
+    ) -> bool:
+        values: dict[str, object] = {"beautify_plan_status": "pending"}
+        if similarity_enabled:
+            values.update(
+                analysis_status="pending",
+                embedding_status="pending",
+                match_status="pending",
+            )
+        result = await self.session.execute(
+            update(ImageItem)
+            .where(
+                ImageItem.id == image_id,
+                ImageItem.status == "filtered",
+                ImageItem.beautify_plan_status.is_(None),
+                ImageItem.analysis_status.is_(None),
+                ImageItem.embedding_status.is_(None),
+                ImageItem.match_status.is_(None),
+            )
+            .values(**values)
+        )
+        await self.session.commit()
+        return result.rowcount == 1
+
+    async def complete_combined_classification_filter(
+        self,
+        item: ImageItem,
+        *,
+        model_name: str,
+        completion_prompt_version: str,
+        processing_prompt_version: str,
+        duration_ms: int | None,
+        completion_payload: Mapping[str, object],
+        processing_payload: Mapping[str, object],
+        diagnostic_json: Mapping[str, object] | None,
+        routed_filter_profile_id: str,
+        routed_filter_profile_version: int | None,
+        completion_label: str | None,
+        confidence: float,
+        review_required: bool,
+        passed: bool,
+        final_score: float,
+        reasons: list[str],
+        reject_codes: list[str] | None = None,
+    ) -> bool:
+        """Persist the combined AI result and its business transition atomically."""
+        target_status = "filtered" if passed else "rejected"
+        result = await self.session.execute(
+            update(ImageItem)
+            .where(
+                ImageItem.id == item.id,
+                ImageItem.status == "analyzing",
+                ImageItem.completion_status == "processing",
+            )
+            .values(
+                status=target_status,
+                completion_status="completed",
+                completion_model=model_name,
+                completion_prompt_version=completion_prompt_version,
+                completion_duration_ms=duration_ms,
+                completion_json=dict(completion_payload),
+                completion_error=None,
+                completion_label=completion_label,
+                completion_confidence=confidence,
+                review_required=review_required,
+                completion_completed_at=func.now(),
+                routed_filter_profile_id=routed_filter_profile_id,
+                routed_filter_profile_version=routed_filter_profile_version,
+                ai_processing_status="completed",
+                ai_processing_json=dict(processing_payload),
+                ai_processing_diagnostic_json=(
+                    dict(diagnostic_json) if diagnostic_json is not None else None
+                ),
+                ai_processing_model=model_name,
+                ai_processing_prompt_version=processing_prompt_version,
+                ai_processing_duration_ms=duration_ms,
+                ai_processing_error=None,
+                ai_processing_started_at=func.coalesce(
+                    ImageItem.ai_processing_started_at,
+                    ImageItem.completion_started_at,
+                ),
+                ai_processing_completed_at=func.now(),
+                preprocess_completed_at=func.now(),
+                reject_codes=None if passed else list(reject_codes or []),
+            )
+        )
+        if result.rowcount != 1:
+            await self.session.rollback()
+            return False
+
+        await self._upsert_result(
+            item.id,
+            {
+                "decision": "filtered" if passed else "rejected",
+                "final_score": final_score if passed else None,
+                "reject_codes_json": None if passed else list(reject_codes or []),
+                "reasons_json": reasons,
+            },
+        )
+        if not passed:
+            await self.session.execute(
+                update(ImageJob)
+                .where(ImageJob.id == item.job_id)
+                .values(
+                    processed_count=ImageJob.processed_count + 1,
+                    rejected_count=ImageJob.rejected_count + 1,
+                )
+            )
+        await self.session.commit()
+        item.status = target_status
+        item.completion_status = "completed"
+        item.ai_processing_status = "completed"
+        item.routed_filter_profile_id = routed_filter_profile_id
+        item.routed_filter_profile_version = routed_filter_profile_version
+        if not passed:
+            await self.complete_job_if_finished(item.job_id)
+        return True
+
+    async def fail_combined_classification_filter(
+        self,
+        item: ImageItem,
+        *,
+        model_name: str,
+        completion_prompt_version: str,
+        processing_prompt_version: str,
+        duration_ms: int | None,
+        diagnostic_json: Mapping[str, object] | None,
+        error_message: str,
+    ) -> bool:
+        """Record a terminal combined-call failure without a half-saved stage."""
+        result = await self.session.execute(
+            update(ImageItem)
+            .where(
+                ImageItem.id == item.id,
+                ImageItem.status == "analyzing",
+                ImageItem.completion_status == "processing",
+            )
+            .values(
+                status="failed",
+                completion_status="failed",
+                completion_model=model_name,
+                completion_prompt_version=completion_prompt_version,
+                completion_duration_ms=duration_ms,
+                completion_error=error_message,
+                completion_completed_at=func.now(),
+                ai_processing_status="failed",
+                ai_processing_diagnostic_json=(
+                    dict(diagnostic_json) if diagnostic_json is not None else None
+                ),
+                ai_processing_model=model_name,
+                ai_processing_prompt_version=processing_prompt_version,
+                ai_processing_duration_ms=duration_ms,
+                ai_processing_error=error_message,
+                ai_processing_started_at=func.coalesce(
+                    ImageItem.ai_processing_started_at,
+                    ImageItem.completion_started_at,
+                ),
+                ai_processing_completed_at=func.now(),
+                preprocess_completed_at=func.now(),
+            )
+        )
+        if result.rowcount != 1:
+            await self.session.rollback()
+            return False
+        await self._upsert_result(
+            item.id,
+            {"decision": "failed", "reasons_json": [error_message]},
+        )
+        await self.session.execute(
+            update(ImageJob)
+            .where(ImageJob.id == item.job_id)
+            .values(processed_count=ImageJob.processed_count + 1)
+        )
+        await self.session.commit()
+        item.status = "failed"
+        item.completion_status = "failed"
+        item.ai_processing_status = "failed"
+        await self.complete_job_if_finished(item.job_id)
+        return True
+
     async def claim_routed_processing(self, image_id: str) -> ImageItem | None:
         result = await self.session.execute(
             update(ImageItem)
@@ -431,7 +623,7 @@ class ImageJobRepository:
             update(ImageItem)
             .where(
                 ImageItem.id == image_id,
-                ImageItem.status == "tagging",
+                ImageItem.status.in_(_POST_FILTER_ACTIVE_STATUSES),
                 ImageItem.analysis_status == "pending",
             )
             .values(analysis_status="processing", analysis_started_at=func.now())
@@ -452,7 +644,7 @@ class ImageJobRepository:
             select(ImageItem.id)
             .where(
                 ImageItem.job_id == job_id,
-                ImageItem.status == "tagging",
+                ImageItem.status.in_(_POST_FILTER_ACTIVE_STATUSES),
                 ImageItem.analysis_status == "pending",
             )
             .order_by(ImageItem.created_at, ImageItem.id)
@@ -485,7 +677,7 @@ class ImageJobRepository:
             update(ImageItem)
             .where(
                 ImageItem.id == image_id,
-                ImageItem.status == "tagging",
+                ImageItem.status.in_(_POST_FILTER_ACTIVE_STATUSES),
                 ImageItem.embedding_status == "pending",
             )
             .values(embedding_status="processing", embedding_started_at=func.now())
@@ -503,25 +695,51 @@ class ImageJobRepository:
         *,
         embedding: list[float] | None,
         embedding_version: str | None,
+        provisional: bool = False,
     ) -> None:
+        if provisional:
+            completed_status = "provisional" if embedding is not None else "provisional_failed"
+        else:
+            completed_status = "completed" if embedding is not None else "failed"
         await self.session.execute(
             update(ImageItem)
             .where(ImageItem.id == image_id, ImageItem.embedding_status == "processing")
             .values(
                 embedding=embedding,
                 embedding_version=embedding_version,
-                embedding_status="completed" if embedding is not None else "failed",
+                embedding_status=completed_status,
                 embedding_completed_at=func.now(),
             )
         )
         await self.session.commit()
+
+    async def queue_final_embedding(self, image_id: str) -> bool:
+        """Replace a pre-enhancement vector with the authoritative delivery-image vector."""
+        result = await self.session.execute(
+            update(ImageItem)
+            .where(
+                ImageItem.id == image_id,
+                ImageItem.status == "enhanced",
+                ImageItem.embedding_status.in_(("provisional", "provisional_failed")),
+                ImageItem.match_status == "pending",
+            )
+            .values(
+                embedding=None,
+                embedding_version=None,
+                embedding_status="pending",
+                embedding_started_at=None,
+                embedding_completed_at=None,
+            )
+        )
+        await self.session.commit()
+        return result.rowcount == 1
 
     async def claim_match_if_ready(self, image_id: str) -> bool:
         result = await self.session.execute(
             update(ImageItem)
             .where(
                 ImageItem.id == image_id,
-                ImageItem.status == "tagging",
+                ImageItem.status.in_(_POST_FILTER_ACTIVE_STATUSES),
                 ImageItem.match_status == "pending",
                 ImageItem.analysis_status.in_(("completed", "failed")),
                 ImageItem.embedding_status.in_(("completed", "failed")),
@@ -536,7 +754,7 @@ class ImageJobRepository:
             update(ImageItem)
             .where(
                 ImageItem.id == image_id,
-                ImageItem.status == "tagging",
+                ImageItem.status.in_(_POST_FILTER_ACTIVE_STATUSES),
                 ImageItem.match_status == "queued",
             )
             .values(match_status="processing", match_started_at=func.now())
@@ -555,6 +773,48 @@ class ImageJobRepository:
             .values(match_status="completed", match_completed_at=func.now())
         )
         await self.session.commit()
+
+    async def finalize_selected_if_ready(self, item: ImageItem, *, reason: str) -> bool:
+        """Join enhancement and semantic branches and finalize exactly once."""
+        transitioned = await self.session.execute(
+            update(ImageItem)
+            .where(
+                ImageItem.id == item.id,
+                ImageItem.status == "enhanced",
+                ImageItem.enhance_completed_at.is_not(None),
+                ImageItem.analysis_status.in_(("completed", "failed")),
+                ImageItem.embedding_status.in_(("completed", "failed")),
+                ImageItem.match_status == "completed",
+            )
+            .values(status="selected")
+        )
+        if transitioned.rowcount != 1:
+            await self.session.rollback()
+            return False
+
+        stored_result = await self.session.execute(
+            select(ImageResult).where(ImageResult.image_id == item.id)
+        )
+        image_result = stored_result.scalar_one_or_none()
+        previous_reasons = list(image_result.reasons_json or []) if image_result else []
+        if reason and reason not in previous_reasons:
+            previous_reasons.append(reason)
+        await self._upsert_result(
+            item.id,
+            {"decision": "selected", "reasons_json": previous_reasons},
+        )
+        await self.session.execute(
+            update(ImageJob)
+            .where(ImageJob.id == item.job_id)
+            .values(
+                processed_count=ImageJob.processed_count + 1,
+                selected_count=ImageJob.selected_count + 1,
+            )
+        )
+        await self.session.commit()
+        item.status = "selected"
+        await self.complete_job_if_finished(item.job_id)
+        return True
 
     async def list_jobs(self, limit: int, offset: int) -> tuple[int, list[ImageJob]]:
         total = await self.session.scalar(select(func.count()).select_from(ImageJob))
@@ -1188,9 +1448,9 @@ class ImageJobRepository:
                 status == "filtered" and beautify_plan_status in {"pending", "processing"}
             ):
                 counts["beautify_planning"] += count
-            elif status in {"filtered", "enhancing", "enhanced"}:
+            elif status in {"filtered", "enhancing"}:
                 counts["beautifying"] += count
-            elif status == "tagging":
+            elif status in {"enhanced", "tagging"}:
                 if analysis_status in {"pending", "processing"}:
                     counts["content_analysis"] += count
                 elif embedding_status in {"pending", "processing"} or match_status in {

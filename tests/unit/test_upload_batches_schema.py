@@ -91,11 +91,22 @@ async def test_upload_batch_freezes_all_active_standards_and_ignores_subset(
     async def resolve_beautify(_self, profile_id):
         return SimpleNamespace(id=profile_id), {"id": profile_id, "config": {}}
 
+    async def resolve_global_filter(_self):
+        return (
+            SimpleNamespace(id="flt_global"),
+            {"id": "flt_global", "version": 1, "instruction": "全局过滤规则"},
+        )
+
     monkeypatch.setattr(
         "src.services.upload_batches.get_storage_provider", lambda: Storage()
     )
     monkeypatch.setattr(ManagedProfileService, "resolve_standards", resolve_standards)
     monkeypatch.setattr(ManagedProfileService, "resolve_beautify", resolve_beautify)
+    monkeypatch.setattr(
+        ManagedProfileService,
+        "resolve_global_filter",
+        resolve_global_filter,
+    )
     monkeypatch.setattr(ProfileLoader, "get_similarity_profile", lambda *_args: object())
     service = UploadBatchService(SimpleNamespace(), Settings())
     service.repository = Repository()
@@ -114,3 +125,5 @@ async def test_upload_batch_freezes_all_active_standards_and_ignores_subset(
         "std_specific",
         "std_fallback",
     ]
+    assert captured[0].filter_profile_id == "flt_global"
+    assert captured[0].filter_profile_snapshot["instruction"] == "全局过滤规则"

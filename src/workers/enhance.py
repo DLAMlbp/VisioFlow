@@ -230,7 +230,7 @@ async def _enhance_image(image_id: str) -> None:
             "contrast": enhanced_metrics.contrast_score,
             "noise": enhanced_metrics.noise_score,
         }
-        await repository.complete_enhancement(
+        enhancement_saved = await repository.complete_enhancement(
             item,
             enhanced_object_key=enhanced_object_key,
             analysis_object_key=analysis_object_key,
@@ -238,6 +238,8 @@ async def _enhance_image(image_id: str) -> None:
             reasons=reasons,
             enhancement_audit=enhancement_audit,
         )
+        if not enhancement_saved:
+            return
         if not job.similarity_enabled:
             await repository.select_item(
                 item,
@@ -246,6 +248,22 @@ async def _enhance_image(image_id: str) -> None:
                 reasons=[*reasons, "已跳过素材相似匹配"],
                 enhanced_metrics=enhanced_metric_values,
             )
+            return
+        if get_settings().early_semantic_branch_enabled:
+            if await repository.queue_final_embedding(item.id):
+                EmbeddingTaskPublisher().publish(item.id)
+                return
+            refreshed = await repository.get_item(item.id)
+            if refreshed is not None:
+                match_reason = (
+                    refreshed.similarity_match.message
+                    if refreshed.similarity_match is not None
+                    else "素材库匹配完成"
+                )
+                await repository.finalize_selected_if_ready(
+                    refreshed,
+                    reason=match_reason,
+                )
             return
         if await repository.start_tagging(
             item,

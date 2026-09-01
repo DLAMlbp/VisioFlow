@@ -35,7 +35,7 @@ X-API-Key: <INTEGRATION_API_KEY>
 
 创建请求必须包含 `notifyUrl` 和 `images[].objectKey/imageUrl`。图片服务下载 URL 图片并保存客户 `objectKey`，任务进入终态后由 `control` Worker 按客户协议回调完整结果。
 
-正式模式固定执行“下载 URL 图片 -> AI 完工分类 -> 完工/施工分支过滤 -> 整批过滤完成 -> AI 规划并本地美化 -> OpenCLIP 图片向量与大模型内容特征混合匹配 -> 继承素材组人工标签”。客户不需要传内部处理标准，服务端使用已配置的正式标准。
+正式模式固定执行“下载 URL 图片 -> 本地预检 -> 一次视觉 AI 完成分类与对应标准过滤 -> 过滤通过后并行执行美化、内容分析和 OpenCLIP 预向量 -> 从最终交付图刷新权威向量 -> 素材匹配与增强结果汇合 -> 继承素材组人工标签”。预向量不会触发最终匹配，客户不需要传内部处理标准，服务端使用已配置的正式标准。
 
 ```bash
 curl -X POST "https://<service-host>/api/v1/integration/jobs" \

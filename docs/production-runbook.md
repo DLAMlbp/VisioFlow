@@ -14,6 +14,8 @@ BATCH_FILTER_BARRIER_ENABLED=true
 POST_FILTER_BEAUTIFY_PLAN_ENABLED=true
 LIBRARY_IMAGE_ONLY_MATCHING_ENABLED=true
 LIBRARY_ONLY_TAGS_ENABLED=true
+COMBINED_CLASSIFY_FILTER_ENABLED=true
+EARLY_SEMANTIC_BRANCH_ENABLED=true
 ```
 
 任一开关关闭时 `/health/ready` 返回失败，新任务会被拒绝，不能以关闭开关的方式跳过阶段。首次灰度建议保留 `LIBRARY_MATCH_SHADOW_MODE=true`，完成足量人工复核和离线阈值校准后再单独审批关闭。
@@ -68,13 +70,14 @@ curl --fail --silent https://<service-host>/health/ready
 
 - 确认启用中的过滤标准恰好有一条兜底分类，再创建仅含测试图片的正式任务。
 - 核对新任务自动冻结全部启用标准，`routing_mode` 为 `streaming_v2`，且不会产生 `not_selected`。
-- 确认一张图片过滤通过后立即启动美化规划，不等待同批其他图片完成过滤。
-- 确认分类阶段仅选择标准而不淘汰图片；图片是否保留必须由命中标准的过滤规则决定。
-- 确认素材匹配使用美化图向量和大模型内容特征，最终标签仍只来自素材组人工标签。
-- 确认 `worker-classification`、`worker-filter`、`worker-beautify-plan`、`worker-analysis`、`worker-embedding` 和 `worker-matching` 均健康；`worker-vision` 仅消费历史消息。
+- 确认一次视觉 AI 请求同时返回完整分类评估和命中标准的过滤结果，未再产生第二次分支过滤请求。
+- 确认一张图片过滤通过后立即并行启动美化规划、内容分析和 OpenCLIP 预向量，不等待同批其他图片完成过滤；预向量状态为 `provisional`，不得触发素材匹配。
+- 确认美化完成后从最终交付图刷新权威 OpenCLIP 向量，只有最终向量状态为 `completed` 或 `failed` 才允许进入素材匹配。
+- 确认素材匹配使用预处理方向归一化图的向量和内容特征，最终标签仍只来自素材组人工标签；增强和匹配都完成前图片不得进入交付终态。
+- 确认 `worker-classification`、`worker-beautify-plan`、`worker-analysis`、`worker-openclip` 和 `worker-matching` 均健康；旧 `filtering` 队列由 `worker-classification` 兼容消费，不再保留独立过滤容器。
 - 确认回调包含时间戳和 HMAC 签名，接收方完成签名、时效和幂等校验。
 - 检查 API、控制 Worker、各处理 Worker 和 beat 的有限量日志，不输出完整环境变量或密钥。
-- 检查结构化日志中的 `filter_classification_requests_total`、`routed_filter_requests_total`、`beautify_plan_failures_total`、`enhancement_failures_total`、`embedding_failures_total`、`library_match_total` 和 `forbidden_llm_tag_write_total`；新任务不应出现 `filter_barrier_trigger_total`，最后一项必须为零。
+- 检查结构化日志中的 `combined_classify_filter_requests_total`、`beautify_plan_failures_total`、`enhancement_failures_total`、`embedding_failures_total`、`library_match_total` 和 `forbidden_llm_tag_write_total`；新任务不应出现 `filter_classification_requests_total`、`routed_filter_requests_total` 或 `filter_barrier_trigger_total`，最后一项必须为零。
 
 ## 回滚
 

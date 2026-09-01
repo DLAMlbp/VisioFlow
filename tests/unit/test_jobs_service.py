@@ -79,6 +79,26 @@ class FakeTaskPublisher:
         self.image_ids.append(image_id)
 
 
+@pytest.fixture(autouse=True)
+def mock_global_filter(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def resolve_global_filter(_self):
+        return (
+            SimpleNamespace(id="flt_global"),
+            {
+                "id": "flt_global",
+                "version": 1,
+                "instruction": "排除不符合全局要求的图片",
+                "config": {},
+            },
+        )
+
+    monkeypatch.setattr(
+        ManagedProfileService,
+        "resolve_global_filter",
+        resolve_global_filter,
+    )
+
+
 def _route() -> dict[str, str]:
     return {
         "completion_profile": "completion_renovation_v1",
@@ -110,7 +130,11 @@ async def test_create_job_persists_job_and_image_items() -> None:
     repository = FakeJobRepository()
     service = ImageJobService(
         repository=repository,
-        settings=Settings(max_images_per_job=50, ai_tagging_model="vision-model-test"),
+        settings=Settings(
+            max_images_per_job=50,
+            ai_tagging_enabled=True,
+            ai_tagging_model="vision-model-test",
+        ),
     )
 
     response = await service.create_job(make_payload())
@@ -183,6 +207,55 @@ async def test_create_job_snapshots_managed_profiles(
     ]
     assert stored.beautify_profile_snapshot is not None
     assert stored.beautify_profile_snapshot["id"] == "bty_user"
+    assert stored.filter_profile_id == "flt_global"
+    assert stored.filter_profile_snapshot is not None
+    assert stored.filter_profile_snapshot["instruction"] == "排除不符合全局要求的图片"
+
+
+@pytest.mark.asyncio
+async def test_create_job_uses_server_beautify_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = FakeJobRepository()
+    repository.session = object()
+
+    async def resolve_standards(_self, profile_ids=None, *, require_fallback=False):
+        return [
+            (
+                SimpleNamespace(id="std_fallback"),
+                {
+                    "id": "std_fallback",
+                    "instruction": "fallback",
+                    "config": {"is_fallback": True},
+                },
+            )
+        ]
+
+    async def resolve_beautify(_self, profile_id: str):
+        assert profile_id == "bty_server_default"
+        return object(), {"id": profile_id, "instruction": "default", "config": {}}
+
+    monkeypatch.setattr(ManagedProfileService, "resolve_standards", resolve_standards)
+    monkeypatch.setattr(ManagedProfileService, "resolve_beautify", resolve_beautify)
+    monkeypatch.setattr(ProfileLoader, "get_similarity_profile", lambda *_args: object())
+    settings = Settings(
+        profiles_directory="profiles",
+        integration_beautify_profile="bty_server_default",
+    )
+    service = ImageJobService(
+        repository=repository,
+        settings=settings,
+        profile_loader=ProfileLoader(settings),
+    )
+    payload = CreateImageJobRequest(
+        images=[{"object_key": "uploads/2026/09/01/default.jpg"}],
+    )
+
+    response = await service.create_job(payload)
+
+    stored = repository.jobs[response.job_id]
+    assert stored.beautify_profile_id == "bty_server_default"
+    assert stored.beautify_profile_snapshot["id"] == "bty_server_default"
 
 
 @pytest.mark.asyncio
@@ -345,14 +418,15 @@ async def test_list_history_returns_recent_job_summaries() -> None:
         created_at=datetime(2026, 8, 20, tzinfo=UTC),
     )
     repository.jobs = {older.id: older, newer.id: newer}
-    service = ImageJobService(repository=repository, settings=Settings())
+    settings = Settings(ai_tagging_enabled=True)
+    service = ImageJobService(repository=repository, settings=settings)
 
     response = await service.list_history(limit=30, offset=0)
 
     assert response.total == 2
     assert [item.job_id for item in response.items] == ["job_newer", "job_older"]
     assert response.items[0].processed == 1
-    assert response.items[0].ai_tagging_model == Settings().ai_tagging_model
+    assert response.items[0].ai_tagging_model == settings.ai_tagging_model
 
 
 @pytest.mark.asyncio
@@ -472,7 +546,7 @@ async def test_get_results_returns_decision_metrics_and_enhanced_key() -> None:
     assert response.images[0].tagging_result.auto_threshold == 0.6
     assert response.images[0].tagging_result.review_threshold == 0.6
     assert response.images[0].enhanced_metrics.exposure == 92
-    assert response.images[0].audit_dimensions[0].dimension == "画面清晰度"
+    assert response.images[0].audit_dimensions[0].dimension == "分类 · 画面清晰度"
     assert response.images[0].audit_dimensions[0].passed is True
 
 

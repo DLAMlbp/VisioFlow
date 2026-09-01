@@ -93,6 +93,9 @@ class ImageJobService:
                 )
             except CallbackConfigurationError as exc:
                 raise InvalidJobRequest(str(exc)) from exc
+        effective_beautify_profile = (
+            payload.beautify_profile or self.settings.integration_beautify_profile
+        )
         filter_snapshot = None
         global_filter_id = "global_filter_v1"
         beautify_snapshot = None if payload.beautify_enabled else neutral_beautify_snapshot()
@@ -115,7 +118,7 @@ class ImageJobService:
                     standard_snapshots = [snapshot for _, snapshot in standards]
                     if payload.beautify_enabled:
                         _, beautify_snapshot = await manager.resolve_beautify(
-                            payload.beautify_profile or ""
+                            effective_beautify_profile
                         )
                     else:
                         beautify_snapshot = neutral_beautify_snapshot()
@@ -131,8 +134,7 @@ class ImageJobService:
             status=JobStatus.QUEUED.value,
             filter_profile_id=global_filter_id,
             beautify_profile_id=(
-                payload.beautify_profile
-                or ("conditional_standard_v1" if payload.beautify_enabled else "system_delivery")
+                effective_beautify_profile if payload.beautify_enabled else "system_delivery"
             ),
             filter_profile_snapshot=filter_snapshot,
             beautify_profile_snapshot=beautify_snapshot,

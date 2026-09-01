@@ -7,8 +7,7 @@ from pydantic import ValidationError
 from src.core.config import Settings
 from src.schemas.jobs import CreateImageJobRequest
 from src.schemas.upload_batches import CreateUploadBatchRequest
-from src.services.images.processing_vision import ProcessingVisionService
-from src.services.images.processing_vision import _user_prompt
+from src.services.images.processing_vision import ProcessingVisionService, _user_prompt
 from src.services.profiles import ProcessingStandard
 from src.workers.completion import _route_snapshot_for_label
 

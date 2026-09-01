@@ -18,7 +18,7 @@ from src.services.images.similarity import (
     feature_similarity,
     unmatched_decision,
 )
-from src.services.jobs.dispatch import MatchTaskPublisher
+from src.services.jobs.dispatch import EmbeddingTaskPublisher, MatchTaskPublisher
 from src.services.profiles import ProfileLoader
 from src.services.storage.factory import get_storage_provider
 from src.workers.celery_app import celery_app
@@ -26,13 +26,20 @@ from src.workers.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(name="image.generate_embedding", queue="embedding", max_retries=1)
+@celery_app.task(
+    name="image.generate_embedding",
+    queue="openclip",
+    priority=9,
+    max_retries=1,
+)
 def generate_image_embedding(image_id: str) -> None:
     asyncio.run(_generate_image_embedding(image_id))
 
 
 async def _generate_image_embedding(image_id: str) -> None:
-    if not get_settings().library_image_only_matching_enabled:
+    workflow_settings = get_settings()
+    early_semantic = getattr(workflow_settings, "early_semantic_branch_enabled", False)
+    if not workflow_settings.library_image_only_matching_enabled:
         logger.error(
             "Library matching is disabled; embedding remains pending image_id=%s",
             image_id,
@@ -46,12 +53,21 @@ async def _generate_image_embedding(image_id: str) -> None:
         job = await repository.get_config(item.job_id)
         if job is None or job.cancel_requested_at is not None:
             return
-        settings = load_ai_model_settings(get_settings())
+        settings = load_ai_model_settings(workflow_settings)
         embedding: list[float] | None = None
+        provisional = bool(
+            early_semantic
+            and not (item.status == "enhanced" and item.analysis_object_key)
+        )
         try:
-            if not item.analysis_object_key:
+            source_key = (
+                item.thumbnail_object_key
+                if provisional
+                else item.analysis_object_key
+            )
+            if not source_key:
                 raise ImageEmbeddingError("缺少向量分析图片")
-            image_bytes = await get_storage_provider().download(item.analysis_object_key)
+            image_bytes = await get_storage_provider().download(source_key)
             embedding = await OpenClipImageEmbedder(settings).embed(image_bytes)
         except Exception:
             logger.exception("Unable to generate image embedding")
@@ -70,7 +86,28 @@ async def _generate_image_embedding(image_id: str) -> None:
             item.id,
             embedding=embedding,
             embedding_version=settings.image_embedding_version if embedding else None,
+            provisional=provisional,
         )
+        emit_metric(
+            logger,
+            "embedding_generation_total",
+            labels={
+                "phase": "provisional" if provisional else "final",
+                "outcome": "success" if embedding is not None else "failed",
+                "job_id": item.job_id,
+                "image_id": item.id,
+                "embedding_version": settings.image_embedding_version,
+            },
+        )
+        if provisional:
+            refreshed = await repository.get_item(item.id)
+            if (
+                refreshed is not None
+                and refreshed.status == "enhanced"
+                and await repository.queue_final_embedding(item.id)
+            ):
+                EmbeddingTaskPublisher().publish(item.id)
+            return
         if await repository.claim_match_if_ready(item.id):
             MatchTaskPublisher().publish(item.id)
 
@@ -82,6 +119,7 @@ def match_image_library(image_id: str) -> None:
 
 async def _match_image_library(image_id: str) -> None:
     workflow_settings = get_settings()
+    early_semantic = getattr(workflow_settings, "early_semantic_branch_enabled", False)
     if not workflow_settings.library_image_only_matching_enabled:
         logger.error(
             "Library matching is disabled; match remains queued image_id=%s", image_id
@@ -242,4 +280,7 @@ async def _match_image_library(image_id: str) -> None:
                 error_message=(decision.message if decision.decision == "unmatched" else None),
             )
         await repository.complete_match_stage(item.id)
-        await repository.complete_tagging(item, reason=decision.message)
+        if early_semantic:
+            await repository.finalize_selected_if_ready(item, reason=decision.message)
+        else:
+            await repository.complete_tagging(item, reason=decision.message)

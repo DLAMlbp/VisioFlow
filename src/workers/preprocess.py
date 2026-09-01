@@ -1,6 +1,5 @@
 import asyncio
 import logging
-from datetime import UTC, datetime
 from io import BytesIO
 
 from celery import Task
@@ -28,11 +27,8 @@ from src.services.images.processing_vision import (
 )
 from src.services.images.quality import QualityEngine
 from src.services.images.vision_rate_limit import retry_countdown
-from src.services.jobs.dispatch import (
-    BeautifyPlanTaskPublisher,
-    CompletionTaskPublisher,
-    RankingTaskPublisher,
-)
+from src.services.jobs.dispatch import CompletionTaskPublisher
+from src.services.jobs.progression import advance_after_preprocess as _advance_after_preprocess
 from src.services.managed_profiles import (
     beautify_from_snapshot,
     legacy_standard_from_snapshots,
@@ -281,37 +277,6 @@ async def _preprocess_image_metadata(image_id: str) -> None:
             reasons=warnings,
         )
         await _advance_after_preprocess(repository, item)
-
-
-async def _advance_after_preprocess(repository: ImageJobRepository, item) -> None:
-    job = await repository.get_config(item.job_id)
-    if job is None or job.cancel_requested_at is not None:
-        return
-    if getattr(job, "routing_mode", "legacy") == "streaming_v2":
-        if item.status == ImageItemStatus.FILTERED.value and await repository.queue_beautify_plan(
-            item.id
-        ):
-            BeautifyPlanTaskPublisher().publish(item.id)
-        return
-    if not get_settings().batch_filter_barrier_enabled:
-        return
-    if await repository.claim_ranking_if_filtering_complete(job.id):
-        waited = max(
-            0.0,
-            (datetime.now(UTC) - getattr(item, "created_at", datetime.now(UTC))).total_seconds(),
-        )
-        emit_metric(
-            logger,
-            "filter_barrier_wait_seconds",
-            value=round(waited, 3),
-            labels={"job_id": job.id},
-        )
-        emit_metric(
-            logger,
-            "filter_barrier_trigger_total",
-            labels={"job_id": job.id},
-        )
-        RankingTaskPublisher().publish(job.id)
 
 
 async def _mark_item_failed(image_id: str, reason: str) -> None:

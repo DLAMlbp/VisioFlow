@@ -103,6 +103,8 @@ class Settings(BaseSettings):
     completion_routing_enabled: bool = True
     batch_filter_barrier_enabled: bool = True
     post_filter_beautify_plan_enabled: bool = True
+    combined_classify_filter_enabled: bool = True
+    early_semantic_branch_enabled: bool = True
     library_image_only_matching_enabled: bool = True
     library_only_tags_enabled: bool = True
     library_match_shadow_mode: bool = False

@@ -30,6 +30,14 @@ from src.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
+_POST_FILTER_ACTIVE_STATUSES = (
+    "filtered",
+    "beautify_planning",
+    "enhancing",
+    "enhanced",
+    "tagging",
+)
+
 
 @celery_app.task(name="maintenance.cleanup_expired_images", queue="cleanup", max_retries=2)
 def cleanup_expired_images() -> None:
@@ -266,17 +274,62 @@ async def _recover_stalled_images() -> None:
             cutoff=cutoff,
             values={"status": "filtered", "enhance_started_at": None},
         )
+        pending_analysis = list(
+            (
+                await session.execute(
+                    select(ImageItem.id).where(
+                        ImageItem.status.in_(_POST_FILTER_ACTIVE_STATUSES),
+                        ImageItem.analysis_status == "pending",
+                        ImageItem.updated_at < cutoff,
+                    )
+                )
+            ).scalars()
+        )
         analyzing = await _reset_substage(
             session,
             column=ImageItem.analysis_status,
             timestamp=ImageItem.analysis_started_at,
             cutoff=cutoff,
         )
+        pending_embeddings = list(
+            (
+                await session.execute(
+                    select(ImageItem.id).where(
+                        ImageItem.status.in_(_POST_FILTER_ACTIVE_STATUSES),
+                        ImageItem.embedding_status == "pending",
+                        ImageItem.updated_at < cutoff,
+                    )
+                )
+            ).scalars()
+        )
         embedding = await _reset_substage(
             session,
             column=ImageItem.embedding_status,
             timestamp=ImageItem.embedding_started_at,
             cutoff=cutoff,
+        )
+        provisional_embeddings = list(
+            (
+                await session.execute(
+                    update(ImageItem)
+                    .where(
+                        ImageItem.status == "enhanced",
+                        ImageItem.embedding_status.in_(
+                            ("provisional", "provisional_failed")
+                        ),
+                        ImageItem.match_status == "pending",
+                        ImageItem.updated_at < cutoff,
+                    )
+                    .values(
+                        embedding=None,
+                        embedding_version=None,
+                        embedding_status="pending",
+                        embedding_started_at=None,
+                        embedding_completed_at=None,
+                    )
+                    .returning(ImageItem.id)
+                )
+            ).scalars()
         )
         matching = await _reset_substage(
             session,
@@ -289,7 +342,7 @@ async def _recover_stalled_images() -> None:
             (
                 await session.execute(
                     select(ImageItem.id).where(
-                        ImageItem.status == "tagging",
+                        ImageItem.status.in_(_POST_FILTER_ACTIVE_STATUSES),
                         ImageItem.match_status == "queued",
                         ImageItem.updated_at < cutoff,
                     )
@@ -300,7 +353,7 @@ async def _recover_stalled_images() -> None:
             (
                 await session.execute(
                     select(ImageItem.id).where(
-                        ImageItem.status == "tagging",
+                        ImageItem.status.in_(_POST_FILTER_ACTIVE_STATUSES),
                         ImageItem.match_status == "pending",
                         ImageItem.analysis_status.in_(("completed", "failed")),
                         ImageItem.embedding_status.in_(("completed", "failed")),
@@ -313,7 +366,7 @@ async def _recover_stalled_images() -> None:
             (
                 await session.execute(
                     select(ImageItem.id).where(
-                        ImageItem.status == "tagging",
+                        ImageItem.status.in_(_POST_FILTER_ACTIVE_STATUSES),
                         ImageItem.match_status == "completed",
                         ImageItem.updated_at < cutoff,
                     )
@@ -341,11 +394,26 @@ async def _recover_stalled_images() -> None:
             for job_id in barrier_candidates
             if await repository.claim_ranking_if_filtering_complete(job_id)
         ]
-        recovered_streaming_beautify = [
-            image_id
-            for image_id in unqueued_streaming_beautify
-            if await repository.queue_beautify_plan(image_id)
-        ]
+        recovered_streaming_beautify: list[str] = []
+        recovered_analysis: list[str] = []
+        recovered_embedding: list[str] = []
+        for image_id in unqueued_streaming_beautify:
+            item = await repository.get_item(image_id)
+            job = await repository.get_config(item.job_id) if item is not None else None
+            if job is None:
+                continue
+            if get_settings().early_semantic_branch_enabled:
+                queued = await repository.queue_post_filter_branches(
+                    image_id,
+                    similarity_enabled=job.similarity_enabled,
+                )
+                if queued and job.similarity_enabled:
+                    recovered_analysis.append(image_id)
+                    recovered_embedding.append(image_id)
+            else:
+                queued = await repository.queue_beautify_plan(image_id)
+            if queued:
+                recovered_streaming_beautify.append(image_id)
         newly_queued_matches = [
             image_id
             for image_id in ready_matches
@@ -355,10 +423,16 @@ async def _recover_stalled_images() -> None:
             item = await repository.get_item(image_id)
             if item is None or item.similarity_match is None:
                 continue
-            await repository.complete_tagging(
-                item,
-                reason=item.similarity_match.message,
-            )
+            if get_settings().early_semantic_branch_enabled:
+                await repository.finalize_selected_if_ready(
+                    item,
+                    reason=item.similarity_match.message,
+                )
+            else:
+                await repository.complete_tagging(
+                    item,
+                    reason=item.similarity_match.message,
+                )
 
     _publish_pipeline_recovery(
         undispatched_jobs=undispatched_jobs,
@@ -372,8 +446,13 @@ async def _recover_stalled_images() -> None:
             *recovered_streaming_beautify,
         ],
         enhancement=[*enhancing, *completed_beautify_plans],
-        analysis=analyzing,
-        embedding=embedding,
+        analysis=[*analyzing, *pending_analysis, *recovered_analysis],
+        embedding=[
+            *embedding,
+            *pending_embeddings,
+            *provisional_embeddings,
+            *recovered_embedding,
+        ],
         matching=[*matching, *queued_matches, *newly_queued_matches],
     )
 
@@ -425,7 +504,11 @@ async def _reset_substage(
     reset_to: str = "pending",
     extra_condition=None,
 ) -> list[str]:
-    filters = [ImageItem.status == "tagging", column == "processing", timestamp < cutoff]
+    filters = [
+        ImageItem.status.in_(_POST_FILTER_ACTIVE_STATUSES),
+        column == "processing",
+        timestamp < cutoff,
+    ]
     if extra_condition is not None:
         filters.append(extra_condition)
     return list(

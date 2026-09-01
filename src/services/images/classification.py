@@ -12,13 +12,13 @@ from urllib.request import Request, urlopen
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from src.core.config import Settings
-from src.services.images.vision_rate_limit import run_vision_request
 from src.services.images.tagging import (
     _chat_completions_url,
     _is_retryable_error,
     _resize_for_tagging,
     _safe_error_message,
 )
+from src.services.images.vision_rate_limit import run_vision_request
 from src.services.profiles import ProcessingStandard
 
 CLASSIFICATION_PROMPT_VERSION = "paired_filter_classification_v3"
@@ -182,7 +182,9 @@ class StandardClassificationVisionService:
                 response = await run_vision_request(
                     self.settings,
                     operation="standard_classification",
-                    request=lambda: self._request(image_bytes, standards, repair_context),
+                    request=lambda repair_context=repair_context: self._request(
+                        image_bytes, standards, repair_context
+                    ),
                 )
                 payload = _parse_classification_content(_response_content(response))
                 payload, selected = payload.resolve_candidate(standards)

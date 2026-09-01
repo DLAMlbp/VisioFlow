@@ -40,7 +40,7 @@ class _Repository:
 
 class _Storage:
     async def download(self, object_key: str):
-        assert object_key == "analysis/enhanced.jpg"
+        assert object_key == "thumbnails/preprocessed.jpg"
         return b"beautified-image"
 
 
@@ -70,19 +70,24 @@ def _item():
         id="img_test",
         job_id="job_test",
         object_key="uploads/source.jpg",
+        thumbnail_object_key="thumbnails/preprocessed.jpg",
         analysis_object_key="analysis/enhanced.jpg",
         ai_tag=SimpleNamespace(provider="library"),
     )
 
 
 @pytest.mark.asyncio
-async def test_analysis_recognizes_beautified_image_without_writing_model_tags(
+async def test_analysis_recognizes_preprocessed_image_without_writing_model_tags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _Repository.saved = None
     monkeypatch.setattr(analysis, "AsyncSessionLocal", lambda: _SessionContext())
     monkeypatch.setattr(analysis, "ImageJobRepository", _Repository)
-    monkeypatch.setattr(analysis, "get_settings", lambda: object())
+    monkeypatch.setattr(
+        analysis,
+        "get_settings",
+        lambda: SimpleNamespace(early_semantic_branch_enabled=True),
+    )
     monkeypatch.setattr(
         analysis,
         "load_ai_model_settings",
@@ -107,7 +112,7 @@ async def test_analysis_recognizes_beautified_image_without_writing_model_tags(
     await analysis._analyze_image_content("img_test")
 
     assert _Repository.saved is not None
-    assert _Repository.saved["source_object_key"] == "analysis/enhanced.jpg"
+    assert _Repository.saved["source_object_key"] == "thumbnails/preprocessed.jpg"
     assert _Repository.saved["tag_json"]["summary"] == "美化后的完工厨房"
     assert _Repository.saved["tag_json"]["tags"] == []
     assert _Repository.saved["tag_json"]["categories"] == {}

@@ -30,8 +30,10 @@ x-worker: &worker
       condition: service_healthy
   healthcheck:
     test:
-      - CMD-SHELL
-      - celery -A src.workers.celery_app inspect ping --destination "celery@$$HOSTNAME" --timeout 5 | grep -q pong
+      - CMD
+      - python
+      - -c
+      - import os, redis; assert redis.Redis.from_url(os.environ['REDIS_URL'], socket_connect_timeout=3, socket_timeout=3).ping()
     interval: 30s
     timeout: 10s
     retries: 3
@@ -77,7 +79,7 @@ services:
   worker-control:
     <<: *worker
     image: ${API_GATEWAY_IMAGE:?API_GATEWAY_IMAGE must be a versioned image reference}
-    command: celery -A src.workers.celery_app worker -Q control -l info --concurrency=1
+    command: celery -A src.workers.celery_app worker -Q control -l info --concurrency=1 --without-mingle --without-gossip
     environment:
       WORKER_ROLE: control
     mem_limit: 384m
@@ -85,69 +87,65 @@ services:
 
   worker-preprocess:
     <<: *worker
-    command: celery -A src.workers.celery_app worker -Q preprocess -l info --concurrency=2
-    mem_limit: 768m
-    cpus: 1.0
-
-  worker-vision:
-    <<: *worker
-    command: celery -A src.workers.celery_app worker -Q vision -l info --concurrency=2
+    command: celery -A src.workers.celery_app worker -Q preprocess -l info --concurrency=2 --without-mingle --without-gossip
+    environment:
+      WORKER_ROLE: preprocess
     mem_limit: 768m
     cpus: 1.0
 
   worker-classification:
     <<: *worker
-    command: celery -A src.workers.celery_app worker -Q classification -l info --concurrency=2
-    mem_limit: 768m
-    cpus: 1.0
-
-  worker-filter:
-    <<: *worker
-    command: celery -A src.workers.celery_app worker -Q filtering -l info --concurrency=2
+    command: celery -A src.workers.celery_app worker -Q classification,filtering -l info --concurrency=2 --without-mingle --without-gossip
+    environment:
+      WORKER_ROLE: classification
     mem_limit: 768m
     cpus: 1.0
 
   worker-beautify-plan:
     <<: *worker
-    command: celery -A src.workers.celery_app worker -Q beautify_plan -l info --concurrency=2
+    command: celery -A src.workers.celery_app worker -Q beautify_plan -l info --concurrency=2 --without-mingle --without-gossip
+    environment:
+      WORKER_ROLE: beautify_plan
     mem_limit: 768m
     cpus: 1.0
 
   worker-enhance:
     <<: *worker
-    command: celery -A src.workers.celery_app worker -Q enhance -l info --concurrency=2
+    command: celery -A src.workers.celery_app worker -Q enhance -l info --concurrency=2 --without-mingle --without-gossip
+    environment:
+      WORKER_ROLE: enhance
     mem_limit: 768m
     cpus: 1.0
 
   worker-analysis:
     <<: *worker
-    command: celery -A src.workers.celery_app worker -Q analysis -l info --concurrency=2
+    command: celery -A src.workers.celery_app worker -Q analysis -l info --concurrency=2 --without-mingle --without-gossip
+    environment:
+      WORKER_ROLE: analysis
     mem_limit: 768m
     cpus: 1.0
 
-  worker-embedding:
+  worker-openclip:
     <<: *worker
-    command: celery -A src.workers.celery_app worker -Q embedding -l info --concurrency=1
+    command: celery -A src.workers.celery_app worker -Q openclip -l info --pool=solo --concurrency=1 --without-mingle --without-gossip
     environment:
-      WORKER_ROLE: embedding
+      WORKER_ROLE: openclip
     mem_limit: 2048m
     cpus: 1.5
 
   worker-matching:
     <<: *worker
-    command: celery -A src.workers.celery_app worker -Q matching -l info --concurrency=2
+    command: celery -A src.workers.celery_app worker -Q matching -l info --concurrency=2 --without-mingle --without-gossip
+    environment:
+      WORKER_ROLE: matching
     mem_limit: 768m
     cpus: 1.0
 
-  worker-library:
-    <<: *worker
-    command: celery -A src.workers.celery_app worker -Q library -l info --concurrency=1
-    mem_limit: 2048m
-    cpus: 1.5
-
   worker-cleanup:
     <<: *worker
-    command: celery -A src.workers.celery_app worker -Q cleanup -l info --concurrency=1
+    command: celery -A src.workers.celery_app worker -Q cleanup -l info --concurrency=1 --without-mingle --without-gossip
+    environment:
+      WORKER_ROLE: cleanup
     mem_limit: 384m
     cpus: 0.25
 

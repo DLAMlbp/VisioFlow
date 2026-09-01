@@ -11,13 +11,13 @@ from urllib.request import Request, urlopen
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from src.core.config import Settings
-from src.services.images.vision_rate_limit import run_vision_request
 from src.services.images.tagging import (
     _chat_completions_url,
     _is_retryable_error,
     _resize_for_tagging,
     _safe_error_message,
 )
+from src.services.images.vision_rate_limit import run_vision_request
 
 COMPLETION_PROMPT_VERSION = "renovation_completion_v3"
 
