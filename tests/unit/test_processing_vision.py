@@ -243,6 +243,66 @@ def test_selection_uses_explicit_selected_id_to_resolve_redundant_matches() -> N
     ] == ["std_selected"]
 
 
+def test_selection_rebuilds_incomplete_evaluations_from_valid_selected_id() -> None:
+    standards = [
+        ProcessingStandard(
+            id=standard_id,
+            name=standard_id,
+            version=1,
+            description=standard_id,
+            classification_rule=standard_id,
+            filter_rule="审核画质",
+            is_fallback=is_fallback,
+        )
+        for standard_id, is_fallback in (
+            ("std_selected", False),
+            ("std_other", False),
+            ("std_fallback", True),
+        )
+    ]
+    payload = ProcessingVisionPayload(
+        standard_selection=StandardSelection(
+            evaluations=[
+                ActivationEvaluation(
+                    standard_id="std_other",
+                    matched=True,
+                    reason="冗余判断一",
+                    confidence=0.7,
+                ),
+                ActivationEvaluation(
+                    standard_id="std_other",
+                    matched=False,
+                    reason="冗余判断二",
+                    confidence=0.6,
+                ),
+                ActivationEvaluation(
+                    standard_id="std_not_in_job",
+                    matched=False,
+                    reason="模型额外返回的无关标准",
+                    confidence=0.5,
+                ),
+            ],
+            selected_standard_id="std_selected",
+            reason="最终选择 std_selected",
+        ),
+        filter=FilterDecision.model_validate(_filter_payload()["filter"]),
+    )
+
+    normalized = _normalize_standard_selection(payload, standards)
+
+    assert normalized.standard_selection is not None
+    assert [item.standard_id for item in normalized.standard_selection.evaluations] == [
+        "std_selected",
+        "std_other",
+        "std_fallback",
+    ]
+    assert [
+        item.standard_id
+        for item in normalized.standard_selection.evaluations
+        if item.matched
+    ] == ["std_selected"]
+
+
 @pytest.mark.asyncio
 async def test_filter_schema_failure_is_repaired_once(
     monkeypatch: pytest.MonkeyPatch,

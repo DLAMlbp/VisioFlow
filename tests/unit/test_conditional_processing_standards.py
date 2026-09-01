@@ -103,7 +103,7 @@ async def test_ai_selection_accepts_one_matching_standard(
 
 
 @pytest.mark.asyncio
-async def test_ai_selection_rejects_multiple_matching_standards(
+async def test_ai_selection_normalizes_multiple_matches_when_selection_is_explicit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ProcessingVisionService(
@@ -126,8 +126,14 @@ async def test_ai_selection_rejects_multiple_matching_standards(
         standards=[_standard("std_high", 200), _standard("std_low", 10)],
     )
 
-    assert outcome.status == "failed"
-    assert outcome.payload is None
+    assert outcome.status == "completed"
+    assert outcome.payload is not None
+    assert outcome.payload.standard_selection is not None
+    assert [
+        evaluation.standard_id
+        for evaluation in outcome.payload.standard_selection.evaluations
+        if evaluation.matched
+    ] == ["std_low"]
 
 
 def test_new_job_accepts_paired_filter_standards() -> None:

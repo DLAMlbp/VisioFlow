@@ -25,7 +25,7 @@ from src.services.images.tagging import (
 from src.services.images.vision_rate_limit import run_vision_request
 from src.services.profiles import ProcessingStandard
 
-PROCESSING_PROMPT_VERSION = "paired_filter_v11"
+PROCESSING_PROMPT_VERSION = "paired_filter_v12"
 logger = logging.getLogger(__name__)
 
 _DIAGNOSTIC_CONTENT_LIMIT = 2000
@@ -542,27 +542,23 @@ def _normalize_standard_selection(
     if selection is None:
         raise ValueError("AI 未返回条件处理标准匹配结果")
     expected_ids = {standard.id for standard in standards}
-    returned_ids = [evaluation.standard_id for evaluation in selection.evaluations]
-    if len(returned_ids) != len(set(returned_ids)) or not set(returned_ids) <= expected_ids:
-        raise ValueError("AI 返回的分类标准评估不完整")
     fallbacks = [standard for standard in standards if standard.is_fallback]
     if len(fallbacks) > 1:
         raise ValueError("任务包含多条兜底分类标准")
     fallback_id = fallbacks[0].id if fallbacks else None
-    evaluations_by_id = {
-        evaluation.standard_id: evaluation for evaluation in selection.evaluations
-    }
     selected_id = selection.selected_standard_id
+    evaluations_by_id: dict[str, ActivationEvaluation] = {}
+    for evaluation in selection.evaluations:
+        if evaluation.standard_id not in expected_ids:
+            continue
+        existing = evaluations_by_id.get(evaluation.standard_id)
+        if existing is None or (
+            evaluation.standard_id == selected_id and evaluation.matched
+        ):
+            evaluations_by_id[evaluation.standard_id] = evaluation
     if selected_id is not None:
         if selected_id not in expected_ids:
             raise ValueError("AI 选择了任务之外的分类标准")
-        if selected_id not in evaluations_by_id:
-            raise ValueError("AI 选择的分类标准缺少对应评估")
-        if selected_id == fallback_id and any(
-            evaluation.matched and evaluation.standard_id != fallback_id
-            for evaluation in selection.evaluations
-        ):
-            raise ValueError("明确分类与兜底分类不能同时命中")
 
         normalized_evaluations = []
         for standard in standards:
@@ -570,8 +566,12 @@ def _normalize_standard_selection(
             if evaluation is None:
                 evaluation = ActivationEvaluation(
                     standard_id=standard.id,
-                    matched=False,
-                    reason="模型已选择其他唯一分类，本分类不适用",
+                    matched=standard.id == selected_id,
+                    reason=(
+                        selection.reason
+                        if standard.id == selected_id
+                        else "模型已选择其他唯一分类，本分类不适用"
+                    ),
                     confidence=1.0,
                 )
             elif standard.id == selected_id and not evaluation.matched:
