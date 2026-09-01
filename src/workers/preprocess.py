@@ -27,7 +27,7 @@ from src.services.images.processing_vision import (
     precise_filter_reason,
 )
 from src.services.images.quality import QualityEngine
-from src.services.images.vision_rate_limit import acquire_vision_rate_slot
+from src.services.images.vision_rate_limit import retry_countdown
 from src.services.jobs.dispatch import (
     BeautifyPlanTaskPublisher,
     CompletionTaskPublisher,
@@ -67,7 +67,13 @@ def preprocess_image_metadata(task, image_id: str) -> None:
     try:
         asyncio.run(_preprocess_image_metadata(image_id))
     except Exception as exc:
-        raise task.retry(exc=exc, countdown=10) from exc
+        countdown = retry_countdown(get_settings(), task.request.retries)
+        emit_metric(
+            logger,
+            "vision_task_retry_total",
+            labels={"operation": "preprocess", "image_id": image_id, "delay": countdown},
+        )
+        raise task.retry(exc=exc, countdown=countdown) from exc
 
 
 async def _preprocess_image_metadata(image_id: str) -> None:
@@ -185,8 +191,6 @@ async def _preprocess_image_metadata(image_id: str) -> None:
             if await repository.complete_metadata_for_completion(item):
                 CompletionTaskPublisher().publish(item.id)
             return
-        if settings.ai_tagging_enabled and settings.ai_tagging_api_key:
-            await acquire_vision_rate_slot(settings)
         ai_outcome = await ProcessingVisionService(settings).analyze(
             orientation_result.image_bytes,
             standards=standards,

@@ -1,5 +1,7 @@
 import {
   Check,
+  ChevronLeft,
+  ChevronRight,
   ImagePlus,
   Images,
   Loader2,
@@ -19,9 +21,11 @@ import type { LibraryAsset, LibraryAssetGroup, UploadItem } from "./types";
 import { createClientId } from "./utils/id";
 
 const MAX_LIBRARY_UPLOADS = 50;
+const LIBRARY_PAGE_SIZE = 100;
 
 export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) => void }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const assetsSectionRef = useRef<HTMLElement | null>(null);
   const [groups, setGroups] = useState<LibraryAssetGroup[]>([]);
   const [assets, setAssets] = useState<LibraryAsset[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
@@ -35,15 +39,24 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
   const [editingSortOrder, setEditingSortOrder] = useState(0);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [deletingAssetId, setDeletingAssetId] = useState<string | null>(null);
+  const [assetPage, setAssetPage] = useState(1);
 
   const selectedGroup = groups.find((group) => group.id === selectedGroupId) ?? null;
   const visibleAssets = useMemo(
     () => selectedGroupId ? assets.filter((asset) => asset.group_id === selectedGroupId) : assets,
     [assets, selectedGroupId]
   );
+  const assetPageCount = Math.max(1, Math.ceil(visibleAssets.length / LIBRARY_PAGE_SIZE));
+  const currentAssetPage = Math.min(assetPage, assetPageCount);
+  const pageStartIndex = (currentAssetPage - 1) * LIBRARY_PAGE_SIZE;
+  const pagedAssets = visibleAssets.slice(pageStartIndex, pageStartIndex + LIBRARY_PAGE_SIZE);
   const selectedAsset = visibleAssets.find((asset) => asset.id === selectedAssetId) ?? null;
   const activeGroupIds = useMemo(
     () => new Set(groups.filter((group) => group.status === "active").map((group) => group.id)),
+    [groups]
+  );
+  const assetTotal = useMemo(
+    () => groups.reduce((total, group) => total + group.asset_count, 0),
     [groups]
   );
   const activeCount = assets.filter(
@@ -61,6 +74,14 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
     const timer = window.setInterval(() => void loadAssets(), 3000);
     return () => window.clearInterval(timer);
   }, [pendingCount]);
+
+  useEffect(() => {
+    setAssetPage(1);
+  }, [selectedGroupId]);
+
+  useEffect(() => {
+    setAssetPage((current) => Math.min(current, assetPageCount));
+  }, [assetPageCount]);
 
   useEffect(() => {
     if (!selectedAsset) return;
@@ -100,9 +121,17 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
 
   function selectGroup(group: LibraryAssetGroup) {
     setSelectedGroupId(group.id);
+    setAssetPage(1);
     setEditingTags(group.tags.join("，"));
     setEditingSortOrder(group.sort_order);
     setSelectedAssetId(null);
+  }
+
+  function changeAssetPage(nextPage: number) {
+    setAssetPage(Math.min(Math.max(nextPage, 1), assetPageCount));
+    window.requestAnimationFrame(() => {
+      assetsSectionRef.current?.scrollIntoView({ block: "start" });
+    });
   }
 
   async function createGroup() {
@@ -322,7 +351,7 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
         </div>
         <div className="library-metrics" aria-label="素材库概况">
           <span><b>{groups.length}</b>素材组</span>
-          <span><b>{assets.length}</b>参考图片</span>
+          <span><b>{assetTotal}</b>参考图片</span>
           <span><b>{activeCount}</b>可参与匹配</span>
           <span><b>{pendingCount}</b>分析中</span>
           <button className="tool-button" type="button" aria-label="刷新素材库" title="刷新素材库" onClick={() => void loadLibrary()}>
@@ -340,8 +369,8 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
               <span>新建素材组</span>
             </button>
           </div>
-          <button className={`group-all-row ${selectedGroupId === null ? "active" : ""}`} type="button" onClick={() => { setSelectedGroupId(null); setSelectedAssetId(null); }}>
-            <Images size={16} aria-hidden="true" /><span>全部素材</span><b>{assets.length}</b>
+          <button className={`group-all-row ${selectedGroupId === null ? "active" : ""}`} type="button" onClick={() => { setSelectedGroupId(null); setAssetPage(1); setSelectedAssetId(null); }}>
+            <Images size={16} aria-hidden="true" /><span>全部素材</span><b>{assetTotal}</b>
           </button>
 
           <div className="library-group-list">
@@ -402,21 +431,29 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
             <button className="primary-button library-upload-button" type="button" disabled={!canUpload || !uploadItems.length || uploading} onClick={() => void uploadLibraryAssets()}>{uploading ? <Loader2 className="spin" size={17} /> : <UploadCloud size={17} />}{uploading ? "正在上传并登记" : `上传 ${uploadItems.length || ""} 张参考图`}</button>
           </section>
 
-          <section className="library-assets-section">
-            <div className="assets-heading"><div><h3>{selectedGroup ? "当前素材组" : "全部参考图片"}</h3><p>{visibleAssets.length} 张图片{selectedGroup ? `，共同标签：${selectedGroup.tags.join("、")}` : ""}</p></div></div>
+          <section className="library-assets-section" ref={assetsSectionRef}>
+            <div className="assets-heading"><div><h3>{selectedGroup ? "当前素材组" : "全部参考图片"}</h3><p>{visibleAssets.length ? `显示第 ${pageStartIndex + 1}-${pageStartIndex + pagedAssets.length} 张，共 ${visibleAssets.length} 张` : "0 张图片"}{selectedGroup ? `，共同标签：${selectedGroup.tags.join("、")}` : ""}</p></div></div>
             {visibleAssets.length ? <div className="library-assets-browser">
-              <div className="library-asset-grid">{visibleAssets.map((asset) => (
-                <article className={`library-asset ${selectedAssetId === asset.id ? "selected" : ""}`} key={asset.id}>
-                  <div className="library-asset-preview">{asset.preview_url ? <button className="library-asset-image-button" type="button" aria-label={`展示图片：${asset.original_filename ?? "素材图片"}`} onClick={() => setSelectedAssetId(asset.id)}><img src={asset.preview_url} alt={asset.original_filename ?? "素材图片"} loading="lazy" /></button> : <Images size={26} />}<span className={`asset-status ${asset.status}`}>{assetStatusLabel(asset.status)}</span></div>
-                  <div className="library-asset-copy"><strong title={asset.original_filename ?? asset.id}>{asset.original_filename ?? asset.id}</strong><div className="asset-tag-chips">{asset.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>{asset.error_message && <small>{asset.error_message}</small>}</div>
-                  <div className="library-asset-actions">
-                    <select aria-label={`修改 ${asset.original_filename ?? asset.id} 所属素材组`} title="移动到其他标签组合" value={asset.group_id} onChange={(event) => void moveAsset(asset, event.target.value)}>{groups.filter((group) => group.status === "active").map((group) => <option key={group.id} value={group.id}>{group.tags.join("、")}</option>)}</select>
-                    <button type="button" aria-label="重新分析素材" title="重新分析" onClick={() => void reindexAsset(asset.id)}><RotateCcw size={15} /></button>
-                    <button type="button" aria-label={asset.status === "failed" ? "重新启用素材" : asset.status === "disabled" ? "启用素材" : "停用素材"} title={asset.status === "failed" ? "重新启用素材" : asset.status === "disabled" ? "启用素材" : "停用素材"} onClick={() => void updateAssetStatus(asset)} disabled={asset.status === "pending"}><Power size={15} /></button>
-                    <button className="danger-icon-button" type="button" aria-label={`删除素材 ${asset.original_filename ?? asset.id}`} title="删除素材" onClick={() => void deleteAsset(asset)} disabled={deletingAssetId === asset.id}>{deletingAssetId === asset.id ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}</button>
-                  </div>
-                </article>
-              ))}</div>
+              <div className="library-asset-grid">{pagedAssets.map((asset) => {
+                const assetTags = groups.find((group) => group.id === asset.group_id)?.tags ?? asset.tags;
+                return (
+                  <article className={`library-asset ${selectedAssetId === asset.id ? "selected" : ""}`} key={asset.id}>
+                    <div className="library-asset-preview">{asset.preview_url ? <button className="library-asset-image-button" type="button" aria-label={`展示图片：${asset.original_filename ?? "素材图片"}`} onClick={() => setSelectedAssetId(asset.id)}><img src={asset.preview_url} alt={asset.original_filename ?? "素材图片"} loading="lazy" /></button> : <Images size={26} />}<span className={`asset-status ${asset.status}`}>{assetStatusLabel(asset.status)}</span></div>
+                    <div className="library-asset-copy"><strong title={asset.original_filename ?? asset.id}>{asset.original_filename ?? asset.id}</strong><div className="asset-tag-chips" aria-label={`全部标签，共 ${assetTags.length} 个`}>{assetTags.map((tag) => <span key={tag} title={tag}>{tag}</span>)}</div>{asset.error_message && <small>{asset.error_message}</small>}</div>
+                    <div className="library-asset-actions">
+                      <select aria-label={`修改 ${asset.original_filename ?? asset.id} 所属素材组`} title="移动到其他标签组合" value={asset.group_id} onChange={(event) => void moveAsset(asset, event.target.value)}>{groups.filter((group) => group.status === "active").map((group) => <option key={group.id} value={group.id}>{group.tags.join("、")}</option>)}</select>
+                      <button type="button" aria-label="重新分析素材" title="重新分析" onClick={() => void reindexAsset(asset.id)}><RotateCcw size={15} /></button>
+                      <button type="button" aria-label={asset.status === "failed" ? "重新启用素材" : asset.status === "disabled" ? "启用素材" : "停用素材"} title={asset.status === "failed" ? "重新启用素材" : asset.status === "disabled" ? "启用素材" : "停用素材"} onClick={() => void updateAssetStatus(asset)} disabled={asset.status === "pending"}><Power size={15} /></button>
+                      <button className="danger-icon-button" type="button" aria-label={`删除素材 ${asset.original_filename ?? asset.id}`} title="删除素材" onClick={() => void deleteAsset(asset)} disabled={deletingAssetId === asset.id}>{deletingAssetId === asset.id ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}</button>
+                    </div>
+                  </article>
+                );
+              })}</div>
+              {assetPageCount > 1 && <nav className="library-pagination" aria-label="素材图片分页">
+                <button type="button" aria-label="上一页" title="上一页" disabled={currentAssetPage === 1} onClick={() => changeAssetPage(currentAssetPage - 1)}><ChevronLeft size={18} aria-hidden="true" /></button>
+                <span aria-live="polite">第 <b>{currentAssetPage}</b> / {assetPageCount} 页</span>
+                <button type="button" aria-label="下一页" title="下一页" disabled={currentAssetPage === assetPageCount} onClick={() => changeAssetPage(currentAssetPage + 1)}><ChevronRight size={18} aria-hidden="true" /></button>
+              </nav>}
             </div> : <div className="library-empty"><Images size={28} /><strong>{selectedGroup ? "这个素材组还没有参考图片" : "素材库还是空的"}</strong><p>{selectedGroup ? "为这串标签上传多张参考图片。" : "先创建素材组，再上传参考图片。"}</p></div>}
           </section>
         </div>

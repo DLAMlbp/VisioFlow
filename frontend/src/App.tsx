@@ -1,11 +1,14 @@
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowDownToLine,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   CircleDot,
+  CircleX,
   Clock3,
   Database,
   Eye,
@@ -14,8 +17,10 @@ import {
   Images,
   Loader2,
   RefreshCw,
+  ScanSearch,
   SlidersHorizontal,
   Sparkles,
+  Tag,
   Trash2,
   UploadCloud,
   X
@@ -37,6 +42,7 @@ import type {
   ResultImage,
   ResultFilter,
   SimilarityCandidate,
+  ClassificationContentAnalysis,
   SimilarityTaggingResult,
   UploadItem
 } from "./types";
@@ -256,10 +262,9 @@ function App() {
       } : entry)
     } : current);
     setSelectedImage((current) =>
-      nextResults.images.find((image) => image.image_id === current?.image_id)
-      ?? nextResults.images.find((image) => image.decision === "selected")
-      ?? nextResults.images[0]
-      ?? null
+      current
+        ? nextResults.images.find((image) => image.image_id === current.image_id) ?? null
+        : null
     );
   }
 
@@ -554,10 +559,9 @@ function App() {
       </a>
       <header className="topbar">
         <div className="brand-lockup">
-          <img className="brand-mark" src={brandLogo} alt="图片处理台" />
+          <img className="brand-mark" src={brandLogo} alt="VisioFlow" />
           <div>
-            <h1>图片处理台</h1>
-            <p className="eyebrow">IMAGE STUDIO</p>
+            <h1>VisioFlow</h1>
           </div>
         </div>
         <nav className="workspace-switch" aria-label="工作区">
@@ -822,10 +826,23 @@ function ResultsPanel({
   page: number;
   onFilterChange: (value: ResultFilter) => void;
   onPageChange: (page: number) => void;
-  onSelectImage: (image: ResultImage) => void;
+  onSelectImage: (image: ResultImage | null) => void;
   onReviewResolved: (imageId: string, result: SimilarityTaggingResult) => void;
   onRetry: (imageId: string) => void;
 }) {
+  if (selectedImage) {
+    return (
+      <section className="results-panel detail-mode">
+        <ImageDetail
+          image={selectedImage}
+          onBack={() => onSelectImage(null)}
+          onReviewResolved={onReviewResolved}
+          onRetry={onRetry}
+        />
+      </section>
+    );
+  }
+
   return (
     <section className="results-panel">
       <div className="results-summary">
@@ -843,12 +860,9 @@ function ResultsPanel({
         </div>
         <button className="page-download-button" type="button" disabled={!visibleResults.some((image) => image.enhanced_url ?? image.original_url)} onClick={() => downloadCurrentPage(visibleResults)}><ArrowDownToLine size={15} aria-hidden="true" />下载本页</button>
       </div>
-      <div className="result-layout">
-        <div className="result-grid">
-          {visibleResults.map((image) => <ResultCard key={image.image_id} image={image} active={selectedImage?.image_id === image.image_id} onOpen={() => onSelectImage(image)} />)}
-          {!visibleResults.length && <p className="result-page-empty">当前筛选下还没有结果。</p>}
-        </div>
-        <aside className="detail-panel" aria-label="图片详情">{selectedImage ? <ImageDetail image={selectedImage} onReviewResolved={onReviewResolved} onRetry={onRetry} /> : <EmptyDetail />}</aside>
+      <div className="result-grid">
+        {visibleResults.map((image) => <ResultCard key={image.image_id} image={image} active={false} onOpen={() => onSelectImage(image)} />)}
+        {!visibleResults.length && <p className="result-page-empty">当前筛选下还没有结果。</p>}
       </div>
       <Pagination page={page} total={results.result_total} pageSize={results.limit} onChange={onPageChange} label="处理结果" />
     </section>
@@ -997,7 +1011,7 @@ function ResultCard({ image, active, onOpen }: { image: ResultImage; active: boo
       {image.processing_standard_name && image.processing_standard_name !== image.classification?.standard_name && <p className="standard-match-note">执行过滤标准：{image.processing_standard_name}</p>}
       {taggingResult?.decision === "matched" && taggingResult.tags.length ? (
         <div className="tag-row" aria-label="素材库匹配标签">
-          {taggingResult.tags.slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}
+          {taggingResult.tags.map((tag) => <span key={tag}>{tag}</span>)}
         </div>
       ) : taggingResult?.decision === "pending_review" ? <p className="unmatched-note">相似素材等待人工复核</p>
         : taggingResult?.decision === "unmatched" ? <p className="unmatched-note">未匹配到素材，暂无标签</p> : null}
@@ -1005,12 +1019,13 @@ function ResultCard({ image, active, onOpen }: { image: ResultImage; active: boo
   );
 }
 
-function ImageDetail({ image, onReviewResolved, onRetry }: { image: ResultImage; onReviewResolved: (imageId: string, result: SimilarityTaggingResult) => void; onRetry: (imageId: string) => void }) {
+function ImageDetail({ image, onBack, onReviewResolved, onRetry }: { image: ResultImage; onBack: () => void; onReviewResolved: (imageId: string, result: SimilarityTaggingResult) => void; onRetry: (imageId: string) => void }) {
   const [showEnhanced, setShowEnhanced] = useState(true);
   const [compare, setCompare] = useState(50);
   const [auditExpanded, setAuditExpanded] = useState(false);
   const [beautifyExpanded, setBeautifyExpanded] = useState(false);
   const [processingExpanded, setProcessingExpanded] = useState(false);
+  const [classificationExpanded, setClassificationExpanded] = useState(false);
   const imageUrl = showEnhanced && image.enhanced_url ? image.enhanced_url : image.original_url;
   const openUrl = image.enhanced_download_url ?? image.original_download_url
     ?? image.enhanced_url ?? image.original_url;
@@ -1021,89 +1036,94 @@ function ImageDetail({ image, onReviewResolved, onRetry }: { image: ResultImage;
   const auditRegionId = `audit-dimensions-${image.image_id}`;
   const beautifyRegionId = `beautify-details-${image.image_id}`;
   const processingRegionId = `processing-details-${image.image_id}`;
+  const classificationRegionId = `classification-content-${image.image_id}`;
 
   useEffect(() => {
     setAuditExpanded(false);
     setBeautifyExpanded(false);
     setProcessingExpanded(false);
+    setClassificationExpanded(false);
   }, [image.image_id]);
 
   return (
-    <>
-      <div className="detail-preview">
-        {image.original_url && image.enhanced_url && showEnhanced ? (
-          <div className="compare-viewer">
-            <img src={image.original_url} alt={`${image.image_id} 原图`} decoding="async" />
-            <img
-              className="compare-enhanced"
-              src={image.enhanced_url}
-              alt={`${image.image_id} 美化图`}
-              decoding="async"
-              style={{ clipPath: `inset(0 ${100 - compare}% 0 0)` }}
-            />
-            <span className="compare-line" style={{ left: `${compare}%` }} />
-            <input
-              aria-label="调整原图和美化图对比位置"
-              type="range"
-              min={0}
-              max={100}
-              value={compare}
-              onChange={(event) => setCompare(Number(event.target.value))}
-            />
+    <div className="result-detail-workspace">
+      <section className="formal-image-stage" aria-label="图片预览">
+        <header>
+          <button type="button" onClick={onBack}><ChevronLeft size={17} aria-hidden="true" />返回结果列表</button>
+          <span title={image.image_id}><FileImage size={15} aria-hidden="true" />{image.image_id}</span>
+        </header>
+        <div className="formal-image-canvas">
+          <div className="formal-image-frame">
+            {image.original_url && image.enhanced_url && showEnhanced ? (
+              <div className="compare-viewer">
+                <img src={image.original_url} alt={`${image.image_id} 原图`} decoding="async" />
+                <img
+                  className="compare-enhanced"
+                  src={image.enhanced_url}
+                  alt={`${image.image_id} 美化图`}
+                  decoding="async"
+                  style={{ clipPath: `inset(0 ${100 - compare}% 0 0)` }}
+                />
+                <span className="compare-line" style={{ left: `${compare}%` }} />
+                <input
+                  aria-label="调整原图和美化图对比位置"
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={compare}
+                  onChange={(event) => setCompare(Number(event.target.value))}
+                />
+              </div>
+            ) : imageUrl ? (
+              <img src={imageUrl} alt={`${image.image_id} 大图预览`} decoding="async" />
+            ) : image.files_expired ? (
+              <p>图片文件已过期，处理记录和标签仍保留。</p>
+            ) : (
+              <p>该图片的预览地址暂不可用。</p>
+            )}
           </div>
-        ) : imageUrl ? (
-          <img src={imageUrl} alt={`${image.image_id} 大图预览`} decoding="async" />
-        ) : image.files_expired ? (
-          <p>图片文件已过期，处理记录和标签仍保留。</p>
-        ) : (
-          <p>该图片的预览地址暂不可用。</p>
-        )}
-        <div className="preview-actions">
-          <button type="button" className={!showEnhanced ? "active" : ""} onClick={() => setShowEnhanced(false)}>
-            <Eye size={16} aria-hidden="true" />
-            原图
-          </button>
-          <button type="button" className={showEnhanced ? "active" : ""} onClick={() => setShowEnhanced(true)} disabled={!image.enhanced_url}>
-            <Sparkles size={16} aria-hidden="true" />
-            美化图
-          </button>
-          {openUrl ? (
-            <a href={openUrl} target="_blank" rel="noreferrer">
-              <ArrowDownToLine size={16} aria-hidden="true" />
-              打开
-            </a>
-          ) : null}
         </div>
-      </div>
-
-      <div className="detail-header">
-        <div>
-          <span className={`decision-badge ${image.decision}`}>{decisionLabel(image.decision)}</span>
-          <h2>{image.image_id}</h2>
-        </div>
-        <SimilarityScore result={taggingResult} />
-      </div>
-      <section className="image-pipeline-status" aria-label="图片流水线状态">
-        <header><span>当前阶段</span><strong>{pipelineStageLabel(image.pipeline_stage)}</strong></header>
-        <div>
-          {[
-            ["分类", image.classification_status],
-            ["过滤", image.filter_status],
-            ["美化", image.beautify_status],
-            ["内容分析", image.analysis_status],
-            ["图片向量", image.embedding_status],
-            ["素材匹配", image.match_status]
-          ].map(([label, status]) => <span key={label}><small>{label}</small><b className={status ?? "waiting"}>{substageStatusLabel(status)}</b></span>)}
-        </div>
+        <footer className="preview-actions">
+          <button type="button" className={!showEnhanced ? "active" : ""} onClick={() => setShowEnhanced(false)}><Eye size={16} aria-hidden="true" />原图</button>
+          <button type="button" className={showEnhanced ? "active" : ""} onClick={() => setShowEnhanced(true)} disabled={!image.enhanced_url}><Sparkles size={16} aria-hidden="true" />美化图</button>
+          {openUrl ? <a href={openUrl} target="_blank" rel="noreferrer"><ArrowDownToLine size={16} aria-hidden="true" />打开文件</a> : <span />}
+        </footer>
       </section>
-      {image.decision === "failed" && <button className="retry-image-button" type="button" onClick={() => onRetry(image.image_id)}><RefreshCw size={15} aria-hidden="true" />重试这张图片</button>}
+
+      <aside className="formal-result-inspector" aria-label="结果详情">
+        <header className="formal-result-heading">
+          <div>
+            <span className={`decision-badge ${image.decision}`}>{resultStatusTitle(image, taggingResult)}</span>
+            <h2>{image.image_id}</h2>
+            <p>{resultStatusDetail(image, taggingResult)}</p>
+          </div>
+          <SimilarityScore result={taggingResult} />
+        </header>
+
+      {image.decision === "rejected" ? (
+        <RejectedResult reasons={preciseReasons} />
+      ) : image.decision === "failed" ? (
+        <FailedResult reasons={preciseReasons} onRetry={() => onRetry(image.image_id)} />
+      ) : (
+        <SimilarityMatch imageId={image.image_id} result={taggingResult} onResolved={onReviewResolved} />
+      )}
+
+      <OutcomeSummary image={image} result={taggingResult} />
+
       {image.classification ? (
         <div className="classification-detail">
           <div><span>命中分类标准</span><strong>{image.classification.standard_name}</strong><em>分类置信度 {Math.round(image.classification.confidence * 100)}%</em></div>
-          <p>{image.classification.reason}</p>
           {image.classification.review_required && <b>建议人工复核</b>}
         </div>
       ) : image.completion && <div className="completion-detail"><strong>{image.completion.label === "completed" ? "完工" : "非完工"} · {Math.round(image.completion.confidence * 100)}%</strong><p>{image.completion.reason}</p>{image.completion.review_required && <span>建议人工复核</span>}</div>}
+      {image.classification?.content_analysis && (
+        <ClassificationContentDetail
+          analysis={image.classification.content_analysis}
+          expanded={classificationExpanded}
+          regionId={classificationRegionId}
+          onToggle={() => setClassificationExpanded((current) => !current)}
+        />
+      )}
       {auditDimensions.length > 0 && (
         <DetailDisclosure
           className="audit-dimensions"
@@ -1126,37 +1146,188 @@ function ImageDetail({ image, onReviewResolved, onRetry }: { image: ResultImage;
       {image.beautify && (
         <BeautifyAuditDetail
           beautify={image.beautify}
+          metrics={image.metrics}
+          enhancedMetrics={image.enhanced_metrics}
           expanded={beautifyExpanded}
           regionId={beautifyRegionId}
           onToggle={() => setBeautifyExpanded((current) => !current)}
         />
       )}
 
-      <div className="metrics-compare">
-        <MetricList title="美化前" metrics={image.metrics} />
-        <MetricList title="美化后" metrics={image.enhanced_metrics} />
+      <DetailDisclosure
+        className="processing-explanation"
+        title="完整处理记录"
+        summary="技术信息"
+        expanded={processingExpanded}
+        regionId={processingRegionId}
+        onToggle={() => setProcessingExpanded((current) => !current)}
+      >
+        <dl className="technical-record">
+          <div><dt>内部图片 ID</dt><dd>{image.image_id}</dd></div>
+          <div><dt>当前阶段</dt><dd>{pipelineStageLabel(image.pipeline_stage)}</dd></div>
+          <div><dt>分类</dt><dd>{stageStatusLabel(image.classification_status)}</dd></div>
+          <div><dt>过滤</dt><dd>{stageStatusLabel(image.filter_status)}</dd></div>
+          <div><dt>美化</dt><dd>{stageStatusLabel(image.beautify_status)}</dd></div>
+          <div><dt>素材匹配</dt><dd>{matchOutcomeLabel(taggingResult, image.match_status)}</dd></div>
+        </dl>
+        {preciseReasons.length > 0 && (
+          <div className="processing-explanation-content">
+            <ul>{preciseReasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+          </div>
+        )}
+      </DetailDisclosure>
+      </aside>
+    </div>
+  );
+}
+
+function RejectedResult({ reasons }: { reasons: string[] }) {
+  return (
+    <section className="action-panel rejected-action">
+      <header><CircleX size={18} aria-hidden="true" /><div><strong>未通过过滤要求</strong><span>{reasons.length ? `${reasons.length} 项关键问题需要检查` : "过滤标准未通过"}</span></div></header>
+      {reasons.length > 0 && <ul>{reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>}
+    </section>
+  );
+}
+
+function FailedResult({ reasons, onRetry }: { reasons: string[]; onRetry: () => void }) {
+  return (
+    <section className="action-panel failed-action">
+      <header><AlertTriangle size={18} aria-hidden="true" /><div><strong>图片处理失败</strong><span>{reasons[0] ?? "处理服务未完成这张图片"}</span></div></header>
+      <button className="retry-action" type="button" onClick={onRetry}><RefreshCw size={16} aria-hidden="true" />重试这张图片</button>
+    </section>
+  );
+}
+
+function OutcomeSummary({ image, result }: { image: ResultImage; result?: SimilarityTaggingResult }) {
+  const failedAuditCount = (image.audit_dimensions ?? []).filter((dimension) => !dimension.passed).length;
+  const filterValue = failedAuditCount > 0
+    ? `${failedAuditCount} 项未通过`
+    : image.filter_status === "completed" || image.decision === "selected" || image.decision === "not_selected"
+      ? "全部通过"
+      : stageStatusLabel(image.filter_status);
+  const filterTone = failedAuditCount > 0 || image.decision === "rejected" ? "danger" : filterValue === "全部通过" ? "success" : "muted";
+  const beautifyValue = beautifyOutcomeLabel(image);
+  const beautifyTone = image.decision === "failed" ? "danger" : image.decision === "rejected" || beautifyValue === "未执行" ? "muted" : "success";
+  const matchValue = matchOutcomeLabel(result, image.match_status);
+  const matchTone = result?.decision === "matched" ? "success" : result?.decision === "pending_review" ? "warning" : "muted";
+  const classificationValue = classificationOutcomeLabel(image);
+  const items = [
+    { label: "分类", value: classificationValue, tone: "success", icon: <ScanSearch size={15} aria-hidden="true" /> },
+    { label: "过滤", value: filterValue, tone: filterTone, icon: failedAuditCount > 0 ? <CircleX size={15} aria-hidden="true" /> : <CheckCircle2 size={15} aria-hidden="true" /> },
+    { label: "美化", value: beautifyValue, tone: beautifyTone, icon: <Sparkles size={15} aria-hidden="true" /> },
+    { label: "素材匹配", value: matchValue, tone: matchTone, icon: <Tag size={15} aria-hidden="true" /> }
+  ];
+  return <section className="outcome-summary" aria-label="处理结果摘要">{items.map((item) => <div className={item.tone} key={item.label}>{item.icon}<span>{item.label}</span><strong title={item.value}>{item.value}</strong></div>)}</section>;
+}
+
+function ClassificationContentDetail({
+  analysis,
+  expanded,
+  onToggle,
+  regionId
+}: {
+  analysis: ClassificationContentAnalysis;
+  expanded: boolean;
+  onToggle: () => void;
+  regionId: string;
+}) {
+  const recognizedCount = analysis.subjects.length + analysis.objects.length;
+  const summary = `${recognizedCount} 项主体/物体 · 识别置信度 ${Math.round(analysis.confidence * 100)}%`;
+  const attributeEntries = Object.entries(analysis.attributes).filter(([, values]) => values.length > 0);
+
+  return (
+    <DetailDisclosure
+      className="classification-content"
+      title="AI 图片内容识别"
+      summary={summary}
+      expanded={expanded}
+      regionId={regionId}
+      onToggle={onToggle}
+    >
+      <div className="recognition-summary">
+        <span>识别概览</span>
+        <strong>{analysis.summary}</strong>
       </div>
 
-      <div className="explain-grid">
-        <DetailDisclosure
-          className="processing-explanation"
-          title="处理说明"
-          summary={preciseReasons.length ? `${preciseReasons.length} 条` : "暂无"}
-          expanded={processingExpanded}
-          regionId={processingRegionId}
-          onToggle={() => setProcessingExpanded((current) => !current)}
-        >
-          <div className="processing-explanation-content">
-            {preciseReasons.length ? (
-              <ul>{preciseReasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
-            ) : (
-              <p>暂无处理说明</p>
-            )}
-          </div>
-        </DetailDisclosure>
+      <dl className="recognition-facts">
+        <div><dt>内容类型</dt><dd>{analysis.content_type}</dd></div>
+        <div><dt>可见场景</dt><dd>{analysis.scene}</dd></div>
+        <div><dt>拍摄视角</dt><dd>{analysis.view}</dd></div>
+        <div><dt>识别置信度</dt><dd>{Math.round(analysis.confidence * 100)}%</dd></div>
+      </dl>
+
+      <RecognitionChips title="可见空间或区域" items={analysis.spaces} emptyText="未识别到明确空间或区域" />
+      <RecognitionChips title="主要主体" items={analysis.subjects} emptyText="未识别到明确主体" />
+      <RecognitionChips title="可见物体" items={analysis.objects} emptyText="未识别到明确物体" />
+
+      {analysis.visible_conditions.length > 0 && (
+        <RecognitionEvidence title="可见状态" items={analysis.visible_conditions} tone="neutral" />
+      )}
+
+      {attributeEntries.length > 0 && (
+        <section className="recognition-group recognition-attributes">
+          <h3>视觉属性</h3>
+          <dl>
+            {attributeEntries.map(([name, values]) => (
+              <div key={name}><dt>{name}</dt><dd>{values.join("、")}</dd></div>
+            ))}
+          </dl>
+        </section>
+      )}
+
+      <div className="recognition-evidence-grid">
+        <RecognitionEvidence title="支持当前分类的证据" items={analysis.supporting_evidence} tone="supporting" emptyText="未返回独立的支持证据" />
+        <RecognitionEvidence title="相反证据" items={analysis.conflicting_evidence} tone="conflicting" emptyText="未发现明显相反证据" />
+        <RecognitionEvidence title="当前画面未呈现的证据" items={analysis.missing_evidence} tone="missing" emptyText="没有需要补充的缺失证据" />
+        <RecognitionEvidence title="不确定项" items={analysis.uncertainties} tone="uncertain" emptyText="没有需要说明的不确定项" />
       </div>
-      <SimilarityMatch imageId={image.image_id} result={taggingResult} onResolved={onReviewResolved} />
-    </>
+
+      <section className="recognition-group recognition-ocr">
+        <h3>图片文字识别</h3>
+        {analysis.ocr_text.length > 0 ? (
+          <blockquote>{analysis.ocr_text.join(" / ")}</blockquote>
+        ) : (
+          <p className="recognition-empty">未识别到清晰文字</p>
+        )}
+      </section>
+    </DetailDisclosure>
+  );
+}
+
+function RecognitionChips({ title, items, emptyText }: { title: string; items: string[]; emptyText: string }) {
+  return (
+    <section className="recognition-group recognition-chip-group">
+      <h3>{title}</h3>
+      {items.length > 0 ? (
+        <div>{items.map((item, index) => <span key={`${item}-${index}`}>{item}</span>)}</div>
+      ) : (
+        <p className="recognition-empty">{emptyText}</p>
+      )}
+    </section>
+  );
+}
+
+function RecognitionEvidence({
+  title,
+  items,
+  tone,
+  emptyText
+}: {
+  title: string;
+  items: string[];
+  tone: "neutral" | "supporting" | "conflicting" | "missing" | "uncertain";
+  emptyText?: string;
+}) {
+  return (
+    <section className={`recognition-evidence ${tone}`}>
+      <h3>{title}</h3>
+      {items.length > 0 ? (
+        <ul>{items.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul>
+      ) : (
+        <p className="recognition-empty">{emptyText}</p>
+      )}
+    </section>
   );
 }
 
@@ -1196,11 +1367,15 @@ function DetailDisclosure({
 
 function BeautifyAuditDetail({
   beautify,
+  metrics,
+  enhancedMetrics,
   expanded,
   onToggle,
   regionId
 }: {
   beautify: NonNullable<ResultImage["beautify"]>;
+  metrics: ImageMetrics;
+  enhancedMetrics?: ImageMetrics;
   expanded: boolean;
   onToggle: () => void;
   regionId: string;
@@ -1226,7 +1401,7 @@ function BeautifyAuditDetail({
   return (
     <DetailDisclosure
       className="beautify-audit"
-      title="美化规划与执行验收"
+      title="美化验收详情"
       summary={acceptanceLabel}
       expanded={expanded}
       regionId={regionId}
@@ -1247,6 +1422,10 @@ function BeautifyAuditDetail({
         )}
         {beautify.corrections.length > 0 && <p className="beautify-corrections">{beautify.corrections.join("；")}</p>}
         {acceptance?.fallback_reason && <p className="beautify-fallback">{acceptance.fallback_reason}</p>}
+        <div className="metrics-compare">
+          <MetricList title="美化前" metrics={metrics} />
+          <MetricList title="美化后" metrics={enhancedMetrics} />
+        </div>
     </DetailDisclosure>
   );
 }
@@ -1313,6 +1492,8 @@ function SimilarityMatch({ imageId, result, onResolved }: { imageId: string; res
         similarity: review.similarity_score,
         feature_score: review.feature_score,
         final_score: review.final_score,
+        auto_threshold: result?.auto_threshold,
+        review_threshold: result?.review_threshold,
         message: review.message
       });
     } catch (error) {
@@ -1323,21 +1504,65 @@ function SimilarityMatch({ imageId, result, onResolved }: { imageId: string; res
   }
 
   if (!result) return null;
-  return <section className={`similarity-panel ${result.decision}`}>
-    <div className="similarity-heading"><h3>素材匹配</h3><span>{result.decision === "matched" ? "已匹配" : result.decision === "pending_review" ? "待复核" : "未匹配"}</span></div>
-    <p>{result.message}</p>
-    {result.tags.length ? <div className="path-tags">{result.tags.map((tag, index) => <span key={`${tag}-${index}`}>{tag}</span>)}</div> : null}
-    <div className="similarity-breakdown" aria-label="素材匹配分数组成">
-      {result.similarity != null ? <small>图片向量 {Math.round(result.similarity * 100)}%</small> : null}
-      {result.feature_score != null ? <small>内容特征 {Math.round(result.feature_score * 100)}%</small> : null}
-      {result.final_score != null ? <small>综合匹配 {Math.round(result.final_score * 100)}%</small> : null}
-    </div>
-    {result.decision === "pending_review" && <div className="review-controls">
-      {candidates.length > 1 && <label>选择候选标签组合<select value={selectedAssetId} onChange={(event) => setSelectedAssetId(event.target.value)}>{candidates.map((candidate) => <option key={candidate.asset_id} value={candidate.asset_id}>{candidate.tags.join("、")}（综合 {Math.round(candidate.final_score * 100)}% / 图片 {Math.round(candidate.similarity_score * 100)}%{candidate.feature_score != null ? ` / 内容 ${Math.round(candidate.feature_score * 100)}%` : ""}）</option>)}</select></label>}
-      <div className="review-actions"><button className="review-confirm" type="button" disabled={reviewBusy || (!selectedAssetId && !result.matched_asset_id)} onClick={() => void decideReview("matched")}>{reviewBusy ? <Loader2 className="spin" size={15} /> : <Check size={15} />}确认此标签</button><button type="button" disabled={reviewBusy} onClick={() => void decideReview("unmatched")}><X size={15} />设为未匹配</button></div>
+  if (result.decision === "matched") {
+    return (
+      <section className="action-panel matched-action">
+        <header><Tag size={18} aria-hidden="true" /><div><strong>素材标签已匹配</strong><span>{result.message}</span></div></header>
+        {result.tags.length > 0 && <div className="final-tags">{result.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>}
+        <MatchScoreComposition result={result} />
+      </section>
+    );
+  }
+
+  if (result.decision === "unmatched") {
+    return (
+      <section className="action-panel unmatched-action">
+        <header><ScanSearch size={18} aria-hidden="true" /><div><strong>没有可信的相似素材</strong><span>{result.message}</span></div></header>
+        <MatchScoreComposition result={result} />
+      </section>
+    );
+  }
+
+  const selectedCandidate = candidates.find((candidate) => candidate.asset_id === selectedAssetId)
+    ?? candidates[0];
+  const scoreResult: SimilarityTaggingResult = selectedCandidate ? {
+    ...result,
+    similarity: selectedCandidate.similarity_score,
+    feature_score: selectedCandidate.feature_score,
+    final_score: selectedCandidate.final_score
+  } : result;
+
+  return (
+    <section className="action-panel pending-action" aria-label="素材匹配待复核">
+      <header><AlertTriangle size={18} aria-hidden="true" /><div><strong>需要确认素材标签</strong><span>{result.message}</span></div></header>
+      {candidates.length > 1 && (
+        <label className="candidate-select">选择候选标签组合
+          <select value={selectedAssetId} onChange={(event) => setSelectedAssetId(event.target.value)}>
+            {candidates.map((candidate) => <option key={candidate.asset_id} value={candidate.asset_id}>{candidate.tags.join("、")}（综合 {Math.round(candidate.final_score * 100)}%）</option>)}
+          </select>
+        </label>
+      )}
+      {selectedCandidate && (
+        <div className="candidate-row">
+          {selectedCandidate.preview_url ? <img src={selectedCandidate.preview_url} alt="候选素材预览" /> : <span className="candidate-placeholder"><FileImage size={22} aria-hidden="true" /></span>}
+          <div><span>最高候选素材</span><strong>{selectedCandidate.original_filename || "素材库候选图片"}</strong><small>{selectedCandidate.asset_id}</small><div>{selectedCandidate.tags.map((tag) => <b key={tag}>{tag}</b>)}</div></div>
+        </div>
+      )}
+      <MatchScoreComposition result={scoreResult} />
+      <div className="review-actions"><button className="review-confirm" type="button" disabled={reviewBusy || (!selectedAssetId && !result.matched_asset_id)} onClick={() => void decideReview("matched")}>{reviewBusy ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}确认此标签</button><button type="button" disabled={reviewBusy} onClick={() => void decideReview("unmatched")}><X size={15} />设为未匹配</button></div>
       {reviewError && <p className="review-error">{reviewError}</p>}
-    </div>}
-  </section>;
+    </section>
+  );
+}
+
+function MatchScoreComposition({ result }: { result: SimilarityTaggingResult }) {
+  const scores: Array<readonly [string, number]> = [];
+  if (result.similarity != null) scores.push(["图片向量", result.similarity]);
+  if (result.feature_score != null) scores.push(["内容特征", result.feature_score]);
+  if (result.final_score != null) scores.push(["综合匹配", result.final_score]);
+  if (result.auto_threshold != null) scores.push(["自动采用线", result.auto_threshold]);
+  if (!scores.length) return null;
+  return <div className="score-composition" aria-label="匹配分数组成">{scores.map(([label, value]) => <span key={label}><small>{label}</small><strong>{formatSimilarityScore(value)}</strong></span>)}</div>;
 }
 
 function MetricList({ title, metrics }: { title: string; metrics?: ImageMetrics }) {
@@ -1360,15 +1585,6 @@ function MetricList({ title, metrics }: { title: string; metrics?: ImageMetrics 
         <p className="metrics-empty">尚未生成美化后评分</p>
       )}
     </section>
-  );
-}
-
-function EmptyDetail() {
-  return (
-    <div className="empty-detail">
-      <FileImage size={36} aria-hidden="true" />
-      <strong>选择一张图片查看详情</strong>
-    </div>
   );
 }
 
@@ -1447,14 +1663,57 @@ function pipelineStageLabel(stage: string): string {
   }[stage] ?? stage;
 }
 
-function substageStatusLabel(status?: string | null): string {
+function stageStatusLabel(status?: string | null): string {
   return {
     pending: "等待",
     queued: "已排队",
     processing: "处理中",
     completed: "完成",
-    failed: "失败"
-  }[status ?? ""] ?? "未开始";
+    failed: "失败",
+    skipped: "未执行"
+  }[status ?? ""] ?? "未执行";
+}
+
+function resultStatusTitle(image: ResultImage, result?: SimilarityTaggingResult): string {
+  if (image.decision === "selected") return result?.decision === "matched" ? "处理完成" : "已保留并美化";
+  if (image.decision === "rejected") return "过滤未通过";
+  if (image.decision === "failed") return "处理失败";
+  if (image.decision === "not_selected") return "合格未入选";
+  return decisionLabel(image.decision);
+}
+
+function resultStatusDetail(image: ResultImage, result?: SimilarityTaggingResult): string {
+  if (image.decision === "rejected") return "图片保留供复核，未进入后续美化与素材匹配";
+  if (image.decision === "failed") return "当前图片未完成处理，可以单独重新执行";
+  if (result?.decision === "pending_review") return "标签匹配等待人工确认";
+  if (result?.decision === "matched") return "已匹配素材并继承素材库标签";
+  if (result?.decision === "unmatched") return "已完成美化，但没有可信的素材标签";
+  return pipelineStageLabel(image.pipeline_stage);
+}
+
+function beautifyOutcomeLabel(image: ResultImage): string {
+  if (image.decision === "rejected") return "未执行";
+  const acceptance = image.beautify?.acceptance?.status;
+  if (acceptance === "passed") return "验收通过";
+  if (acceptance === "fallback") return "安全回退";
+  if (acceptance === "failed" || image.decision === "failed") return "执行失败";
+  if (image.enhanced_url) return "已生成";
+  return stageStatusLabel(image.beautify_status);
+}
+
+function classificationOutcomeLabel(image: ResultImage): string {
+  if (image.completion) return image.completion.label === "completed" ? "完工" : "非完工";
+  const standardName = image.classification?.standard_name ?? "";
+  if (standardName.includes("非完工")) return "非完工";
+  if (standardName.includes("完工")) return "完工";
+  return stageStatusLabel(image.classification_status);
+}
+
+function matchOutcomeLabel(result?: SimilarityTaggingResult, status?: string | null): string {
+  if (result?.decision === "matched") return "已匹配";
+  if (result?.decision === "pending_review") return "待复核";
+  if (result?.decision === "unmatched") return "未匹配";
+  return stageStatusLabel(status);
 }
 
 function downloadCurrentPage(images: ResultImage[]) {

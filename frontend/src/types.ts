@@ -145,6 +145,8 @@ export interface SimilarityTaggingResult {
   similarity?: number | null;
   feature_score?: number | null;
   final_score?: number | null;
+  auto_threshold?: number | null;
+  review_threshold?: number | null;
   message: string;
 }
 
@@ -172,6 +174,9 @@ export interface BeautifyAudit {
 
 export interface SimilarityCandidate {
   asset_id: string;
+  original_filename?: string | null;
+  preview_object_key?: string | null;
+  preview_url?: string;
   tags: string[];
   similarity_score: number;
   feature_score: number | null;
@@ -188,6 +193,24 @@ export interface TagReview {
   decision: SimilarityTaggingResult["decision"];
   message: string;
   candidates: SimilarityCandidate[];
+}
+
+export interface ClassificationContentAnalysis {
+  summary: string;
+  content_type: string;
+  scene: string;
+  spaces: string[];
+  view: string;
+  subjects: string[];
+  objects: string[];
+  visible_conditions: string[];
+  attributes: Record<string, string[]>;
+  supporting_evidence: string[];
+  conflicting_evidence: string[];
+  missing_evidence: string[];
+  uncertainties: string[];
+  ocr_text: string[];
+  confidence: number;
 }
 
 export interface ResultImage {
@@ -231,6 +254,7 @@ export interface ResultImage {
     confidence: number;
     reason: string;
     review_required: boolean;
+    content_analysis?: ClassificationContentAnalysis | null;
   };
   beautify?: BeautifyAudit;
   routed_filter_profile_id?: string | null;

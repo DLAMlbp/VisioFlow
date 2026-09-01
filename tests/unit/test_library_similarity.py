@@ -42,6 +42,7 @@ def test_close_candidates_require_review_without_final_tags() -> None:
     assert result.decision == "pending_review"
     assert result.tags == []
     assert result.candidates[0]["tags"] == ["完工", "厨房"]
+    assert result.candidates[0]["preview_object_key"] == "uploads/ast_1.jpg"
 
 
 def test_same_reference_image_prefers_the_broader_tag_set() -> None:

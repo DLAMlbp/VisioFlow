@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import logging
@@ -13,6 +12,7 @@ from urllib.request import Request, urlopen
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from src.core.config import Settings
+from src.services.images.vision_rate_limit import run_vision_request
 from src.services.images.beautify_policy import validate_beautify_plan
 from src.services.images.tagging import (
     _chat_completions_url,
@@ -96,8 +96,10 @@ class BeautifyPlanningService:
         started = time.perf_counter()
         response: dict[str, object] | None = None
         try:
-            response = await asyncio.to_thread(
-                self._request, image_bytes, instruction, image_context
+            response = await run_vision_request(
+                self.settings,
+                operation="beautify_planning",
+                request=lambda: self._request(image_bytes, instruction, image_context),
             )
             content = response["choices"][0]["message"]["content"]
             payload = _parse_beautify_content(content)
@@ -158,7 +160,7 @@ class BeautifyPlanningService:
                             "type": "image_url",
                             "image_url": {
                                 "url": f"data:image/jpeg;base64,{image_data}",
-                                "detail": "high",
+                                "detail": "low",
                             },
                         },
                     ],
@@ -175,7 +177,7 @@ class BeautifyPlanningService:
             method="POST",
         )
         with urlopen(
-            request, timeout=self.settings.ai_tagging_timeout_seconds
+            request, timeout=self.settings.ai_beautify_timeout_seconds
         ) as response:
             return json.loads(response.read().decode("utf-8"))
 

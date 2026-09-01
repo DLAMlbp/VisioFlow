@@ -1,4 +1,7 @@
+from io import BytesIO
+
 import pytest
+from PIL import Image
 
 from src.core.config import Settings
 from src.schemas.integration import IntegrationUrlImage
@@ -34,11 +37,100 @@ class FakeStorage(StorageProvider):
         raise NotImplementedError
 
 
+def image_bytes(image_format: str) -> bytes:
+    output = BytesIO()
+    Image.new("RGB", (32, 24), "red").save(output, format=image_format)
+    return output.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_stage_integration_urls_uses_actual_type_when_remote_suffix_differs(
+    monkeypatch,
+) -> None:
+    source = image_bytes("WEBP")
+
+    def fake_download(_url, **_kwargs):
+        return source
+
+    monkeypatch.setattr(integration_urls, "_download_image", fake_download)
+    storage = FakeStorage()
+
+    staged = await stage_integration_urls(
+        [
+            IntegrationUrlImage(
+                objectKey="customer-photo",
+                imageUrl="https://obs.test/customer-photo.jpg",
+            )
+        ],
+        storage=storage,
+        settings=Settings(_env_file=None),
+    )
+
+    assert staged[0].client_object_key == "customer-photo"
+    internal_key, uploaded, content_type = storage.uploaded[0]
+    assert internal_key.endswith(".webp")
+    assert uploaded == source
+    assert content_type == "image/webp"
+
+
+@pytest.mark.asyncio
+async def test_stage_integration_urls_uses_bytes_when_response_type_is_wrong(
+    monkeypatch,
+) -> None:
+    source = image_bytes("PNG")
+
+    def fake_download(_url, **_kwargs):
+        return source
+
+    monkeypatch.setattr(integration_urls, "_download_image", fake_download)
+    storage = FakeStorage()
+
+    await stage_integration_urls(
+        [
+            IntegrationUrlImage(
+                objectKey="customer-photo",
+                imageUrl="https://obs.test/customer-photo.jpg",
+            )
+        ],
+        storage=storage,
+        settings=Settings(_env_file=None),
+    )
+
+    internal_key, uploaded, content_type = storage.uploaded[0]
+    assert internal_key.endswith(".png")
+    assert uploaded == source
+    assert content_type == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_stage_integration_urls_rejects_corrupted_image_bytes(monkeypatch) -> None:
+    def fake_download(_url, **_kwargs):
+        return b"\xff\xd8\xffnot-a-jpeg"
+
+    monkeypatch.setattr(integration_urls, "_download_image", fake_download)
+    storage = FakeStorage()
+
+    with pytest.raises(IntegrationUrlDownloadError, match="objectKey=customer-photo"):
+        await stage_integration_urls(
+            [
+                IntegrationUrlImage(
+                    objectKey="customer-photo",
+                    imageUrl="https://obs.test/customer-photo.jpg",
+                )
+            ],
+            storage=storage,
+            settings=Settings(_env_file=None),
+        )
+
+    assert storage.uploaded == []
+
+
 @pytest.mark.asyncio
 async def test_stage_integration_urls_downloads_and_preserves_customer_keys(monkeypatch) -> None:
+    source = image_bytes("JPEG")
+
     def fake_download(url, **_kwargs):
-        filename = url.rsplit("/", 1)[-1]
-        return f"data:{filename}".encode(), "image/jpeg", filename
+        return source
 
     monkeypatch.setattr(integration_urls, "_download_image", fake_download)
     storage = FakeStorage()
@@ -62,10 +154,12 @@ async def test_stage_integration_urls_downloads_and_preserves_customer_keys(monk
 async def test_stage_integration_urls_removes_successful_uploads_if_any_download_fails(
     monkeypatch,
 ) -> None:
+    source = image_bytes("JPEG")
+
     def fake_download(url, **_kwargs):
         if url.endswith("bad.jpg"):
             raise IntegrationUrlDownloadError("download failed")
-        return b"image", "image/jpeg", "good.jpg"
+        return source
 
     monkeypatch.setattr(integration_urls, "_download_image", fake_download)
     storage = FakeStorage()
@@ -74,13 +168,14 @@ async def test_stage_integration_urls_removes_successful_uploads_if_any_download
         IntegrationUrlImage(objectKey="bad", imageUrl="https://obs.test/bad.jpg"),
     ]
 
-    with pytest.raises(IntegrationUrlDownloadError, match="download failed"):
+    with pytest.raises(IntegrationUrlDownloadError, match="download failed") as exc_info:
         await stage_integration_urls(
             images,
             storage=storage,
             settings=Settings(_env_file=None),
         )
 
+    assert "objectKey=bad" in str(exc_info.value)
     assert storage.deleted == [storage.uploaded[0][0]]
 
 

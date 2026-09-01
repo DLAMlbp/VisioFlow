@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import json
@@ -16,6 +15,7 @@ from urllib.request import Request, urlopen
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from src.core.config import Settings
+from src.services.images.vision_rate_limit import run_vision_request
 from src.services.images.tagging import (
     TagPayload,
     _chat_completions_url,
@@ -193,14 +193,17 @@ class ProcessingVisionService:
             if attempt_index > 0 and before_schema_retry is not None:
                 await before_schema_retry()
             try:
-                response = await asyncio.to_thread(
-                    self._request,
-                    image_bytes,
-                    candidates,
-                    unmatched_standard_policy,
-                    image_context,
-                    route_label,
-                    repair_context,
+                response = await run_vision_request(
+                    self.settings,
+                    operation="routed_filter",
+                    request=lambda: self._request(
+                        image_bytes,
+                        candidates,
+                        unmatched_standard_policy,
+                        image_context,
+                        route_label,
+                        repair_context,
+                    ),
                 )
                 content = _response_content(response)
                 payload = _parse_processing_content(content)

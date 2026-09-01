@@ -84,6 +84,12 @@ class Settings(BaseSettings):
     ai_tagging_image_long_side: int = 1024
     ai_tagging_concurrency: int = 4
     ai_tagging_rate_limit_per_minute: int = 24
+    ai_tagging_global_concurrency: int = Field(default=5, ge=1, le=32)
+    ai_tagging_retry_base_seconds: int = Field(default=10, ge=1, le=60)
+    ai_tagging_max_retry_delay_seconds: int = Field(default=60, ge=1, le=300)
+    ai_tagging_capacity_recovery_seconds: int = Field(default=60, ge=10, le=600)
+    ai_beautify_timeout_seconds: int = Field(default=60, ge=30, le=180)
+    ai_global_scheduler_enabled: bool = True
     ai_tagging_store_raw_response: bool = False
     ai_config_encryption_key: str = ""
     completion_review_confidence: float = Field(default=0.8, ge=0, le=1)

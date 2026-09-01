@@ -16,7 +16,7 @@ from src.services.images.beautify_planning import (
     build_stored_plan,
 )
 from src.services.images.quality import QualityEngine
-from src.services.images.vision_rate_limit import acquire_vision_rate_slot
+from src.services.images.vision_rate_limit import retry_countdown
 from src.services.jobs.dispatch import EnhancementTaskPublisher
 from src.services.managed_profiles import beautify_from_snapshot
 from src.services.storage.factory import get_storage_provider
@@ -47,7 +47,13 @@ def plan_beautify(task, image_id: str) -> None:
     try:
         asyncio.run(_plan_beautify(image_id))
     except Exception as exc:
-        raise task.retry(exc=exc, countdown=10) from exc
+        countdown = retry_countdown(get_settings(), task.request.retries)
+        emit_metric(
+            logger,
+            "vision_task_retry_total",
+            labels={"operation": "beautify_planning", "image_id": image_id, "delay": countdown},
+        )
+        raise task.retry(exc=exc, countdown=countdown) from exc
 
 
 async def _plan_beautify(image_id: str) -> None:
@@ -70,8 +76,6 @@ async def _plan_beautify(image_id: str) -> None:
             job.beautify_profile_snapshot, job.beautify_profile_id, settings
         )
         image_bytes = await get_storage_provider().download(item.object_key)
-        if settings.ai_tagging_enabled and settings.ai_tagging_api_key:
-            await acquire_vision_rate_slot(settings)
         emit_metric(
             logger,
             "beautify_plan_requests_total",

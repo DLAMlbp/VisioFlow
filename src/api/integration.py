@@ -79,7 +79,7 @@ async def create_integration_job(
             payload = IntegrationUrlJobRequest.model_validate(await request.json())
         except (ValueError, ValidationError) as exc:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=str(exc),
             ) from exc
         return await _create_url_job(payload, service=service, settings=settings, storage=storage)
@@ -307,7 +307,7 @@ def _required_form_string(form: FormData, name: str) -> str:
     value = _optional_form_string(form, name)
     if value is None:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"缺少必填字段：{name}",
         )
     return value
@@ -333,7 +333,7 @@ def _form_int(form: FormData, name: str, default: int) -> int:
         return int(value)
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"字段 {name} 必须是整数",
         ) from exc
 
@@ -348,7 +348,7 @@ def _form_bool(form: FormData, name: str, default: bool) -> bool:
     if normalized in {"false", "0", "no", "off"}:
         return False
     raise HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         detail=f"字段 {name} 必须是布尔值",
     )
 

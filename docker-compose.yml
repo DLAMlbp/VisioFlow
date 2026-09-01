@@ -84,7 +84,7 @@ services:
 
   worker-analysis:
     <<: *worker
-    command: celery -A src.workers.celery_app worker -Q analysis -l info --concurrency=4
+    command: celery -A src.workers.celery_app worker -Q analysis -l info --concurrency=1
 
   worker-embedding:
     <<: *worker

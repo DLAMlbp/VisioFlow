@@ -49,6 +49,23 @@ def _response(*, multiple: bool = False) -> dict[str, object]:
         ],
         "selected_standard_id": "std_completed",
         "reason": "可见完整成品空间",
+        "content_analysis": {
+            "summary": "完整的室内客厅空间",
+            "content_type": "室内照片",
+            "scene": "已布置完成的客厅",
+            "spaces": ["客厅"],
+            "view": "整体视角",
+            "subjects": ["客厅空间"],
+            "objects": ["沙发", "茶几"],
+            "visible_conditions": ["墙面和地面完整", "家具已布置"],
+            "attributes": {"材质": ["木质", "织物"]},
+            "supporting_evidence": ["未见施工工具", "空间具备使用条件"],
+            "conflicting_evidence": [],
+            "missing_evidence": [],
+            "uncertainties": [],
+            "ocr_text": [],
+            "confidence": 0.94,
+        },
     }
 
 
@@ -87,6 +104,8 @@ async def test_classification_selects_exactly_one_paired_standard(
     assert outcome.status == "completed"
     assert outcome.payload is not None
     assert outcome.payload.selected_standard_id == "std_completed"
+    assert outcome.payload.content_analysis.spaces == ["客厅"]
+    assert outcome.payload.content_analysis.confidence == 0.94
 
 
 @pytest.mark.asyncio
@@ -114,6 +133,35 @@ async def test_classification_rejects_multiple_matches(
 
     assert outcome.status == "failed"
     assert outcome.error_message == "多个明确分类标准同时命中"
+
+
+@pytest.mark.asyncio
+async def test_classification_retries_when_content_analysis_is_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = _response()
+    del response["content_analysis"]["visible_conditions"]
+    service = StandardClassificationVisionService(
+        Settings(
+            ai_tagging_enabled=True,
+            ai_tagging_api_key="test",
+            ai_processing_schema_max_retries=0,
+        )
+    )
+    monkeypatch.setattr(
+        service,
+        "_request",
+        lambda *_args: {
+            "choices": [{"message": {"content": json.dumps(response, ensure_ascii=False)}}]
+        },
+    )
+
+    outcome = await service.analyze(b"image", standards=_standards())
+
+    assert outcome.status == "failed"
+    assert outcome.error_message == (
+        "AI 图片分类响应字段不合法：content_analysis.visible_conditions"
+    )
 
 
 @pytest.mark.asyncio
@@ -160,3 +208,6 @@ def test_classification_prompt_requires_evidence_bounded_reasons() -> None:
     assert "现有信息不足以判断整体装修是否完成" in prompt
     assert "证据不足不等于确认尚未完工" in prompt
     assert "不得照抄分类规则中的抽象措辞" in prompt
+    assert "supporting_evidence" in prompt
+    assert "missing_evidence" in prompt
+    assert "内容识别完整性和可靠性的总体置信度" in prompt
