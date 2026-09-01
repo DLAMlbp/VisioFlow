@@ -35,7 +35,7 @@ def upgrade() -> None:
         "image_items",
         ["client_object_key"],
     )
-    op.execute(
+    op.get_bind().exec_driver_sql(
         """
         INSERT INTO processing_profiles (
             id, profile_type, name, description, instruction,
