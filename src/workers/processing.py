@@ -18,7 +18,7 @@ from src.services.images.processing_vision import (
     precise_filter_reason,
 )
 from src.services.images.quality import QualityEngine
-from src.services.images.vision_rate_limit import acquire_vision_rate_slot
+from src.services.images.vision_rate_limit import retry_countdown
 from src.services.managed_profiles import standards_from_snapshots
 from src.services.storage.factory import get_storage_provider
 from src.workers.celery_app import celery_app
@@ -49,7 +49,13 @@ def apply_routed_processing(task, image_id: str) -> None:
     try:
         asyncio.run(_apply_routed_processing(image_id))
     except Exception as exc:
-        raise task.retry(exc=exc, countdown=10) from exc
+        countdown = retry_countdown(get_settings(), task.request.retries)
+        emit_metric(
+            logger,
+            "vision_task_retry_total",
+            labels={"operation": "routed_filter", "image_id": image_id, "delay": countdown},
+        )
+        raise task.retry(exc=exc, countdown=countdown) from exc
 
 
 async def _apply_routed_processing(image_id: str) -> None:
@@ -75,8 +81,6 @@ async def _apply_routed_processing(image_id: str) -> None:
 
         settings = load_ai_model_settings(get_settings())
         image_bytes = await get_storage_provider().download(item.object_key)
-        if settings.ai_tagging_enabled and settings.ai_tagging_api_key:
-            await acquire_vision_rate_slot(settings)
         emit_metric(
             logger,
             "routed_filter_requests_total",
@@ -97,7 +101,6 @@ async def _apply_routed_processing(image_id: str) -> None:
                 item.completion_label
                 or compatibility_route_label(standards[0].id)
             ),
-            before_schema_retry=lambda: acquire_vision_rate_slot(settings),
         )
         if outcome.status != "completed" or outcome.payload is None:
             if outcome.retryable:

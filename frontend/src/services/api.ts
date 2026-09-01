@@ -25,6 +25,7 @@ import type {
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 const REQUEST_TIMEOUT_MS = 30_000;
+const LIBRARY_ASSET_PAGE_SIZE = 200;
 
 interface BackendResultImage {
   image_id: string;
@@ -313,15 +314,33 @@ export const api = {
         });
       },
       async getLibraryAssets(groupId?: string | null): Promise<LibraryAssetList> {
-        const query = groupId ? `?group_id=${encodeURIComponent(groupId)}` : "";
-        const result = await request<LibraryAssetList>(`/api/v1/library/assets${query}`);
-        const items = await Promise.all(result.items.map(async (asset) => ({
-          ...asset,
-          preview_url: await getDownloadUrlSafely(
-            asset.thumbnail_object_key ?? asset.original_object_key
-          )
-        })));
-        return { ...result, items };
+        const items: LibraryAsset[] = [];
+        let total = 0;
+        do {
+          const params = new URLSearchParams({
+            limit: String(LIBRARY_ASSET_PAGE_SIZE),
+            offset: String(items.length)
+          });
+          if (groupId) params.set("group_id", groupId);
+          const page = await request<LibraryAssetList>(`/api/v1/library/assets?${params}`);
+          total = page.total;
+          items.push(...page.items);
+          if (!page.items.length) break;
+        } while (items.length < total);
+
+        const previewKeys = items.map(
+          (asset) => asset.thumbnail_object_key ?? asset.original_object_key
+        );
+        const previewUrls = await getDownloadUrlsSafely(previewKeys);
+        return {
+          total,
+          items: items.map((asset) => ({
+            ...asset,
+            preview_url: previewUrls.get(
+              asset.thumbnail_object_key ?? asset.original_object_key
+            )
+          }))
+        };
       },
       updateLibraryAsset(assetId: string, payload: { group_id?: string; status?: "active" | "disabled" }): Promise<LibraryAsset> {
         return request<LibraryAsset>(`/api/v1/library/assets/${assetId}`, {
@@ -354,8 +373,21 @@ export const api = {
       reindexLibraryAsset(assetId: string): Promise<LibraryAsset> {
         return request<LibraryAsset>(`/api/v1/library/assets/${assetId}/reindex`, { method: "POST" });
       },
-      getTagReviews(): Promise<TagReview[]> {
-        return request<TagReview[]>("/api/v1/tag-reviews?limit=200");
+      async getTagReviews(): Promise<TagReview[]> {
+        const reviews = await request<TagReview[]>("/api/v1/tag-reviews?limit=200");
+        const previewKeys = reviews.flatMap((review) => (
+          review.candidates.flatMap((candidate) => candidate.preview_object_key ? [candidate.preview_object_key] : [])
+        ));
+        const previewUrls = await getDownloadUrlsSafely(previewKeys);
+        return reviews.map((review) => ({
+          ...review,
+          candidates: review.candidates.map((candidate) => ({
+            ...candidate,
+            preview_url: candidate.preview_object_key
+              ? previewUrls.get(candidate.preview_object_key)
+              : undefined
+          }))
+        }));
       },
       decideTagReview(imageId: string, payload: { decision: "matched" | "unmatched"; matched_asset_id?: string | null }): Promise<TagReview> {
         return request<TagReview>(`/api/v1/tag-reviews/${imageId}/decision`, {

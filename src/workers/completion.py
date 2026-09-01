@@ -19,7 +19,7 @@ from src.services.images.completion import (
     CompletionVisionService,
 )
 from src.services.images.processing_vision import compatibility_route_label
-from src.services.images.vision_rate_limit import acquire_vision_rate_slot
+from src.services.images.vision_rate_limit import retry_countdown
 from src.services.jobs.dispatch import RoutedProcessingTaskPublisher
 from src.services.managed_profiles import standards_from_snapshots
 from src.services.storage.factory import get_storage_provider
@@ -51,7 +51,13 @@ def classify_completion(task, image_id: str) -> None:
     try:
         asyncio.run(_classify_completion(image_id))
     except Exception as exc:
-        raise task.retry(exc=exc, countdown=10) from exc
+        countdown = retry_countdown(get_settings(), task.request.retries)
+        emit_metric(
+            logger,
+            "vision_task_retry_total",
+            labels={"operation": "classification", "image_id": image_id, "delay": countdown},
+        )
+        raise task.retry(exc=exc, countdown=countdown) from exc
 
 
 async def _classify_completion(image_id: str) -> None:
@@ -68,8 +74,6 @@ async def _classify_completion(image_id: str) -> None:
             return
         settings = load_ai_model_settings(get_settings())
         image_bytes = await get_storage_provider().download(item.object_key)
-        if settings.ai_tagging_enabled and settings.ai_tagging_api_key:
-            await acquire_vision_rate_slot(settings)
         if job.routing_mode in {"standards", "streaming_v2"}:
             await _classify_filter_standard(
                 repository, item, job, settings, image_bytes
@@ -158,7 +162,6 @@ async def _classify_filter_standard(repository, item, job, settings, image_bytes
     outcome = await StandardClassificationVisionService(settings).analyze(
         image_bytes,
         standards=standards,
-        before_schema_retry=lambda: acquire_vision_rate_slot(settings),
     )
     emit_metric(
         logger,

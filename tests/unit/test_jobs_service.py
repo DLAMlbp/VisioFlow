@@ -9,6 +9,7 @@ from src.models.image_item import ImageItem
 from src.models.image_job import ImageJob
 from src.models.image_metric import ImageMetric
 from src.models.image_result import ImageResult
+from src.models.image_similarity_match import ImageSimilarityMatch
 from src.repositories.jobs import JobProgressSnapshot, terminal_job_status
 from src.schemas.jobs import CreateImageJobRequest
 from src.services.jobs.service import (
@@ -16,6 +17,7 @@ from src.services.jobs.service import (
     InvalidJobRequest,
     JobNotFound,
     _beautify_response,
+    _classification_response,
 )
 from src.services.managed_profiles import ManagedProfileService
 from src.services.profiles import ProfileLoader, ProfileNotFoundError
@@ -402,6 +404,18 @@ async def test_get_results_returns_decision_metrics_and_enhanced_key() -> None:
         enhanced_metrics_json={"sharpness": 82, "exposure": 92, "contrast": 75, "noise": 88},
         reasons_json=["通过装修照片基础质量标准并完成自然美化"],
     )
+    item.similarity_match = ImageSimilarityMatch(
+        id="match_test",
+        image_id=item.id,
+        matched_asset_id=None,
+        matched_tags_snapshot=[],
+        similarity_score=0.75,
+        feature_score=0.18,
+        final_score=0.579,
+        decision="pending_review",
+        message="图片与内容特征候选需要人工确认",
+        candidate_json=[],
+    )
     item.ai_processing_json = {
         "filter": {
             "decision": "pass",
@@ -417,6 +431,8 @@ async def test_get_results_returns_decision_metrics_and_enhanced_key() -> None:
         status="completed",
         filter_profile_id="renovation_submission_v1",
         beautify_profile_id="renovation_natural_v1",
+        similarity_enabled=True,
+        similarity_profile_id="library_similarity_v2",
         enhance_level=1,
         max_selected=10,
         total_count=1,
@@ -425,9 +441,23 @@ async def test_get_results_returns_decision_metrics_and_enhanced_key() -> None:
         rejected_count=0,
         items=[item],
     )
-    repository = FakeJobRepository()
+    class ResultsRepository(FakeJobRepository):
+        async def get_config(self, job_id: str):
+            configured_job = self.jobs[job_id]
+            return SimpleNamespace(
+                processing_standard_snapshots=None,
+                similarity_enabled=True,
+                similarity_profile_id=configured_job.similarity_profile_id,
+            )
+
+    repository = ResultsRepository()
     repository.jobs[job.id] = job
-    service = ImageJobService(repository=repository, settings=Settings(max_images_per_job=50))
+    settings = Settings(max_images_per_job=50, profiles_directory="profiles")
+    service = ImageJobService(
+        repository=repository,
+        settings=settings,
+        profile_loader=ProfileLoader(settings),
+    )
 
     response = await service.get_results(job.id)
 
@@ -438,6 +468,9 @@ async def test_get_results_returns_decision_metrics_and_enhanced_key() -> None:
     assert response.images[0].metrics is not None
     assert response.images[0].metrics.sharpness == 80
     assert response.images[0].enhanced_metrics is not None
+    assert response.images[0].tagging_result is not None
+    assert response.images[0].tagging_result.auto_threshold == 0.6
+    assert response.images[0].tagging_result.review_threshold == 0.6
     assert response.images[0].enhanced_metrics.exposure == 92
     assert response.images[0].audit_dimensions[0].dimension == "画面清晰度"
     assert response.images[0].audit_dimensions[0].passed is True
@@ -489,3 +522,56 @@ def test_beautify_response_returns_plan_execution_and_acceptance_audit() -> None
     assert response.effective_parameters["brightness"] == 1.03
     assert response.acceptance is not None
     assert response.acceptance.checks[0].name == "exposure"
+
+
+def test_classification_response_exposes_structured_content_analysis() -> None:
+    item = SimpleNamespace(
+        routed_filter_profile_id="std_completed",
+        completion_confidence=0.97,
+        review_required=False,
+        completion_json={
+            "normalized": {
+                "reason": "可见完整的成品客厅空间",
+                "content_analysis": {
+                    "summary": "家具齐备的完整客厅",
+                    "content_type": "室内照片",
+                    "scene": "已布置完成的客厅",
+                    "spaces": ["客厅"],
+                    "view": "整体视角",
+                    "subjects": ["客厅空间"],
+                    "objects": ["沙发", "茶几"],
+                    "visible_conditions": ["墙面与地面完整"],
+                    "attributes": {"材质": ["木质", "织物"]},
+                    "supporting_evidence": ["未见施工状态"],
+                    "conflicting_evidence": [],
+                    "missing_evidence": [],
+                    "uncertainties": [],
+                    "ocr_text": [],
+                    "confidence": 0.92,
+                },
+            }
+        },
+    )
+
+    response = _classification_response(item, {"std_completed": "完工图片过滤"})
+
+    assert response is not None
+    assert response.standard_name == "完工图片过滤"
+    assert response.content_analysis is not None
+    assert response.content_analysis.objects == ["沙发", "茶几"]
+    assert response.content_analysis.confidence == 0.92
+
+
+def test_classification_response_keeps_legacy_records_readable() -> None:
+    item = SimpleNamespace(
+        routed_filter_profile_id="std_legacy",
+        completion_confidence=0.88,
+        review_required=False,
+        completion_json={"normalized": {"reason": "历史分类理由"}},
+    )
+
+    response = _classification_response(item, {"std_legacy": "历史过滤标准"})
+
+    assert response is not None
+    assert response.reason == "历史分类理由"
+    assert response.content_analysis is None

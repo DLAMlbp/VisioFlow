@@ -166,6 +166,8 @@ class ImageSimilarityResultResponse(BaseModel):
     similarity: float | None = Field(default=None, ge=0, le=1)
     feature_score: float | None = Field(default=None, ge=0, le=1)
     final_score: float | None = Field(default=None, ge=0, le=1)
+    auto_threshold: float | None = Field(default=None, ge=0, le=1)
+    review_threshold: float | None = Field(default=None, ge=0, le=1)
     message: str
 
 
@@ -190,11 +192,29 @@ class ImageCompletionResponse(BaseModel):
 
 
 class ImageClassificationResponse(BaseModel):
+    class ContentAnalysis(BaseModel):
+        summary: str
+        content_type: str
+        scene: str
+        spaces: list[str] = Field(default_factory=list)
+        view: str
+        subjects: list[str] = Field(default_factory=list)
+        objects: list[str] = Field(default_factory=list)
+        visible_conditions: list[str] = Field(default_factory=list)
+        attributes: dict[str, list[str]] = Field(default_factory=dict)
+        supporting_evidence: list[str] = Field(default_factory=list)
+        conflicting_evidence: list[str] = Field(default_factory=list)
+        missing_evidence: list[str] = Field(default_factory=list)
+        uncertainties: list[str] = Field(default_factory=list)
+        ocr_text: list[str] = Field(default_factory=list)
+        confidence: float = Field(ge=0, le=1)
+
     standard_id: str
     standard_name: str
     confidence: float = Field(ge=0, le=1)
     reason: str
     review_required: bool = False
+    content_analysis: ContentAnalysis | None = None
 
 
 class BeautifyAcceptanceCheckResponse(BaseModel):

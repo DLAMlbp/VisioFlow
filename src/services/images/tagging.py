@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import time
@@ -14,6 +13,7 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from src.core.config import Settings
+from src.services.images.vision_rate_limit import run_vision_request
 
 PROMPT_VERSION = "generic_visual_analysis_v1"
 
@@ -131,7 +131,11 @@ class OpenAIChatVisionTagProvider:
 
         started = time.perf_counter()
         try:
-            response = await asyncio.to_thread(self._request, image_bytes)
+            response = await run_vision_request(
+                self.settings,
+                operation="content_analysis",
+                request=lambda: self._request(image_bytes),
+            )
             content = response["choices"][0]["message"]["content"]
             payload = TagPayload.model_validate_json(content)
             return TaggingOutcome(
@@ -161,7 +165,11 @@ class OpenAIChatVisionTagProvider:
 
         started = time.perf_counter()
         try:
-            response = await asyncio.to_thread(self._request_many, images)
+            response = await run_vision_request(
+                self.settings,
+                operation="content_analysis_batch",
+                request=lambda: self._request_many(images),
+            )
             content = response["choices"][0]["message"]["content"]
             payload = TagBatchPayload.model_validate_json(content)
             if len(payload.images) != len(images):

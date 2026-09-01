@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import time
@@ -12,6 +11,7 @@ from urllib.request import Request, urlopen
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from src.core.config import Settings
+from src.services.images.vision_rate_limit import run_vision_request
 from src.services.images.tagging import (
     _chat_completions_url,
     _is_retryable_error,
@@ -158,8 +158,10 @@ class CompletionVisionService:
         started = time.perf_counter()
         response: dict[str, object] | None = None
         try:
-            response = await asyncio.to_thread(
-                self._request, image_bytes, instruction
+            response = await run_vision_request(
+                self.settings,
+                operation="completion_classification",
+                request=lambda: self._request(image_bytes, instruction),
             )
             content = response["choices"][0]["message"]["content"]
             payload = _parse_completion_content(content)

@@ -39,6 +39,54 @@ describe("real API client", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/library/groups", expect.any(Object));
   });
 
+  it("loads every library asset page and reports the backend total", async () => {
+    const firstPage = Array.from({ length: 200 }, (_, index) => ({
+      id: `asset_${index}`,
+      original_object_key: `uploads/asset_${index}.jpg`,
+      thumbnail_object_key: null,
+      original_filename: `asset_${index}.jpg`,
+      group_id: "grp_all",
+      tags: ["施工"],
+      status: "active",
+      created_at: "2026-09-01T00:00:00Z"
+    }));
+    const secondPage = Array.from({ length: 42 }, (_, index) => ({
+      ...firstPage[index],
+      id: `asset_${index + 200}`,
+      original_object_key: `uploads/asset_${index + 200}.jpg`,
+      original_filename: `asset_${index + 200}.jpg`
+    }));
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("offset=200")) {
+        return Promise.resolve(new Response(JSON.stringify({ total: 242, items: secondPage }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        }));
+      }
+      if (url.includes("presign-download-batch")) {
+        return Promise.resolve(new Response(JSON.stringify({ items: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ total: 242, items: firstPage }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await api.getLibraryAssets();
+
+    expect(result.total).toBe(242);
+    expect(result.items).toHaveLength(242);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("limit=200&offset=200"),
+      expect.any(Object)
+    );
+  });
+
   it("shows the backend detail instead of a raw JSON response", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
       JSON.stringify({ detail: "服务端 API_KEY 未配置" }),

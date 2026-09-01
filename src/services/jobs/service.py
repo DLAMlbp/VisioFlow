@@ -269,6 +269,18 @@ class ImageJobService:
                 job_config.processing_standard_snapshots if job_config else None
             )
         }
+        similarity_profile = None
+        if (
+            job_config
+            and job_config.similarity_enabled
+            and self.profile_loader is not None
+        ):
+            try:
+                similarity_profile = self.profile_loader.get_similarity_profile(
+                    job_config.similarity_profile_id
+                )
+            except ProfileNotFoundError:
+                similarity_profile = None
         images = []
         for item in result_items:
             result = item.result
@@ -340,6 +352,16 @@ class ImageJobService:
                             similarity=item.similarity_match.similarity_score,
                             feature_score=item.similarity_match.feature_score,
                             final_score=item.similarity_match.final_score,
+                            auto_threshold=(
+                                similarity_profile.similarity_auto_threshold
+                                if similarity_profile
+                                else None
+                            ),
+                            review_threshold=(
+                                similarity_profile.similarity_review_threshold
+                                if similarity_profile
+                                else None
+                            ),
                             message=item.similarity_match.message,
                         )
                         if item.similarity_match is not None
@@ -357,6 +379,16 @@ class ImageJobService:
                             similarity=item.similarity_match.similarity_score,
                             feature_score=item.similarity_match.feature_score,
                             final_score=item.similarity_match.final_score,
+                            auto_threshold=(
+                                similarity_profile.similarity_auto_threshold
+                                if similarity_profile
+                                else None
+                            ),
+                            review_threshold=(
+                                similarity_profile.similarity_review_threshold
+                                if similarity_profile
+                                else None
+                            ),
                             message=item.similarity_match.message,
                         )
                         if item.similarity_match is not None
@@ -470,7 +502,22 @@ def _classification_response(
         confidence=float(item.completion_confidence or 0),
         reason=_completion_reason(item.completion_json) or "已选择对应过滤标准",
         review_required=bool(item.review_required),
+        content_analysis=_classification_content_analysis(item.completion_json),
     )
+
+
+def _classification_content_analysis(
+    payload: dict[str, object] | None,
+) -> ImageClassificationResponse.ContentAnalysis | None:
+    normalized = payload.get("normalized") if isinstance(payload, dict) else None
+    content = normalized.get("content_analysis") if isinstance(normalized, dict) else None
+    if not isinstance(content, dict):
+        return None
+    try:
+        return ImageClassificationResponse.ContentAnalysis.model_validate(content)
+    except ValueError:
+        # Old or partially written records still need to remain readable.
+        return None
 
 
 def _beautify_response(item: ImageItem, result) -> ImageBeautifyResponse | None:

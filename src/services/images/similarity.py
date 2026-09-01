@@ -124,6 +124,11 @@ def decide_similarity(
     serialized = [
         {
             "asset_id": candidate.asset.id,
+            "original_filename": candidate.asset.original_filename,
+            "preview_object_key": (
+                candidate.asset.thumbnail_object_key
+                or candidate.asset.original_object_key
+            ),
             "tags": candidate.tags,
             "similarity_score": round(candidate.similarity_score, 4),
             "feature_score": (
