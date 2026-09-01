@@ -310,7 +310,7 @@ class ProcessingVisionService:
                             "type": "image_url",
                             "image_url": {
                                 "url": f"data:image/jpeg;base64,{image_data}",
-                                "detail": "low",
+                                "detail": "high",
                             },
                         },
                     ],
@@ -548,6 +548,20 @@ def filter_dimensions_from_processing_json(
         return []
     try:
         return FilterDecision.model_validate(payload.get("filter")).dimensions
+    except ValidationError:
+        return []
+
+
+def global_filter_dimensions_from_completion_json(
+    payload: object,
+) -> list[FilterDimensionResult]:
+    if not isinstance(payload, dict):
+        return []
+    global_filter = payload.get("global_filter")
+    if not isinstance(global_filter, dict):
+        return []
+    try:
+        return FilterDecision.model_validate(global_filter.get("filter")).dimensions
     except ValidationError:
         return []
 

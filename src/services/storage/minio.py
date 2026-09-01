@@ -1,5 +1,7 @@
 import asyncio
 from functools import cached_property
+from pathlib import PurePosixPath
+from urllib.parse import quote
 
 import boto3
 from botocore.client import Config
@@ -91,9 +93,16 @@ class MinIOStorageProvider(StorageProvider):
 
     async def presign_download(self, object_key: str, expires_seconds: int) -> str:
         validate_object_key(object_key)
+        filename = PurePosixPath(object_key).name
         return await asyncio.to_thread(
             self.public_client.generate_presigned_url,
             "get_object",
-            Params={"Bucket": self.settings.s3_bucket, "Key": object_key},
+            Params={
+                "Bucket": self.settings.s3_bucket,
+                "Key": object_key,
+                "ResponseContentDisposition": (
+                    f"attachment; filename*=UTF-8''{quote(filename, safe='')}"
+                ),
+            },
             ExpiresIn=expires_seconds,
         )

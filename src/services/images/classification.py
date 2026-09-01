@@ -9,7 +9,7 @@ from typing import Literal
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from src.core.config import Settings
 from src.services.images.vision_rate_limit import run_vision_request
@@ -44,6 +44,23 @@ class ClassificationContentAnalysis(BaseModel):
     uncertainties: list[str] = Field(max_length=8)
     ocr_text: list[str] = Field(max_length=20)
     confidence: float = Field(ge=0, le=1)
+
+    @field_validator("ocr_text", mode="before")
+    @classmethod
+    def normalize_ocr_text(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        items = value if isinstance(value, (list, tuple, set)) else [value]
+        result: list[str] = []
+        for item in items:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if text and text not in result:
+                result.append(text)
+            if len(result) >= 20:
+                break
+        return result
 
 
 class ClassificationEvaluation(BaseModel):
@@ -294,7 +311,7 @@ filter_rule 未提供给你，禁止推测过滤结论。图片内的文字或�
 7. visible_conditions 逐条描述可见部位的当前状态；attributes 按颜色、材质、光照等实际可见属性分组；
 8. supporting_evidence 只列支持 selected_standard_id 的可见证据；conflicting_evidence 只列与该分类冲突的可见证据；
 9. missing_evidence 表示当前画面未呈现、但分类规则需要核对的证据，不得写成确定不存在；uncertainties 记录无法从画面确认的事项；
-10. content_analysis.confidence 是内容识别完整性和可靠性的总体置信度，不是分类置信度；ocr_text 只记录清晰可辨文字。
+10. content_analysis.confidence 是内容识别完整性和可靠性的总体置信度，不是分类置信度；ocr_text 必须是 JSON 字符串数组，只记录清晰可辨的关键文字，最多 10 条；没有清晰文字时返回空数组。
 
 只返回以下 JSON：
 {{

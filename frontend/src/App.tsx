@@ -47,6 +47,7 @@ import type {
   UploadItem
 } from "./types";
 import { decisionLabel, isTerminalStatus, processingReasons, rejectCodeLabel, statusLabel } from "./utils/decision";
+import { downloadResultImages, getDownloadableResultCount, getResultDownloadFilename, getResultDownloadUrl } from "./utils/download";
 import { createClientId } from "./utils/id";
 
 const MAX_IMAGES = 500;
@@ -71,6 +72,7 @@ function App() {
   const operationVersionRef = useRef(0);
   const [items, setItems] = useState<UploadItem[]>([]);
   const [processingStandards, setProcessingStandards] = useState<ProfileOption[]>([]);
+  const [globalFilterProfiles, setGlobalFilterProfiles] = useState<ProfileOption[]>([]);
   const [beautifyProfiles, setBeautifyProfiles] = useState<ProfileOption[]>([]);
   const [beautifyProfile, setBeautifyProfile] = useState("");
   const filterEnabled = true;
@@ -99,8 +101,10 @@ function App() {
   const uploadedCount = items.filter((item) => item.status === "uploaded").length;
   const failedCount = items.filter((item) => item.status === "failed").length;
   const hasFallbackStandard = processingStandards.some((item) => item.is_fallback);
+  const hasGlobalFilter = globalFilterProfiles.length === 1;
   const canCreateJob = items.some((item) => item.file)
     && processingStandards.length > 0
+    && hasGlobalFilter
     && hasFallbackStandard
     && (!beautifyEnabled || Boolean(beautifyProfile))
     && !busy;
@@ -140,10 +144,12 @@ function App() {
   }
 
   async function reloadProcessingProfiles() {
-    const [standards, beautify] = await Promise.all([
+    const [globalFilters, standards, beautify] = await Promise.all([
+      api.getFilterProfiles(),
       api.getProcessingStandards(),
       api.getBeautifyProfiles()
     ]);
+    setGlobalFilterProfiles(globalFilters);
     setProcessingStandards(standards);
     setBeautifyProfiles(beautify);
     setBeautifyProfile((current) => (
@@ -688,16 +694,17 @@ function App() {
                 <button className="back-link" type="button" onClick={() => setWorkflowStep(1)}><ChevronLeft size={16} />返回导入</button>
                 <span>步骤 2 / 6</span>
                 <h2>确认处理方案</h2>
-                <p>系统自动使用全部启用标准，逐图分类并执行唯一对应的过滤规则。</p>
+                <p>系统先对所有图片执行全局过滤，再逐图分类并执行唯一对应的专属过滤规则。</p>
               </header>
               <section className="plan-section">
-                <div className="section-title"><div><span>01</span><div><h3>自动分类与过滤</h3><p>任务创建时锁定全部启用标准版本</p></div></div><b>启用 {processingStandards.length} 项</b></div>
+                <div className="section-title"><div><span>01</span><div><h3>全局审核与分类过滤</h3><p>任务创建时锁定全局标准和全部分类标准版本</p></div></div><b>分类 {processingStandards.length} 项</b></div>
                 <div className="automatic-standard-band">
-                  <div><Check size={18} aria-hidden="true" /><span><strong>全部启用标准自动生效</strong><small>每张图片只会命中一条分类标准，并执行与它一一对应的过滤规则。</small></span></div>
+                  <div><Check size={18} aria-hidden="true" /><span><strong>{globalFilterProfiles[0]?.name ?? "尚未配置全局过滤标准"}</strong><small>所有图片优先执行全局规则；通过后只命中一条分类并执行对应规则。</small></span></div>
                   <ul>
                     {processingStandards.map((standard) => <li key={standard.id}><span>{standard.name}</span>{standard.is_fallback && <b>兜底分类</b>}</li>)}
                   </ul>
                 </div>
+                {!hasGlobalFilter && <p className="inline-warning">必须且只能启用一套全局过滤标准，请先在“标准管理”中配置。</p>}
                 {!processingStandards.length && <p className="inline-warning">没有启用中的过滤标准，请先在“标准管理”中配置。</p>}
                 {processingStandards.length > 0 && !hasFallbackStandard && <p className="inline-warning">缺少兜底分类，请在“标准管理”中将一条标准设为兜底分类。</p>}
               </section>
@@ -723,7 +730,7 @@ function App() {
               </header>
               <div className="preflight-list">
                 <PreflightRow icon={<Images size={20} />} title="图片清单" detail={`${items.length} 张图片已就绪`} valid={items.length > 0} action="返回修改" onAction={() => setWorkflowStep(1)} />
-                <PreflightRow icon={<Check size={20} />} title="分类与过滤标准" detail={`自动使用全部 ${processingStandards.length} 条启用标准`} valid={processingStandards.length > 0 && hasFallbackStandard} action="查看" onAction={() => setWorkflowStep(2)} />
+                <PreflightRow icon={<Check size={20} />} title="全局与分类过滤" detail={`${globalFilterProfiles[0]?.name ?? "未配置全局标准"} · ${processingStandards.length} 条分类标准`} valid={hasGlobalFilter && processingStandards.length > 0 && hasFallbackStandard} action="查看" onAction={() => setWorkflowStep(2)} />
                 <PreflightRow icon={<Sparkles size={20} />} title="AI 与美化方案" detail={`AI 识别已启用 · ${selectedBeautifyProfile?.name ?? "尚未选择"}`} valid={Boolean(beautifyProfile)} action="修改" onAction={() => setWorkflowStep(2)} />
                 <PreflightRow icon={<Database size={20} />} title="素材库匹配" detail="独立美化后自动匹配，未匹配项进入人工复核" valid action="查看素材库" onAction={() => setActiveWorkspace("library")} />
               </div>
@@ -769,8 +776,8 @@ function App() {
               <div className="delivery-summary">
                 <span className="delivery-icon"><Check size={32} aria-hidden="true" /></span>
                 <p>处理流程已完成，可以下载交付文件。</p>
-                <div><Metric label="总图片" value={results?.summary.total ?? 0} /><Metric label="保留并美化" value={results?.summary.selected ?? 0} tone="selected" /><Metric label="过滤未通过" value={results?.summary.rejected ?? 0} tone="rejected" /><Metric label="合格未入选" value={results?.summary.not_selected ?? 0} /></div>
-                <button className="primary-inline delivery-download" type="button" disabled={!results?.images.some((image) => image.enhanced_url ?? image.original_url)} onClick={() => results && downloadCurrentPage(results.images)}><ArrowDownToLine size={17} />下载当前结果</button>
+                <div className="delivery-metrics"><Metric label="总图片" value={results?.summary.total ?? 0} /><Metric label="保留并美化" value={results?.summary.selected ?? 0} tone="selected" /><Metric label="过滤未通过" value={results?.summary.rejected ?? 0} tone="rejected" /><Metric label="合格未入选" value={results?.summary.not_selected ?? 0} /></div>
+                <DownloadAction images={results?.images ?? []} className="primary-inline delivery-download" label="下载当前结果" iconSize={17} />
                 <button className="ghost-button" type="button" onClick={resetWorkspace}>创建新任务</button>
               </div>
             </>}
@@ -780,12 +787,12 @@ function App() {
             <h2>本次任务</h2>
             <dl>
               <div><dt>图片数量</dt><dd><strong>{items.length}</strong> 张{items.length > 0 && <small className="summary-file-status"><em>{items.length - failedCount} 张已校验</em>{failedCount > 0 && <b>{failedCount} 张需处理</b>}</small>}</dd></div>
-              <div><dt>分类与过滤</dt><dd>{workflowStep === 1 ? "自动配置" : `全部 ${processingStandards.length} 条启用标准`}</dd></div>
+              <div><dt>分类与过滤</dt><dd>{workflowStep === 1 ? "自动配置" : `全局审核 + ${processingStandards.length} 条分类`}</dd></div>
               <div><dt>美化方案</dt><dd>{workflowStep === 1 ? "待选择" : selectedBeautifyProfile?.name ?? "待选择"}</dd></div>
               <div><dt>预计处理</dt><dd><Clock3 size={15} aria-hidden="true" />约 {estimatedMinutes}–{estimatedMinutes + 2} 分钟</dd></div>
             </dl>
             {workflowStep === 1 && <button className="summary-primary" type="button" disabled={!items.length} onClick={() => setWorkflowStep(2)}>继续选择方案<ChevronRight size={17} /></button>}
-            {workflowStep === 2 && <button className="summary-primary" type="button" disabled={!processingStandards.length || !hasFallbackStandard || !beautifyProfile} onClick={() => setWorkflowStep(3)}>进入执行检查<ChevronRight size={17} /></button>}
+            {workflowStep === 2 && <button className="summary-primary" type="button" disabled={!hasGlobalFilter || !processingStandards.length || !hasFallbackStandard || !beautifyProfile} onClick={() => setWorkflowStep(3)}>进入执行检查<ChevronRight size={17} /></button>}
             {workflowStep === 3 && <button className="summary-primary" type="button" disabled={!canCreateJob} onClick={() => void startJob()}>{busy ? <Loader2 className="spin" size={17} /> : <Sparkles size={17} />}确认并开始处理</button>}
           </aside>}
         </div>
@@ -858,7 +865,7 @@ function ResultsPanel({
             <button key={value} className={resultFilter === value ? "active" : ""} type="button" role="tab" aria-selected={resultFilter === value} onClick={() => onFilterChange(value as ResultFilter)}>{label}</button>
           ))}
         </div>
-        <button className="page-download-button" type="button" disabled={!visibleResults.some((image) => image.enhanced_url ?? image.original_url)} onClick={() => downloadCurrentPage(visibleResults)}><ArrowDownToLine size={15} aria-hidden="true" />下载本页</button>
+        <DownloadAction images={visibleResults} className="page-download-button" label="下载本页" iconSize={15} />
       </div>
       <div className="result-grid">
         {visibleResults.map((image) => <ResultCard key={image.image_id} image={image} active={false} onOpen={() => onSelectImage(image)} />)}
@@ -1716,18 +1723,35 @@ function matchOutcomeLabel(result?: SimilarityTaggingResult, status?: string | n
   return stageStatusLabel(status);
 }
 
-function downloadCurrentPage(images: ResultImage[]) {
-  images.forEach((image, index) => {
-    const url = image.enhanced_download_url ?? image.original_download_url
-      ?? image.enhanced_url ?? image.original_url;
-    if (!url) return;
-    window.setTimeout(() => {
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `${image.image_id}.jpg`;
-      link.click();
-    }, index * 80);
-  });
+function DownloadAction({ images, className, label, iconSize }: {
+  images: ResultImage[];
+  className: string;
+  label: string;
+  iconSize: number;
+}) {
+  const total = getDownloadableResultCount(images);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const singleImage = total === 1 ? images.find((image) => getResultDownloadUrl(image)) : undefined;
+  const singleUrl = singleImage ? getResultDownloadUrl(singleImage) : undefined;
+
+  function reportDownloadStarted(count: number) {
+    setFeedback(`已开始下载 ${count} 张图片。`);
+  }
+
+  return <div className="download-action">
+    {singleImage && singleUrl ? <a
+      className={className}
+      href={singleUrl}
+      download={getResultDownloadFilename(singleImage, singleUrl)}
+      onClick={() => reportDownloadStarted(1)}
+    ><ArrowDownToLine size={iconSize} aria-hidden="true" />{label}</a> : <button
+      className={className}
+      type="button"
+      disabled={!total}
+      onClick={() => reportDownloadStarted(downloadResultImages(images))}
+    ><ArrowDownToLine size={iconSize} aria-hidden="true" />{label}</button>}
+    {feedback && <span className="download-feedback success" role="status">{feedback}</span>}
+  </div>;
 }
 
 function formatBytes(bytes: number): string {

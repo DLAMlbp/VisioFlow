@@ -3889,7 +3889,7 @@ body {
   font-size: 13px;
 }
 
-.delivery-summary > div {
+.delivery-metrics {
   width: 100%;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -3899,6 +3899,33 @@ body {
 
 .delivery-download {
   min-width: 240px;
+}
+
+.download-action {
+  display: grid;
+  flex: 0 0 auto;
+  justify-items: end;
+  gap: 6px;
+}
+
+.delivery-summary > .download-action {
+  justify-items: center;
+}
+
+.download-feedback {
+  max-width: 360px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: right;
+}
+
+.download-feedback.error {
+  color: var(--red);
+}
+
+.delivery-summary .download-feedback {
+  text-align: center;
 }
 
 .delivery-summary > .ghost-button {
@@ -4071,7 +4098,7 @@ body {
   }
 
   .plan-options,
-  .delivery-summary > div {
+  .delivery-metrics {
     grid-template-columns: 1fr 1fr;
   }
 
@@ -4119,7 +4146,7 @@ body {
   }
 
   .plan-options,
-  .delivery-summary > div {
+  .delivery-metrics {
     grid-template-columns: 1fr;
   }
 

@@ -78,7 +78,6 @@ async def _apply_routed_processing(image_id: str) -> None:
             await repository.fail_item(item, "路由过滤标准快照缺失或不合法")
             await _advance_after_preprocess(repository, item)
             return
-
         settings = load_ai_model_settings(get_settings())
         image_bytes = await get_storage_provider().download(item.object_key)
         emit_metric(

@@ -109,6 +109,44 @@ async def test_classification_selects_exactly_one_paired_standard(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ocr_text", "expected"),
+    [
+        ("施工日志", ["施工日志"]),
+        ([f"文字{i}" for i in range(25)], [f"文字{i}" for i in range(20)]),
+        (["施工日志", "施工日志", "  ", None], ["施工日志"]),
+    ],
+)
+async def test_classification_normalizes_provider_ocr_variations(
+    monkeypatch: pytest.MonkeyPatch,
+    ocr_text: object,
+    expected: list[str],
+) -> None:
+    response = _response()
+    response["content_analysis"]["ocr_text"] = ocr_text
+    service = StandardClassificationVisionService(
+        Settings(
+            ai_tagging_enabled=True,
+            ai_tagging_api_key="test",
+            ai_processing_schema_max_retries=0,
+        )
+    )
+    monkeypatch.setattr(
+        service,
+        "_request",
+        lambda *_args: {
+            "choices": [{"message": {"content": json.dumps(response, ensure_ascii=False)}}]
+        },
+    )
+
+    outcome = await service.analyze(b"image", standards=_standards())
+
+    assert outcome.status == "completed"
+    assert outcome.payload is not None
+    assert outcome.payload.content_analysis.ocr_text == expected
+
+
+@pytest.mark.asyncio
 async def test_classification_rejects_multiple_matches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -211,3 +249,5 @@ def test_classification_prompt_requires_evidence_bounded_reasons() -> None:
     assert "supporting_evidence" in prompt
     assert "missing_evidence" in prompt
     assert "内容识别完整性和可靠性的总体置信度" in prompt
+    assert "ocr_text 必须是 JSON 字符串数组" in prompt
+    assert "最多 10 条" in prompt

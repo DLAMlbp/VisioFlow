@@ -18,10 +18,17 @@ from src.services.images.completion import (
     COMPLETION_PROMPT_VERSION,
     CompletionVisionService,
 )
-from src.services.images.processing_vision import compatibility_route_label
+from src.services.images.hard_filter import RejectCode
+from src.services.images.processing_vision import (
+    PROCESSING_PROMPT_VERSION,
+    ProcessingVisionService,
+    compatibility_route_label,
+    precise_filter_reason,
+)
 from src.services.images.vision_rate_limit import retry_countdown
 from src.services.jobs.dispatch import RoutedProcessingTaskPublisher
 from src.services.managed_profiles import standards_from_snapshots
+from src.services.profiles import ProcessingStandard
 from src.services.storage.factory import get_storage_provider
 from src.workers.celery_app import celery_app
 from src.workers.preprocess import _advance_after_preprocess
@@ -159,6 +166,69 @@ async def _classify_filter_standard(repository, item, job, settings, image_bytes
         await repository.fail_item(item, "任务缺少完整的分类过滤标准快照")
         await _advance_after_preprocess(repository, item)
         return
+
+    global_standard = _global_filter_standard(job.filter_profile_snapshot)
+    if global_standard is None:
+        await repository.fail_item(item, "任务缺少全局过滤标准快照")
+        await _advance_after_preprocess(repository, item)
+        return
+    global_outcome = await ProcessingVisionService(settings).analyze(
+        image_bytes,
+        standards=[global_standard],
+        unmatched_standard_policy="reject",
+        image_context=_image_context(item),
+    )
+    emit_metric(
+        logger,
+        "global_filter_requests_total",
+        labels={
+            "job_id": item.job_id,
+            "image_id": item.id,
+            "status": global_outcome.status,
+            "profile_id": global_standard.id,
+        },
+    )
+    if global_outcome.status != "completed" or global_outcome.payload is None:
+        if global_outcome.retryable:
+            await repository.reset_completion_for_retry(item.id)
+            raise RuntimeError(global_outcome.error_message or "全局过滤调用失败")
+        await repository.save_completion_and_route(
+            item,
+            status="failed",
+            model_name=settings.ai_tagging_model,
+            prompt_version=PROCESSING_PROMPT_VERSION,
+            duration_ms=global_outcome.duration_ms,
+            payload=None,
+            error_message=global_outcome.error_message,
+        )
+        await repository.fail_item(
+            item, f"全局过滤失败：{global_outcome.error_message or '模型响应无效'}"
+        )
+        await _advance_after_preprocess(repository, item)
+        return
+
+    global_payload = global_outcome.payload.model_dump(mode="json")
+    if global_outcome.payload.filter.rejected:
+        await repository.save_completion_and_route(
+            item,
+            status="completed",
+            model_name=settings.ai_tagging_model,
+            prompt_version=PROCESSING_PROMPT_VERSION,
+            duration_ms=global_outcome.duration_ms,
+            payload={"global_filter": global_payload},
+            error_message=None,
+        )
+        await repository.reject_item(
+            item,
+            [RejectCode.AI_FILTER_REJECTED],
+            reason=precise_filter_reason(
+                global_outcome.payload.filter,
+                standard_name=global_standard.name or "全局过滤标准",
+            ),
+        )
+        await _advance_after_preprocess(repository, item)
+        return
+
     outcome = await StandardClassificationVisionService(settings).analyze(
         image_bytes,
         standards=standards,
@@ -184,8 +254,8 @@ async def _classify_filter_standard(repository, item, job, settings, image_bytes
             status="failed",
             model_name=settings.ai_tagging_model,
             prompt_version=CLASSIFICATION_PROMPT_VERSION,
-            duration_ms=outcome.duration_ms,
-            payload=None,
+            duration_ms=(global_outcome.duration_ms or 0) + (outcome.duration_ms or 0),
+            payload={"global_filter": global_payload},
             error_message=outcome.error_message,
         )
         await repository.fail_item(
@@ -205,9 +275,12 @@ async def _classify_filter_standard(repository, item, job, settings, image_bytes
         item,
         status="completed",
         model_name=settings.ai_tagging_model,
-        prompt_version=CLASSIFICATION_PROMPT_VERSION,
-        duration_ms=outcome.duration_ms,
-        payload={"normalized": outcome.payload.model_dump(mode="json")},
+        prompt_version=f"{PROCESSING_PROMPT_VERSION}+{CLASSIFICATION_PROMPT_VERSION}",
+        duration_ms=(global_outcome.duration_ms or 0) + (outcome.duration_ms or 0),
+        payload={
+            "global_filter": global_payload,
+            "normalized": outcome.payload.model_dump(mode="json"),
+        },
         error_message=None,
         label=compatibility_route_label(routed_id),
         confidence=outcome.selected.confidence,
@@ -219,6 +292,42 @@ async def _classify_filter_standard(repository, item, job, settings, image_bytes
     )
     if saved:
         RoutedProcessingTaskPublisher().publish(item.id)
+
+
+def _global_filter_standard(snapshot: dict[str, object] | None) -> ProcessingStandard | None:
+    if not snapshot:
+        return None
+    instruction = str(snapshot.get("instruction") or "").strip()
+    if not instruction:
+        return None
+    version = snapshot.get("version")
+    return ProcessingStandard(
+        id=str(snapshot.get("id") or "global_filter"),
+        name=str(snapshot.get("name") or "全局过滤标准"),
+        version=int(version) if isinstance(version, int) else 1,
+        description="所有图片进入分类前必须通过的全局过滤标准",
+        classification_rule="所有图片始终命中全局过滤标准",
+        filter_rule=instruction,
+        priority=10000,
+    )
+
+
+def _image_context(item) -> dict[str, int | float]:
+    values: dict[str, int | float] = {
+        "width": int(item.width or 0),
+        "height": int(item.height or 0),
+    }
+    metric = item.metric
+    if metric is not None:
+        values.update(
+            {
+                "sharpness_score": float(metric.sharpness_score),
+                "exposure_score": float(metric.exposure_score),
+                "contrast_score": float(metric.contrast_score),
+                "noise_score": float(metric.noise_score),
+            }
+        )
+    return values
 
 
 async def _mark_completion_failed(image_id: str) -> None:

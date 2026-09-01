@@ -32,6 +32,7 @@ from src.services.ai_model_config import load_ai_model_settings
 from src.services.images.beautify_planning import beautify_plan_from_json
 from src.services.images.processing_vision import (
     filter_dimensions_from_processing_json,
+    global_filter_dimensions_from_completion_json,
     selected_standard_from_processing_json,
 )
 from src.services.jobs.callback_security import (
@@ -93,6 +94,7 @@ class ImageJobService:
             except CallbackConfigurationError as exc:
                 raise InvalidJobRequest(str(exc)) from exc
         filter_snapshot = None
+        global_filter_id = "global_filter_v1"
         beautify_snapshot = None if payload.beautify_enabled else neutral_beautify_snapshot()
         standard_snapshots = None
         routing_mode = "streaming_v2"
@@ -107,6 +109,8 @@ class ImageJobService:
             try:
                 if hasattr(self.repository, "session"):
                     manager = ManagedProfileService(self.repository.session, self.settings)
+                    global_filter, filter_snapshot = await manager.resolve_global_filter()
+                    global_filter_id = global_filter.id
                     standards = await manager.resolve_standards(require_fallback=True)
                     standard_snapshots = [snapshot for _, snapshot in standards]
                     if payload.beautify_enabled:
@@ -125,7 +129,7 @@ class ImageJobService:
         job = ImageJob(
             id=build_job_id(),
             status=JobStatus.QUEUED.value,
-            filter_profile_id="per_image_streaming_v2",
+            filter_profile_id=global_filter_id,
             beautify_profile_id=(
                 payload.beautify_profile
                 or ("conditional_standard_v1" if payload.beautify_enabled else "system_delivery")
@@ -293,7 +297,19 @@ class ImageJobService:
             if item.routed_filter_profile_id:
                 selected_standard_id = item.routed_filter_profile_id
                 activation_reason = _completion_reason(item.completion_json)
-            audit_dimensions = filter_dimensions_from_processing_json(item.ai_processing_json)
+            global_dimensions = global_filter_dimensions_from_completion_json(
+                item.completion_json
+            )
+            category_dimensions = filter_dimensions_from_processing_json(
+                item.ai_processing_json
+            )
+            audit_dimensions = [
+                dimension.model_copy(update={"dimension": f"全局 · {dimension.dimension}"})
+                for dimension in global_dimensions
+            ] + [
+                dimension.model_copy(update={"dimension": f"分类 · {dimension.dimension}"})
+                for dimension in category_dimensions
+            ]
             images.append(
                 ImageJobResultItemResponse(
                     image_id=item.id,

@@ -37,6 +37,7 @@ from src.services.managed_profiles import (
     beautify_from_snapshot,
     legacy_standard_from_snapshots,
     passthrough_standard,
+    standard_with_global_filter,
     standards_from_snapshots,
 )
 from src.services.storage.factory import get_storage_provider
@@ -113,6 +114,11 @@ async def _preprocess_image_metadata(image_id: str) -> None:
                     job.filter_profile_id,
                     job.beautify_profile_id,
                 )
+            ]
+        elif job.filter_enabled:
+            standards = [
+                standard_with_global_filter(standard, job.filter_profile_snapshot)
+                for standard in standards
             ]
         beautify_profile = beautify_from_snapshot(
             job.beautify_profile_snapshot, job.beautify_profile_id, settings

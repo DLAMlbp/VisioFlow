@@ -74,6 +74,7 @@ class UploadBatchService:
             loader = ProfileLoader(self.settings)
             manager = ManagedProfileService(self.session, self.settings)
             filter_snapshot = None
+            global_filter_id = "global_filter_v1"
             beautify_snapshot = None
             standard_snapshots = None
             routing_mode = "streaming_v2"
@@ -84,6 +85,8 @@ class UploadBatchService:
             non_completed_filter_profile_id = None
             non_completed_filter_snapshot = None
             routing_policy = None
+            global_filter, filter_snapshot = await manager.resolve_global_filter()
+            global_filter_id = global_filter.id
             standards = await manager.resolve_standards(require_fallback=True)
             standard_snapshots = [snapshot for _, snapshot in standards]
             if payload.beautify_enabled:
@@ -101,7 +104,7 @@ class UploadBatchService:
         batch = UploadBatch(
             id=build_upload_batch_id(),
             status="registered",
-            filter_profile_id="per_image_streaming_v2",
+            filter_profile_id=global_filter_id,
             beautify_profile_id=(
                 payload.beautify_profile or ("conditional_standard_v1" if payload.beautify_enabled else "system_delivery")
             ),

@@ -71,6 +71,13 @@ class ManagedProfileService:
         profile = FilterProfile.model_validate(row.config_json)
         return profile, self._snapshot(row)
 
+    async def resolve_global_filter(self) -> tuple[FilterProfile, dict[str, object]]:
+        rows = await self.list("filter")
+        if len(rows) != 1:
+            raise ProfileNotFoundError("必须且只能启用一套全局过滤标准")
+        row = rows[0]
+        return FilterProfile.model_validate(row.config_json), self._snapshot(row)
+
     async def resolve_beautify(self, profile_id: str) -> tuple[BeautifyProfile, dict[str, object]]:
         row = await self.get("beautify", profile_id)
         if row is None or row.status != "active":
@@ -160,6 +167,8 @@ class ManagedProfileService:
         profile_id = f"{prefix}_{uuid4().hex}"
         candidate = {**config, "id": profile_id, "version": 1, "description": description.strip()}
         validated = self._validate(profile_type, candidate)
+        if profile_type == "filter" and await self.list("filter"):
+            raise ManagedProfileError("只能启用一套全局过滤标准，请直接编辑现有标准")
         if profile_type == "standard" and validated.is_fallback:
             await self._ensure_single_active_fallback()
         row = ProcessingProfile(
@@ -223,6 +232,8 @@ class ManagedProfileService:
         row = await self.get(profile_type, profile_id)
         if row is None:
             raise ManagedProfileError("标准不存在")
+        if profile_type == "filter":
+            raise ManagedProfileError("全局过滤标准不能停用，请直接编辑规则")
         row.status = "inactive"
         await self.session.commit()
 
@@ -353,6 +364,27 @@ def standards_from_snapshots(
                 )
             )
     return sorted(standards, key=lambda standard: (-standard.priority, standard.id))
+
+
+def standard_with_global_filter(
+    standard: ProcessingStandard,
+    global_snapshot: dict[str, object] | None,
+) -> ProcessingStandard:
+    global_rule = str((global_snapshot or {}).get("instruction") or "").strip()
+    if not global_rule:
+        return standard
+    return standard.model_copy(
+        update={
+            "filter_rule": (
+                "【全局过滤标准｜优先执行】\n"
+                f"{global_rule}\n\n"
+                "【当前分类专属过滤标准】\n"
+                f"{standard.filter_rule}\n\n"
+                "判定顺序：先逐项审核全局过滤标准；全局任意一项不通过时必须 reject。"
+                "全局全部通过后，才审核当前分类专属标准；两层全部通过才允许 pass。"
+            )
+        }
+    )
 
 
 def legacy_standard_from_snapshots(
