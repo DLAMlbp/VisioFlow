@@ -8,8 +8,8 @@
 2. 在本地运行测试并构建 Docker 镜像。
 3. 干净工作区使用完整 Git SHA；未提交工作区使用唯一临时标签。镜像推送后统一解析成不可变 digest。
 4. 在服务器执行磁盘、inode、内存、负载、Docker 和内核日志安全检查。
-5. 在服务器保存当前 `.env.production` 作为回滚快照。
-6. 服务器拉取指定版本镜像并运行 `docker compose up -d --remove-orphans`。
+5. 在服务器同时保存当前 `.env.production` 和 `docker-compose.prod.yml` 作为回滚快照。
+6. 校验并安装本地生产 Compose 配置，服务器拉取指定版本镜像并运行 `docker compose up -d --remove-orphans`。
 7. 验证 Web、API 就绪接口和 Compose 服务状态；验证失败会自动回滚。
 
 ## 前置条件
@@ -54,6 +54,26 @@ pwsh -File .\scripts\deploy-production.ps1 -Component Web
 pwsh -File .\scripts\deploy-production.ps1 -BuildOnly
 ```
 
+部署一个已经完成同版本测试与推送的 API 镜像时，可直接传入不可变 digest，跳过重复构建、测试和推送：
+
+```powershell
+pwsh -File .\scripts\deploy-production.ps1 `
+  -Component Api `
+  -PrebuiltApiImage 'ghcr.io/zuixi01/tuxiangshibie-api@sha256:<64位小写摘要>'
+```
+
+脚本只接受本项目 API 仓库的完整小写 SHA-256 digest；标签、`latest`、其他仓库或格式不完整的引用都会在服务器变更前被拒绝。该参数只应用于已由同一发布流程完成测试的镜像。
+
+低内存服务器首次切换到合并 Worker 拓扑时，管理员确认后可执行：
+
+```powershell
+pwsh -File .\scripts\deploy-production.ps1 `
+  -Component Api `
+  -RetireLegacyWorkers
+```
+
+这个开关只用于一次性拓扑迁移。脚本会先确认生产库没有活动任务，并确认 `embedding`、`library`、`filtering`、`vision` 队列全部为空，然后才停止旧的 `worker-embedding`、`worker-library`、`worker-filter`、`worker-vision`。停止后会重新执行完整安全门禁；门禁或发布失败时自动恢复旧 Worker。没有显式传入该开关时，脚本不会停止这些服务。
+
 指定另一把 SSH 密钥：
 
 ```powershell
@@ -80,6 +100,6 @@ pwsh -File .\scripts\deploy-production.ps1 -RequireCleanGit
 - 检测到其他构建、备份或迁移任务。
 - 最近两小时内核日志出现 OOM、I/O、文件系统错误或 panic。
 
-脚本不会执行镜像清理、Docker 重启、服务器重启、远程构建或数据库迁移。若版本包含数据库迁移，应走单独的、经过确认的迁移流程。
+脚本不会执行镜像清理、Docker 重启、服务器重启或远程构建。生产 Compose 的 `migrate` 服务会在应用启动前执行仓库内已经审核的 Alembic 迁移；涉及不可逆或长时间锁表的迁移仍应走单独的确认流程。
 
-每次成功发布都会在服务器的 `/opt/image-intelligence/.deployments/` 保存权限为 `600` 的环境快照，并在终端输出对应的精确回滚命令。快照保留在服务器，不会输出其中的环境变量或密钥。
+每次成功发布都会在服务器的 `/opt/image-intelligence/.deployments/` 保存权限为 `600` 的环境与 Compose 双快照，并在终端输出同时恢复二者的精确回滚命令。快照保留在服务器，不会输出其中的环境变量或密钥。

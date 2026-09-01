@@ -12,5 +12,6 @@ frontend/.env.local
 frontend/dist/
 frontend/*.tsbuildinfo
 artifacts/
+tmp/
 frontend/vite.config.js
 frontend/vite.config.d.ts

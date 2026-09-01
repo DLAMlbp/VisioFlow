@@ -186,6 +186,52 @@ async def test_create_job_snapshots_managed_profiles(
 
 
 @pytest.mark.asyncio
+async def test_create_job_uses_server_beautify_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = FakeJobRepository()
+    repository.session = object()
+
+    async def resolve_standards(_self, profile_ids=None, *, require_fallback=False):
+        return [
+            (
+                SimpleNamespace(id="std_fallback"),
+                {
+                    "id": "std_fallback",
+                    "instruction": "fallback",
+                    "config": {"is_fallback": True},
+                },
+            )
+        ]
+
+    async def resolve_beautify(_self, profile_id: str):
+        assert profile_id == "bty_server_default"
+        return object(), {"id": profile_id, "instruction": "default", "config": {}}
+
+    monkeypatch.setattr(ManagedProfileService, "resolve_standards", resolve_standards)
+    monkeypatch.setattr(ManagedProfileService, "resolve_beautify", resolve_beautify)
+    monkeypatch.setattr(ProfileLoader, "get_similarity_profile", lambda *_args: object())
+    settings = Settings(
+        profiles_directory="profiles",
+        integration_beautify_profile="bty_server_default",
+    )
+    service = ImageJobService(
+        repository=repository,
+        settings=settings,
+        profile_loader=ProfileLoader(settings),
+    )
+    payload = CreateImageJobRequest(
+        images=[{"object_key": "uploads/2026/09/01/default.jpg"}],
+    )
+
+    response = await service.create_job(payload)
+
+    stored = repository.jobs[response.job_id]
+    assert stored.beautify_profile_id == "bty_server_default"
+    assert stored.beautify_profile_snapshot["id"] == "bty_server_default"
+
+
+@pytest.mark.asyncio
 async def test_streaming_job_does_not_require_legacy_batch_barrier() -> None:
     service = ImageJobService(
         repository=FakeJobRepository(),

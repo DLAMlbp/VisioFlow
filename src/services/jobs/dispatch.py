@@ -40,7 +40,22 @@ class AnalysisTaskPublisher:
 
 class EmbeddingTaskPublisher:
     def publish(self, image_id: str) -> None:
-        celery_app.send_task("image.generate_embedding", args=[image_id], queue="embedding")
+        celery_app.send_task(
+            "image.generate_embedding",
+            args=[image_id],
+            queue="openclip",
+            priority=9,
+        )
+
+
+class ProvisionalEmbeddingTaskPublisher:
+    def publish(self, image_id: str) -> None:
+        celery_app.send_task(
+            "image.generate_embedding",
+            args=[image_id],
+            queue="openclip",
+            priority=5,
+        )
 
 
 class MatchTaskPublisher:
@@ -50,7 +65,12 @@ class MatchTaskPublisher:
 
 class LibraryAssetTaskPublisher:
     def publish(self, asset_id: str) -> None:
-        celery_app.send_task("library.process_asset", args=[asset_id], queue="library")
+        celery_app.send_task(
+            "library.process_asset",
+            args=[asset_id],
+            queue="openclip",
+            priority=1,
+        )
 
 
 class EnhancementTaskPublisher:

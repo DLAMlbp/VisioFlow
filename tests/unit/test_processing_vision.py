@@ -14,9 +14,12 @@ from src.services.images.beautify_planning import (
     build_stored_plan,
 )
 from src.services.images.processing_vision import (
+    ActivationEvaluation,
     FilterDecision,
     ProcessingVisionPayload,
     ProcessingVisionService,
+    StandardSelection,
+    _normalize_standard_selection,
     _strict_processing_response_format,
     compatibility_route_label,
     content_from_processing_json,
@@ -89,6 +92,93 @@ def test_routed_filter_strict_schema_requires_complete_contract() -> None:
         if "properties" in definition:
             assert definition["additionalProperties"] is False
             assert set(definition["required"]) == set(definition["properties"])
+
+
+def test_selection_safely_completes_only_an_omitted_fallback() -> None:
+    explicit = ProcessingStandard(
+        id="std_explicit",
+        name="明确分类",
+        version=1,
+        description="明确分类",
+        classification_rule="命中明确场景",
+        filter_rule="审核画质",
+    )
+    fallback = ProcessingStandard(
+        id="std_fallback",
+        name="兜底分类",
+        version=1,
+        description="兜底分类",
+        classification_rule="其他场景",
+        filter_rule="拒绝未匹配图片",
+        is_fallback=True,
+    )
+    payload = ProcessingVisionPayload(
+        standard_selection=StandardSelection(
+            evaluations=[
+                ActivationEvaluation(
+                    standard_id=explicit.id,
+                    matched=True,
+                    reason="画面直接命中明确分类",
+                    confidence=0.96,
+                )
+            ],
+            selected_standard_id=explicit.id,
+            reason="唯一明确分类",
+        ),
+        filter=FilterDecision.model_validate(_filter_payload()["filter"]),
+    )
+
+    normalized = _normalize_standard_selection(payload, [explicit, fallback])
+
+    assert normalized.standard_selection is not None
+    assert [item.standard_id for item in normalized.standard_selection.evaluations] == [
+        explicit.id,
+        fallback.id,
+    ]
+    assert normalized.standard_selection.evaluations[1].matched is False
+
+
+def test_selection_never_infers_an_omitted_business_category() -> None:
+    standards = [
+        ProcessingStandard(
+            id=standard_id,
+            name=standard_id,
+            version=1,
+            description=standard_id,
+            classification_rule=standard_id,
+            filter_rule="审核画质",
+            is_fallback=is_fallback,
+        )
+        for standard_id, is_fallback in (
+            ("std_selected", False),
+            ("std_omitted", False),
+            ("std_fallback", True),
+        )
+    ]
+    payload = ProcessingVisionPayload(
+        standard_selection=StandardSelection(
+            evaluations=[
+                ActivationEvaluation(
+                    standard_id="std_selected",
+                    matched=True,
+                    reason="命中",
+                    confidence=0.9,
+                ),
+                ActivationEvaluation(
+                    standard_id="std_fallback",
+                    matched=False,
+                    reason="不适用",
+                    confidence=0.9,
+                ),
+            ],
+            selected_standard_id="std_selected",
+            reason="唯一明确分类",
+        ),
+        filter=FilterDecision.model_validate(_filter_payload()["filter"]),
+    )
+
+    with pytest.raises(ValueError, match="评估不完整"):
+        _normalize_standard_selection(payload, standards)
 
 
 @pytest.mark.asyncio

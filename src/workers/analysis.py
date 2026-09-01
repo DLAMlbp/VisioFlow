@@ -28,7 +28,9 @@ def analyze_image_content(image_id: str) -> None:
 
 
 async def _analyze_image_content(image_id: str) -> None:
-    settings = load_ai_model_settings(get_settings())
+    workflow_settings = get_settings()
+    settings = load_ai_model_settings(workflow_settings)
+    early_semantic = getattr(workflow_settings, "early_semantic_branch_enabled", False)
     batch_limit = max(1, min(settings.ai_tagging_concurrency, 8))
     async with AsyncSessionLocal() as session:
         repository = ImageJobRepository(session)
@@ -43,19 +45,31 @@ async def _analyze_image_content(image_id: str) -> None:
         analyzable_items = []
         image_bytes_batch: list[bytes] = []
         outcomes: dict[str, TaggingOutcome] = {}
+        source_keys: dict[str, str] = {}
         for item in items:
-            if not item.analysis_object_key:
+            source_key = (
+                item.thumbnail_object_key
+                if early_semantic
+                else item.analysis_object_key
+            )
+            if not source_key:
                 outcomes[item.id] = TaggingOutcome(
-                    status="failed", error_message="缺少美化图内容分析文件"
+                    status="failed",
+                    error_message=(
+                        "缺少预处理内容分析文件"
+                        if early_semantic
+                        else "缺少美化图内容分析文件"
+                    ),
                 )
                 continue
             try:
-                image_bytes_batch.append(await storage.download(item.analysis_object_key))
+                image_bytes_batch.append(await storage.download(source_key))
                 analyzable_items.append(item)
+                source_keys[item.id] = source_key
             except Exception:
-                logger.exception("Unable to load beautified image for content analysis")
+                logger.exception("Unable to load image for content analysis")
                 outcomes[item.id] = TaggingOutcome(
-                    status="failed", error_message="美化图内容分析文件读取失败"
+                    status="failed", error_message="内容分析文件读取失败"
                 )
 
         if analyzable_items:
@@ -92,7 +106,12 @@ async def _analyze_image_content(image_id: str) -> None:
             succeeded = content is not None
             await repository.upsert_ai_tag(
                 image_id=item.id,
-                source_object_key=item.analysis_object_key or item.object_key,
+                source_object_key=(
+                    source_keys.get(item.id)
+                    or item.thumbnail_object_key
+                    or item.analysis_object_key
+                    or item.object_key
+                ),
                 provider=settings.ai_tagging_provider,
                 model_name=settings.ai_tagging_model,
                 prompt_version=PROMPT_VERSION,

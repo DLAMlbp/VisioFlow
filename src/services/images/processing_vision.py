@@ -15,7 +15,6 @@ from urllib.request import Request, urlopen
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from src.core.config import Settings
-from src.services.images.vision_rate_limit import run_vision_request
 from src.services.images.tagging import (
     TagPayload,
     _chat_completions_url,
@@ -23,6 +22,7 @@ from src.services.images.tagging import (
     _resize_for_tagging,
     _safe_error_message,
 )
+from src.services.images.vision_rate_limit import run_vision_request
 from src.services.profiles import ProcessingStandard
 
 PROCESSING_PROMPT_VERSION = "paired_filter_v10"
@@ -196,7 +196,7 @@ class ProcessingVisionService:
                 response = await run_vision_request(
                     self.settings,
                     operation="routed_filter",
-                    request=lambda: self._request(
+                    request=lambda repair_context=repair_context: self._request(
                         image_bytes,
                         candidates,
                         unmatched_standard_policy,
@@ -208,7 +208,7 @@ class ProcessingVisionService:
                 content = _response_content(response)
                 payload = _parse_processing_content(content)
                 if validate_selection:
-                    _validate_standard_selection(
+                    payload = _normalize_standard_selection(
                         payload, candidates, unmatched_standard_policy
                     )
                 diagnostic = _schema_diagnostic(
@@ -310,7 +310,11 @@ class ProcessingVisionService:
                             "type": "image_url",
                             "image_url": {
                                 "url": f"data:image/jpeg;base64,{image_data}",
-                                "detail": "low",
+                                # The combined call also performs routing. Keep
+                                # the former classification stage's high-detail
+                                # input so the latency win does not trade away
+                                # category precision.
+                                "detail": "high",
                             },
                         },
                     ],
@@ -523,22 +527,103 @@ def _validate_standard_selection(
     standards: list[ProcessingStandard],
     unmatched_standard_policy: Literal["reject"] = "reject",
 ) -> None:
+    _normalize_standard_selection(payload, standards, unmatched_standard_policy)
+
+
+def _normalize_standard_selection(
+    payload: ProcessingVisionPayload,
+    standards: list[ProcessingStandard],
+    unmatched_standard_policy: Literal["reject"] = "reject",
+) -> ProcessingVisionPayload:
     del unmatched_standard_policy
     selection = payload.standard_selection
     if selection is None:
         raise ValueError("AI 未返回条件处理标准匹配结果")
     expected_ids = {standard.id for standard in standards}
     returned_ids = [evaluation.standard_id for evaluation in selection.evaluations]
-    if len(returned_ids) != len(set(returned_ids)) or set(returned_ids) != expected_ids:
+    if len(returned_ids) != len(set(returned_ids)) or not set(returned_ids) <= expected_ids:
         raise ValueError("AI 返回的分类标准评估不完整")
-    matched_ids = {
-        evaluation.standard_id for evaluation in selection.evaluations if evaluation.matched
-    }
-    if len(matched_ids) != 1:
+    fallbacks = [standard for standard in standards if standard.is_fallback]
+    if len(fallbacks) > 1:
+        raise ValueError("任务包含多条兜底分类标准")
+    fallback_id = fallbacks[0].id if fallbacks else None
+    missing_ids = expected_ids - set(returned_ids)
+    if missing_ids:
+        # Some JSON-schema-compatible vision providers consistently omit the
+        # fallback evaluation after selecting exactly one explicit category.
+        # This is semantically unambiguous: a fallback cannot be active when a
+        # specific category is active. Fill only that single safe case; never
+        # infer a missing business category or a missing selected evaluation.
+        returned_specific_matches = [
+            evaluation
+            for evaluation in selection.evaluations
+            if evaluation.matched and evaluation.standard_id != fallback_id
+        ]
+        can_complete_fallback = (
+            fallback_id is not None
+            and missing_ids == {fallback_id}
+            and len(returned_specific_matches) == 1
+            and selection.selected_standard_id
+            == returned_specific_matches[0].standard_id
+        )
+        if not can_complete_fallback:
+            raise ValueError("AI 返回的分类标准评估不完整")
+        fallback_evaluation = ActivationEvaluation(
+            standard_id=fallback_id,
+            matched=False,
+            reason="已命中明确分类，兜底分类不适用",
+            confidence=1.0,
+        )
+        evaluations_by_id = {
+            evaluation.standard_id: evaluation for evaluation in selection.evaluations
+        }
+        evaluations_by_id[fallback_id] = fallback_evaluation
+        selection = selection.model_copy(
+            update={
+                "evaluations": [
+                    evaluations_by_id[standard.id] for standard in standards
+                ]
+            }
+        )
+        payload = payload.model_copy(update={"standard_selection": selection})
+    matched_specific = [
+        evaluation
+        for evaluation in selection.evaluations
+        if evaluation.matched and evaluation.standard_id != fallback_id
+    ]
+    fallback_evaluation = next(
+        (
+            evaluation
+            for evaluation in selection.evaluations
+            if evaluation.standard_id == fallback_id
+        ),
+        None,
+    )
+    if len(matched_specific) > 1:
+        raise ValueError("多个明确分类标准同时命中")
+    if len(matched_specific) == 1:
+        selected = matched_specific[0]
+        if fallback_evaluation is not None and fallback_evaluation.matched:
+            raise ValueError("明确分类与兜底分类不能同时命中")
+        if selection.selected_standard_id != selected.standard_id:
+            raise ValueError("AI 选择的过滤标准与分类评估不一致")
+        return payload
+    if fallback_evaluation is None:
         raise ValueError("分类标准必须且只能命中一套")
-    selected = next(iter(matched_ids))
-    if selection.selected_standard_id != selected:
+    if selection.selected_standard_id not in {None, fallback_id}:
         raise ValueError("AI 选择的过滤标准与分类评估不一致")
+    normalized_fallback = fallback_evaluation.model_copy(update={"matched": True})
+    normalized_selection = selection.model_copy(
+        update={
+            "evaluations": [
+                normalized_fallback if item.standard_id == fallback_id else item
+                for item in selection.evaluations
+            ],
+            "selected_standard_id": fallback_id,
+            "reason": selection.reason or normalized_fallback.reason,
+        }
+    )
+    return payload.model_copy(update={"standard_selection": normalized_selection})
 
 
 def filter_dimensions_from_processing_json(
@@ -576,6 +661,7 @@ def _user_prompt(
             "id": standard.id,
             "name": standard.name or standard.description,
             "filter_rule": standard.filter_rule,
+            "is_fallback": standard.is_fallback,
         }
         if len(standards) > 1:
             item["classification_rule"] = standard.classification_rule
@@ -584,7 +670,10 @@ def _user_prompt(
         "该标准已由独立分类阶段选定。不要再次分类，"
         "必须将唯一标准标记为 matched，并且只执行它的 filter_rule。"
         if len(standards) == 1
-        else "请逐条判断候选标准的 classification_rule，并且必须且只能命中一套。"
+        else (
+            "请先逐条判断 is_fallback=false 的 classification_rule；明确标准最多命中一套。"
+            "只有没有任何明确标准命中时才命中唯一 is_fallback=true 的兜底标准。"
+        )
     )
     standard_title = (
         "分类阶段已选中的唯一过滤标准" if len(standards) == 1 else "互斥且完整覆盖的过滤标准"

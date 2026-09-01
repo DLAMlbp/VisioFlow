@@ -19,10 +19,10 @@ from src.services.images.processing_vision import (
 )
 from src.services.images.quality import QualityEngine
 from src.services.images.vision_rate_limit import retry_countdown
+from src.services.jobs.progression import advance_after_preprocess as _advance_after_preprocess
 from src.services.managed_profiles import standards_from_snapshots
 from src.services.storage.factory import get_storage_provider
 from src.workers.celery_app import celery_app
-from src.workers.preprocess import _advance_after_preprocess
 
 logger = logging.getLogger(__name__)
 

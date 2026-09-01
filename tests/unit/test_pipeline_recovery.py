@@ -48,6 +48,27 @@ def test_pipeline_publishers_use_independent_stage_queues(monkeypatch) -> None:
         ("image.classify_completion", "classification"),
         ("image.apply_routed_processing", "filtering"),
         ("image.analyze_content", "analysis"),
-        ("image.generate_embedding", "embedding"),
+        ("image.generate_embedding", "openclip"),
         ("image.match_library", "matching"),
+    ]
+
+
+def test_final_embedding_overtakes_provisional_and_library_work(monkeypatch) -> None:
+    priorities: list[tuple[str, int]] = []
+
+    def send_task(name, *, args, queue, priority, **_kwargs):
+        assert args == ["img_test"]
+        assert queue == "openclip"
+        priorities.append((name, priority))
+
+    monkeypatch.setattr(dispatch.celery_app, "send_task", send_task)
+
+    dispatch.ProvisionalEmbeddingTaskPublisher().publish("img_test")
+    dispatch.EmbeddingTaskPublisher().publish("img_test")
+    dispatch.LibraryAssetTaskPublisher().publish("img_test")
+
+    assert priorities == [
+        ("image.generate_embedding", 5),
+        ("image.generate_embedding", 9),
+        ("library.process_asset", 1),
     ]

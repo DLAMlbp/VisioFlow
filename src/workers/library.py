@@ -46,7 +46,8 @@ class PreparedLibraryImage:
 
 @celery_app.task(
     name="library.process_asset",
-    queue="library",
+    queue="openclip",
+    priority=1,
     max_retries=0,
 )
 def process_library_asset(asset_id: str) -> None:
@@ -152,7 +153,7 @@ async def _process_library_asset(asset_id: str) -> None:
             )
 
 
-@celery_app.task(name="library.backfill_content_features", queue="library")
+@celery_app.task(name="library.backfill_content_features", queue="openclip", priority=1)
 def backfill_library_content_features() -> None:
     asyncio.run(_backfill_library_content_features())
 
@@ -162,7 +163,12 @@ async def _backfill_library_content_features() -> None:
         repository = LibraryRepository(session)
         asset_ids = await repository.list_active_assets_missing_analysis(limit=100)
     for asset_id in asset_ids:
-        celery_app.send_task("library.process_asset", args=[asset_id], queue="library")
+        celery_app.send_task(
+            "library.process_asset",
+            args=[asset_id],
+            queue="openclip",
+            priority=1,
+        )
 
 
 def _prepare_library_image(image_bytes: bytes) -> PreparedLibraryImage:

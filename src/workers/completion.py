@@ -18,13 +18,20 @@ from src.services.images.completion import (
     COMPLETION_PROMPT_VERSION,
     CompletionVisionService,
 )
-from src.services.images.processing_vision import compatibility_route_label
+from src.services.images.hard_filter import RejectCode
+from src.services.images.processing_vision import (
+    PROCESSING_PROMPT_VERSION,
+    ProcessingVisionService,
+    compatibility_route_label,
+    precise_filter_reason,
+)
+from src.services.images.quality import QualityEngine
 from src.services.images.vision_rate_limit import retry_countdown
 from src.services.jobs.dispatch import RoutedProcessingTaskPublisher
+from src.services.jobs.progression import advance_after_preprocess as _advance_after_preprocess
 from src.services.managed_profiles import standards_from_snapshots
 from src.services.storage.factory import get_storage_provider
 from src.workers.celery_app import celery_app
-from src.workers.preprocess import _advance_after_preprocess
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +166,16 @@ async def _classify_filter_standard(repository, item, job, settings, image_bytes
         await repository.fail_item(item, "任务缺少完整的分类过滤标准快照")
         await _advance_after_preprocess(repository, item)
         return
+    if get_settings().combined_classify_filter_enabled:
+        await _classify_and_filter_standard(
+            repository,
+            item,
+            job,
+            settings,
+            image_bytes,
+            standards,
+        )
+        return
     outcome = await StandardClassificationVisionService(settings).analyze(
         image_bytes,
         standards=standards,
@@ -221,6 +238,129 @@ async def _classify_filter_standard(repository, item, job, settings, image_bytes
         RoutedProcessingTaskPublisher().publish(item.id)
 
 
+async def _classify_and_filter_standard(
+    repository,
+    item,
+    job,
+    settings,
+    image_bytes: bytes,
+    standards,
+) -> None:
+    outcome = await ProcessingVisionService(settings).analyze(
+        image_bytes,
+        standards=standards,
+        unmatched_standard_policy="reject",
+        image_context=_image_context(item),
+    )
+    selection = outcome.payload.standard_selection if outcome.payload is not None else None
+    emit_metric(
+        logger,
+        "combined_classify_filter_requests_total",
+        labels={
+            "job_id": item.job_id,
+            "image_id": item.id,
+            "status": outcome.status,
+            "selected_standard_id": (
+                selection.selected_standard_id if selection is not None else None
+            ),
+        },
+    )
+    if outcome.status != "completed" or outcome.payload is None or selection is None:
+        if outcome.retryable:
+            await repository.reset_completion_for_retry(item.id)
+            raise RuntimeError(outcome.error_message or "图片分类过滤调用失败")
+        message = f"图片分类过滤失败：{outcome.error_message or '模型响应无效'}"
+        await repository.fail_combined_classification_filter(
+            item,
+            model_name=settings.ai_tagging_model,
+            completion_prompt_version=PROCESSING_PROMPT_VERSION,
+            processing_prompt_version=PROCESSING_PROMPT_VERSION,
+            duration_ms=outcome.duration_ms,
+            diagnostic_json=outcome.diagnostic_json,
+            error_message=message,
+        )
+        await _advance_after_preprocess(repository, item)
+        return
+
+    selected_id = selection.selected_standard_id
+    selected_standard = next(
+        (standard for standard in standards if standard.id == selected_id),
+        None,
+    )
+    selected_evaluation = next(
+        (
+            evaluation
+            for evaluation in selection.evaluations
+            if evaluation.standard_id == selected_id
+        ),
+        None,
+    )
+    snapshot = _route_snapshot_for_standard(job, selected_id or "")
+    routed_id, routed_version = _snapshot_identity(snapshot)
+    if selected_standard is None or selected_evaluation is None or not routed_id:
+        await repository.fail_combined_classification_filter(
+            item,
+            model_name=settings.ai_tagging_model,
+            completion_prompt_version=PROCESSING_PROMPT_VERSION,
+            processing_prompt_version=PROCESSING_PROMPT_VERSION,
+            duration_ms=outcome.duration_ms,
+            diagnostic_json=outcome.diagnostic_json,
+            error_message="分类结果对应的过滤标准快照不存在",
+        )
+        await _advance_after_preprocess(repository, item)
+        return
+
+    passed = not outcome.payload.filter.rejected
+    standard_name = selected_standard.name or selected_standard.description
+    filter_reason = (
+        outcome.payload.filter.reason
+        if passed
+        else precise_filter_reason(outcome.payload.filter, standard_name=standard_name)
+    )
+    reasons = (
+        [
+            f"图片分类：{selection.reason}",
+            f"后端路由：{standard_name}",
+            f"AI 筛选：{outcome.payload.filter.reason}",
+        ]
+        if passed
+        else [filter_reason]
+    )
+    completion_payload = {
+        "normalized": {
+            "evaluations": [
+                evaluation.model_dump(mode="json")
+                for evaluation in selection.evaluations
+            ],
+            "selected_standard_id": selected_id,
+            "reason": selection.reason,
+        }
+    }
+    saved = await repository.complete_combined_classification_filter(
+        item,
+        model_name=settings.ai_tagging_model,
+        completion_prompt_version=PROCESSING_PROMPT_VERSION,
+        processing_prompt_version=PROCESSING_PROMPT_VERSION,
+        duration_ms=outcome.duration_ms,
+        completion_payload=completion_payload,
+        processing_payload=outcome.payload.model_dump(mode="json"),
+        diagnostic_json=outcome.diagnostic_json,
+        routed_filter_profile_id=routed_id,
+        routed_filter_profile_version=routed_version,
+        completion_label=compatibility_route_label(routed_id),
+        confidence=selected_evaluation.confidence,
+        review_required=(
+            selected_evaluation.confidence < settings.completion_review_confidence
+        ),
+        passed=passed,
+        final_score=_quality_score(item),
+        reasons=reasons,
+        reject_codes=[] if passed else [RejectCode.AI_FILTER_REJECTED],
+    )
+    if saved:
+        await _advance_after_preprocess(repository, item)
+
+
 async def _mark_completion_failed(image_id: str) -> None:
     async with AsyncSessionLocal() as session:
         repository = ImageJobRepository(session)
@@ -257,3 +397,34 @@ def _route_snapshot_for_standard(job, standard_id: str) -> dict[str, object] | N
         if str(snapshot.get("id") or "") == standard_id:
             return snapshot
     return None
+
+
+def _image_context(item) -> dict[str, int | float]:
+    metric = item.metric
+    values: dict[str, int | float] = {
+        "width": int(item.width or 0),
+        "height": int(item.height or 0),
+    }
+    if metric is not None:
+        values.update(
+            {
+                "sharpness_score": float(metric.sharpness_score),
+                "exposure_score": float(metric.exposure_score),
+                "contrast_score": float(metric.contrast_score),
+                "noise_score": float(metric.noise_score),
+            }
+        )
+        values["quality_score"] = _quality_score(item)
+    return values
+
+
+def _quality_score(item) -> float:
+    metric = item.metric
+    if metric is None:
+        return 0.0
+    return QualityEngine.calculate_weighted_quality_score(
+        sharpness=float(metric.sharpness_score),
+        exposure=float(metric.exposure_score),
+        contrast=float(metric.contrast_score),
+        noise=float(metric.noise_score),
+    )

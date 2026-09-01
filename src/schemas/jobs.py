@@ -95,8 +95,6 @@ class CreateImageJobRequest(BaseModel):
             raise ValueError("正式模式固定执行完工分类、分支过滤、过滤后美化和素材库匹配")
         if len(set(self.processing_standards)) != len(self.processing_standards):
             raise ValueError("过滤标准不能重复")
-        if not self.beautify_profile:
-            raise ValueError("请选择独立的美化标准")
         return self
 
 

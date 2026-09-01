@@ -4,6 +4,7 @@ from typing import ClassVar
 
 import pytest
 
+from src.services.jobs import progression
 from src.workers import control, preprocess
 
 
@@ -24,7 +25,7 @@ async def test_max_selected_does_not_bypass_batch_filter_barrier(
 ) -> None:
     published: list[str] = []
     monkeypatch.setattr(
-        preprocess,
+        progression,
         "RankingTaskPublisher",
         lambda: SimpleNamespace(publish=lambda job_id: published.append(job_id)),
     )
@@ -96,7 +97,7 @@ async def test_ranking_publishes_beautify_plans_before_enhancement(
 async def test_streaming_image_queues_beautify_while_another_image_is_filtering(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    published: list[str] = []
+    published: list[tuple[str, str]] = []
 
     class StreamingRepository:
         other_image_status = "analyzing"
@@ -106,20 +107,40 @@ async def test_streaming_image_queues_beautify_while_another_image_is_filtering(
                 id=job_id,
                 routing_mode="streaming_v2",
                 cancel_requested_at=None,
+                similarity_enabled=True,
             )
 
-        async def queue_beautify_plan(self, image_id: str) -> bool:
+        async def queue_post_filter_branches(
+            self, image_id: str, *, similarity_enabled: bool
+        ) -> bool:
             assert self.other_image_status == "analyzing"
             assert image_id == "img_ready"
+            assert similarity_enabled is True
             return True
 
         async def claim_ranking_if_filtering_complete(self, _job_id: str) -> bool:
             raise AssertionError("streaming jobs must never enter batch ranking")
 
     monkeypatch.setattr(
-        preprocess,
+        progression,
         "BeautifyPlanTaskPublisher",
-        lambda: SimpleNamespace(publish=lambda image_id: published.append(image_id)),
+        lambda: SimpleNamespace(
+            publish=lambda image_id: published.append(("beautify", image_id))
+        ),
+    )
+    monkeypatch.setattr(
+        progression,
+        "AnalysisTaskPublisher",
+        lambda: SimpleNamespace(
+            publish=lambda image_id: published.append(("analysis", image_id))
+        ),
+    )
+    monkeypatch.setattr(
+        progression,
+        "ProvisionalEmbeddingTaskPublisher",
+        lambda: SimpleNamespace(
+            publish=lambda image_id: published.append(("embedding", image_id))
+        ),
     )
 
     await preprocess._advance_after_preprocess(
@@ -127,7 +148,11 @@ async def test_streaming_image_queues_beautify_while_another_image_is_filtering(
         SimpleNamespace(job_id="job_stream", id="img_ready", status="filtered"),
     )
 
-    assert published == ["img_ready"]
+    assert published == [
+        ("beautify", "img_ready"),
+        ("analysis", "img_ready"),
+        ("embedding", "img_ready"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -148,7 +173,7 @@ async def test_streaming_failed_image_does_not_block_or_schedule_other_stages(
             raise AssertionError("failed images must not be beautified")
 
     monkeypatch.setattr(
-        preprocess,
+        progression,
         "BeautifyPlanTaskPublisher",
         lambda: SimpleNamespace(publish=lambda image_id: published.append(image_id)),
     )
@@ -250,7 +275,7 @@ async def test_concurrent_barrier_attempts_publish_ranking_exactly_once(
 
     repository = ConcurrentRepository()
     monkeypatch.setattr(
-        preprocess,
+        progression,
         "RankingTaskPublisher",
         lambda: SimpleNamespace(publish=lambda job_id: published.append(job_id)),
     )
@@ -258,7 +283,10 @@ async def test_concurrent_barrier_attempts_publish_ranking_exactly_once(
     await asyncio.gather(*(
         preprocess._advance_after_preprocess(
             repository,
-            SimpleNamespace(job_id="job_concurrent", created_at=preprocess.datetime.now(preprocess.UTC)),
+            SimpleNamespace(
+                job_id="job_concurrent",
+                created_at=progression.datetime.now(progression.UTC),
+            ),
         )
         for _ in range(12)
     ))

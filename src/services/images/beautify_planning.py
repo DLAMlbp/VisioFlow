@@ -12,7 +12,6 @@ from urllib.request import Request, urlopen
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from src.core.config import Settings
-from src.services.images.vision_rate_limit import run_vision_request
 from src.services.images.beautify_policy import validate_beautify_plan
 from src.services.images.tagging import (
     _chat_completions_url,
@@ -20,6 +19,7 @@ from src.services.images.tagging import (
     _resize_for_tagging,
     _safe_error_message,
 )
+from src.services.images.vision_rate_limit import run_vision_request
 from src.services.profiles import BeautifyProfile
 
 BEAUTIFY_PLAN_PROMPT_VERSION = "post_filter_beautify_v1"

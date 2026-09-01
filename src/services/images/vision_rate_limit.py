@@ -5,7 +5,6 @@ import logging
 import time
 import uuid
 from collections.abc import Callable
-from typing import TypeVar
 from urllib.error import HTTPError
 
 from redis.asyncio import Redis
@@ -15,8 +14,6 @@ from src.core.config import Settings
 from src.core.metrics import emit_metric
 
 logger = logging.getLogger(__name__)
-
-T = TypeVar("T")
 
 _ACQUIRE_SCRIPT = """
 local now_ms = tonumber(ARGV[1])
@@ -64,7 +61,7 @@ return {0, wait_ms, rate_count, concurrency_count, 0}
 """
 
 
-async def run_vision_request(
+async def run_vision_request[T](
     settings: Settings,
     *,
     operation: str,
