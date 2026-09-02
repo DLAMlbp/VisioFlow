@@ -11,6 +11,7 @@ from src.schemas.jobs import (
     ImageJobHistoryResponse,
     ImageJobProgressResponse,
     ImageJobResultsResponse,
+    UpdateLogoRedactionResponse,
 )
 from src.services.jobs.service import SelectedImageDownload
 
@@ -69,6 +70,21 @@ class FakeJobService:
             return downloads
         return downloads[:1] if "img_1" in image_ids else []
 
+    async def update_logo_redaction(
+        self,
+        job_id: str,
+        image_id: str,
+        boxes: list[tuple[int, int, int, int]],
+    ) -> UpdateLogoRedactionResponse:
+        del job_id
+        return UpdateLogoRedactionResponse(
+            image_id=image_id,
+            status="manual_applied" if boxes else "manual_cleared",
+            boxes=boxes,
+            image_size=(1080, 1440),
+            detections=len(boxes),
+        )
+
 
 class NotFoundJobService(FakeJobService):
     async def get_progress(self, job_id: str):
@@ -126,6 +142,38 @@ def test_create_image_job_rejects_empty_images() -> None:
 
     app.dependency_overrides.clear()
 
+    assert response.status_code == 422
+
+
+def test_update_logo_redaction_accepts_final_operator_boxes() -> None:
+    app.dependency_overrides[get_job_service] = lambda: FakeJobService()
+    app.dependency_overrides[get_settings] = lambda: Settings(api_key="test-api-key")
+    client = TestClient(app)
+
+    response = client.put(
+        "/api/v1/image/jobs/job_test/images/img_1/redaction/logos",
+        json={"boxes": [[20, 30, 220, 130], [400, 500, 600, 620]]},
+        headers={"X-API-Key": "test-api-key"},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.json()["status"] == "manual_applied"
+    assert response.json()["detections"] == 2
+
+
+def test_update_logo_redaction_rejects_empty_or_negative_box_geometry() -> None:
+    app.dependency_overrides[get_job_service] = lambda: FakeJobService()
+    app.dependency_overrides[get_settings] = lambda: Settings(api_key="test-api-key")
+    client = TestClient(app)
+
+    response = client.put(
+        "/api/v1/image/jobs/job_test/images/img_1/redaction/logos",
+        json={"boxes": [[20, 30, 20, 130], [-1, 0, 10, 10]]},
+        headers={"X-API-Key": "test-api-key"},
+    )
+
+    app.dependency_overrides.clear()
     assert response.status_code == 422
 
 

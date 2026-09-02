@@ -24,15 +24,28 @@ from src.services.images.beautify_planning import (
     neutralize_beautify_profile,
 )
 from src.services.images.beautify_policy import validate_beautify_plan
+from src.services.images.logo_detector import load_logo_detector
 from src.services.images.metadata import encode_jpeg, make_thumbnail
 from src.services.images.processing_vision import selected_standard_from_processing_json
 from src.services.images.quality import QualityEngine
+from src.services.images.redaction import (
+    ImageRedactionService,
+    decode_image,
+)
+from src.services.images.redaction import (
+    encode_jpeg as encode_redaction_jpeg,
+)
+from src.services.images.watermark import load_watermark_processor
 from src.services.jobs.dispatch import AnalysisTaskPublisher, EmbeddingTaskPublisher
 from src.services.managed_profiles import (
     beautify_from_snapshot,
 )
 from src.services.storage.factory import get_storage_provider
-from src.services.storage.keys import build_analysis_object_key, build_enhanced_object_key
+from src.services.storage.keys import (
+    build_analysis_object_key,
+    build_enhanced_object_key,
+    build_redaction_base_object_key,
+)
 from src.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -91,6 +104,20 @@ async def _enhance_image(image_id: str) -> None:
         original_bytes = await storage.download(item.object_key)
         neutral_profile = neutralize_beautify_profile(profile)
         orientation_result = beautify_service.normalize_orientation(original_bytes, neutral_profile)
+        redaction_service = ImageRedactionService(
+            watermark_processor=load_watermark_processor(settings),
+            logo_detector=load_logo_detector(settings),
+        )
+        watermark_result = redaction_service.remove_watermark(
+            decode_image(orientation_result.image_bytes),
+            profile.watermark_removal,
+        )
+        watermark_status = str(watermark_result.audit.get("status") or "")
+        beautify_input_bytes = (
+            encode_redaction_jpeg(watermark_result.image_bgr, quality=profile.jpeg_quality)
+            if watermark_status == "applied"
+            else orientation_result.image_bytes
+        )
         stored_plan = beautify_plan_from_json(item.beautify_plan_json)
         if job.beautify_enabled and stored_plan is None:
             await repository.fail_item(item, "缺少 AI 美化决策，请重试图片处理")
@@ -120,7 +147,7 @@ async def _enhance_image(image_id: str) -> None:
             job.beautify_enabled and ai_beautify is not None and ai_beautify.needed
         )
         if execution_needed:
-            preview_bytes = make_preview(original_bytes)
+            preview_bytes = make_preview(beautify_input_bytes)
             preview_profile = effective_profile.model_copy(update={"min_output_long_side": 1})
             trial_bytes = beautify_service.enhance(preview_bytes, preview_profile)
             preview_checks = evaluate_acceptance(preview_bytes, trial_bytes)
@@ -144,7 +171,7 @@ async def _enhance_image(image_id: str) -> None:
 
         if execution_needed:
             beautify_result = beautify_service.enhance_with_details(
-                original_bytes, effective_profile
+                beautify_input_bytes, effective_profile
             )
             enhanced_bytes = beautify_result.image_bytes
             reasons = beautify_service.processing_reasons(effective_profile, beautify_result)
@@ -154,7 +181,7 @@ async def _enhance_image(image_id: str) -> None:
             )
         else:
             enhanced_bytes = beautify_service.prepare_delivery_image(
-                orientation_result.image_bytes, neutral_profile
+                beautify_input_bytes, neutral_profile
             )
             reasons = (
                 [f"AI 美化：{ai_beautify.reason}，无需额外调整"]
@@ -165,20 +192,67 @@ async def _enhance_image(image_id: str) -> None:
                 reasons = [f"美化安全回退：{fallback_reason}"]
 
         final_checks = evaluate_acceptance(
-            orientation_result.image_bytes,
+            beautify_input_bytes,
             enhanced_bytes,
         )
         if execution_needed and not acceptance_passed(final_checks):
             fallback_reason = "正式图最终验收未通过，已回退为中性输出"
             effective_profile = neutral_profile
             enhanced_bytes = beautify_service.prepare_delivery_image(
-                orientation_result.image_bytes, neutral_profile
+                beautify_input_bytes, neutral_profile
             )
             final_checks = evaluate_acceptance(
-                orientation_result.image_bytes,
+                beautify_input_bytes,
                 enhanced_bytes,
             )
             reasons = [f"美化安全回退：{fallback_reason}"]
+
+        if profile.logo_mosaic.enabled:
+            # Keep a private, deterministic pre-logo base. Manual review always
+            # re-renders from this image, so deleting an automatic box genuinely
+            # restores the underlying pixels instead of editing an irreversible
+            # mosaic. The cleanup worker removes this key with the job assets.
+            await storage.upload(
+                build_redaction_base_object_key(item.job_id, item.id),
+                enhanced_bytes,
+                "image/jpeg",
+            )
+
+        logo_result = redaction_service.mosaic_logos(
+            decode_image(enhanced_bytes),
+            profile.logo_mosaic,
+        )
+        logo_result.audit["manual_review_available"] = profile.logo_mosaic.enabled
+        if logo_result.audit.get("status") == "applied":
+            enhanced_bytes = encode_redaction_jpeg(
+                logo_result.image_bgr,
+                quality=effective_profile.jpeg_quality,
+            )
+        for stage, audit in (
+            ("watermark", watermark_result.audit),
+            ("logo", logo_result.audit),
+        ):
+            metric_labels = {
+                "stage": stage,
+                "status": audit.get("status"),
+                "version": audit.get("profile_version")
+                or audit.get("model_version"),
+            }
+            emit_metric(logger, "redaction_stage_total", labels=metric_labels)
+            emit_metric(
+                logger,
+                "redaction_stage_duration_ms",
+                value=float(audit.get("duration_ms") or 0),
+                labels=metric_labels,
+            )
+        emit_metric(
+            logger,
+            "redaction_logo_detections_total",
+            value=float(logo_result.audit.get("detections") or 0),
+            labels={"model_version": logo_result.audit.get("model_version")},
+        )
+        reasons.extend(watermark_result.reasons)
+        reasons.extend(logo_result.reasons)
 
         planned_parameters = (
             ai_beautify.parameters.model_dump(mode="json") if ai_beautify is not None else {}
@@ -202,6 +276,10 @@ async def _enhance_image(image_id: str) -> None:
                 ),
                 "checks": final_checks,
                 "fallback_reason": fallback_reason,
+            },
+            "redaction": {
+                "watermark": watermark_result.audit,
+                "logos": logo_result.audit,
             },
         }
 

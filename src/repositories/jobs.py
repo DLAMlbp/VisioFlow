@@ -1137,6 +1137,34 @@ class ImageJobRepository:
         await self.session.commit()
         return True
 
+    async def update_manual_logo_redaction(
+        self,
+        image_id: str,
+        *,
+        enhancement_audit: Mapping[str, object],
+        enhanced_metrics: Mapping[str, float],
+        reasons: list[str],
+    ) -> bool:
+        """Atomically publish audit metadata for a manually re-rendered result."""
+
+        updated = await self.session.execute(
+            update(ImageResult)
+            .where(
+                ImageResult.image_id == image_id,
+                ImageResult.enhanced_object_key.is_not(None),
+            )
+            .values(
+                enhancement_audit_json=dict(enhancement_audit),
+                enhanced_metrics_json=dict(enhanced_metrics),
+                reasons_json=reasons,
+            )
+        )
+        if updated.rowcount != 1:
+            await self.session.rollback()
+            return False
+        await self.session.commit()
+        return True
+
     async def select_item(
         self,
         item: ImageItem,

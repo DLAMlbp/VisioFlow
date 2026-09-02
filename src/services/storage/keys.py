@@ -50,6 +50,12 @@ def build_enhanced_object_key(job_id: str, image_id: str) -> str:
     return f"enhanced/{job_id}/{image_id}.jpg"
 
 
+def build_redaction_base_object_key(job_id: str, image_id: str) -> str:
+    """Return the private pre-logo image used for reversible manual review."""
+
+    return f"redaction-bases/{job_id}/{image_id}.jpg"
+
+
 def build_analysis_object_key(job_id: str, image_id: str) -> str:
     return f"analysis/{job_id}/{image_id}.jpg"
 

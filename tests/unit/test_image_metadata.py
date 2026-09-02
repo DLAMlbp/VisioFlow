@@ -118,6 +118,20 @@ async def test_process_rejects_object_larger_than_limit_before_download() -> Non
         await service.process(job_id="job_test", image_id="img_test", object_key="uploads/large.jpg")
 
 
+@pytest.mark.asyncio
+async def test_process_rejects_decoded_pixels_above_memory_budget() -> None:
+    source = image_bytes("JPEG", (1200, 1000))
+    storage = MemoryStorage({"uploads/too-many-pixels.jpg": source})
+    service = ImageMetadataService(storage, Settings(max_image_pixels=1_000_000))
+
+    with pytest.raises(ImageMetadataError, match="解码像素超过安全上限"):
+        await service.process(
+            job_id="job_test",
+            image_id="img_test",
+            object_key="uploads/too-many-pixels.jpg",
+        )
+
+
 def test_perceptual_hash_is_stable_for_the_same_image() -> None:
     image = Image.new("RGB", (128, 128), "white")
 

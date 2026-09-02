@@ -14,6 +14,8 @@ from src.schemas.jobs import (
     ImageJobHistoryResponse,
     ImageJobProgressResponse,
     ImageJobResultsResponse,
+    UpdateLogoRedactionRequest,
+    UpdateLogoRedactionResponse,
 )
 from src.services.jobs.service import (
     ImageJobService,
@@ -104,7 +106,8 @@ async def download_selected_images(
     if not downloads:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="没有可下载的美化图片")
 
-    archive = TemporaryFile(mode="w+b")
+    # The response background task owns this handle and closes it after streaming.
+    archive = TemporaryFile(mode="w+b")  # noqa: SIM115
     try:
         storage = get_storage_provider()
         with ZipFile(archive, mode="w", compression=ZIP_STORED) as zip_file:
@@ -148,5 +151,23 @@ async def retry_failed_image(
 ) -> ImageJobProgressResponse:
     try:
         return await service.retry_failed_image(job_id, image_id)
+    except InvalidJobRequest as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message) from exc
+
+
+@router.put(
+    "/{job_id}/images/{image_id}/redaction/logos",
+    response_model=UpdateLogoRedactionResponse,
+)
+async def update_logo_redaction(
+    job_id: str,
+    image_id: str,
+    payload: UpdateLogoRedactionRequest,
+    service: JobServiceDep,
+) -> UpdateLogoRedactionResponse:
+    try:
+        return await service.update_logo_redaction(job_id, image_id, payload.boxes)
+    except JobNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
     except InvalidJobRequest as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message) from exc

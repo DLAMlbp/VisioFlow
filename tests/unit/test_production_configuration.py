@@ -1,4 +1,7 @@
+from pathlib import Path
+
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from src.core.config import Settings
@@ -43,3 +46,13 @@ def test_production_configuration_accepts_explicit_secrets() -> None:
 def test_production_configuration_rejects_unsafe_values(updates, message: str) -> None:
     with pytest.raises(ValidationError, match=message):
         _production_settings(**updates)
+
+
+def test_production_enhance_worker_matches_measured_redaction_budget() -> None:
+    compose_path = Path(__file__).resolve().parents[2] / "docker-compose.prod.yml"
+    compose = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+    worker = compose["services"]["worker-enhance"]
+
+    assert worker["command"].count("--concurrency=1") == 1
+    assert worker["mem_limit"] == "2048m"
+    assert float(worker["cpus"]) == 1.5

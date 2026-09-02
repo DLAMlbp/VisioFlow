@@ -170,6 +170,19 @@ export interface BeautifyAudit {
     }>;
     fallback_reason?: string | null;
   } | null;
+  redaction?: {
+    watermark: Record<string, unknown>;
+    logos: Record<string, unknown>;
+  } | null;
+}
+
+export interface LogoRedactionUpdate {
+  image_id: string;
+  status: "manual_applied" | "manual_cleared";
+  boxes: [number, number, number, number][];
+  image_size: [number, number];
+  detections: number;
+  source: "manual_review";
 }
 
 export interface SimilarityCandidate {

@@ -1,0 +1,14 @@
+{
+  "id": "dangjia-yolox-nano-v1",
+  "version": 1,
+  "status": "awaiting-trained-weights",
+  "architecture": "yolox-nano",
+  "source_repository": "https://github.com/Megvii-BaseDetection/YOLOX",
+  "source_commit": "6ddff4824372906469a7fae2dc3206c7aa4bbaee",
+  "license": "Apache-2.0",
+  "model": "dangjia_yolox_nano_v1.onnx",
+  "sha256": "",
+  "input_size": [416, 416],
+  "classes": ["dangjia_logo", "dangjia_product_logo"],
+  "notes": "Replace status and sha256 only after the versioned training dataset passes the acceptance gates."
+}

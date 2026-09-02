@@ -30,8 +30,8 @@ from src.services.images.vision_rate_limit import retry_countdown
 from src.services.jobs.dispatch import RoutedProcessingTaskPublisher
 from src.services.jobs.progression import advance_after_preprocess as _advance_after_preprocess
 from src.services.managed_profiles import (
-    standards_from_snapshots,
     standard_with_global_filter,
+    standards_from_snapshots,
 )
 from src.services.profiles import ProcessingStandard
 from src.services.storage.factory import get_storage_provider

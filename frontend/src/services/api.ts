@@ -18,6 +18,7 @@ import type {
   LibraryAsset,
   LibraryAssetGroup,
   LibraryAssetList,
+  LogoRedactionUpdate,
   TagReview,
   UpdateAIModelConfig,
   UploadBatchRegistration
@@ -284,6 +285,16 @@ export const api = {
       },
       retryImage(jobId: string, imageId: string): Promise<JobProgress> {
         return request<JobProgress>(`/api/v1/image/jobs/${jobId}/images/${imageId}/retry`, { method: "POST" });
+      },
+      updateLogoRedaction(
+        jobId: string,
+        imageId: string,
+        boxes: [number, number, number, number][]
+      ): Promise<LogoRedactionUpdate> {
+        return request<LogoRedactionUpdate>(
+          `/api/v1/image/jobs/${jobId}/images/${imageId}/redaction/logos`,
+          { method: "PUT", body: JSON.stringify({ boxes }) }
+        );
       },
       getFilterProfiles(): Promise<ProfileOption[]> {
         return request<ProfileOption[]>("/api/v1/filter-profiles");

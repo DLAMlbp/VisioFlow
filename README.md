@@ -103,7 +103,7 @@ npm run dev -- --port 5174 --strictPort
 
 前端固定连接真实 API，不提供模拟数据分支。标准、素材组标签和素材元数据写入 PostgreSQL，素材文件写入 MinIO。
 
-开发环境默认队列并发为：`control=1`、`preprocess=4`、`classification=4`、`beautify_plan=4`、`enhance=2`、`analysis=1`、`openclip=1`、`matching=2`、`cleanup=1`。在线向量和图库向量由同一个 `openclip` Worker 处理，只保留一份常驻模型；在线任务优先级高于图库补全。生产 Compose 也按角色加载所需任务模块，避免无关Worker加载完整任务和图像依赖。Redis 开启 AOF 并挂载独立持久卷，运行时 AI 配置不会随容器重建丢失。`celery-beat` 定期清理 30 天前的业务图片、24 小时未提交的上传对象，并重新投递超过 15 分钟没有进展的任务。素材库原图和向量不参与自动清理。
+开发环境默认队列并发为：`control=1`、`preprocess=4`、`classification=4`、`beautify_plan=4`、`enhance=1`、`analysis=1`、`openclip=1`、`matching=2`、`cleanup=1`。在线向量和图库向量由同一个 `openclip` Worker 处理，只保留一份常驻模型；在线任务优先级高于图库补全。生产 Compose 也按角色加载所需任务模块，避免无关Worker加载完整任务和图像依赖。Redis 开启 AOF 并挂载独立持久卷，运行时 AI 配置不会随容器重建丢失。`celery-beat` 定期清理 30 天前的业务图片、24 小时未提交的上传对象，并重新投递超过 15 分钟没有进展的任务。素材库原图和向量不参与自动清理。
 
 服务器部署时通过环境变量调整 Worker 数量和 `INFERENCE_DEVICE=auto`。CPU 服务器保持单个 `openclip` Worker 且并发为 1；GPU 服务器可让 OpenCLIP 自动使用 CUDA。视觉 AI 默认全局限制为 24 次/分钟、4 并发，遇到 429、超时和 5xx 会自动退避。`COMBINED_CLASSIFY_FILTER_ENABLED` 和 `EARLY_SEMANTIC_BRANCH_ENABLED` 默认开启，紧急回滚时可分别恢复旧的两次AI调用和增强后语义链路。
 
@@ -111,7 +111,7 @@ npm run dev -- --port 5174 --strictPort
 
 `COMPLETION_ROUTING_ENABLED`、`BATCH_FILTER_BARRIER_ENABLED`、`POST_FILTER_BEAUTIFY_PLAN_ENABLED`、`LIBRARY_IMAGE_ONLY_MATCHING_ENABLED`、`LIBRARY_ONLY_TAGS_ENABLED` 是强制工作流开关，正式运行必须全部为 `true`。`LIBRARY_IMAGE_ONLY_MATCHING_ENABLED` 是历史环境变量名，现在控制混合匹配主链路。任一开关关闭后，新任务会被拒绝，正在等待对应阶段的任务会暂停，系统不会回退旧流水线。`LIBRARY_MATCH_SHADOW_MODE=true` 只把自动匹配降为待人工复核，不改变素材组人工标签约束。
 
-对象存储上传完成后，Worker 会读取对象实际大小；大于 `MAX_IMAGE_SIZE_MB` 的文件会在下载和解码前被拒绝。
+对象存储上传完成后，Worker 会读取对象实际大小；大于 `MAX_IMAGE_SIZE_MB` 的文件会在下载和解码前被拒绝。解码元数据超过 `MAX_IMAGE_PIXELS`（默认 12,000,000 像素）的图片也会在 OCR、LaMa 或其他高内存处理前拒绝，防止压缩率极高的图片耗尽 Worker 内存。
 
 API 文档：
 

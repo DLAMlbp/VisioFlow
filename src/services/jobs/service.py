@@ -1,12 +1,16 @@
+import logging
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import PurePosixPath
 from typing import Annotated
 
 from fastapi import Depends
+from PIL import Image
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import Settings, get_settings
 from src.core.exceptions import AppError
+from src.core.metrics import emit_metric
 from src.db.session import get_db_session
 from src.models.image_item import ImageItem
 from src.models.image_job import ImageJob
@@ -29,14 +33,20 @@ from src.schemas.jobs import (
     ImageMetricsResponse,
     ImageSimilarityResultResponse,
     JobStatus,
+    UpdateLogoRedactionResponse,
 )
 from src.services.ai_model_config import load_ai_model_settings
 from src.services.images.beautify_planning import beautify_plan_from_json
+from src.services.images.metadata import encode_jpeg, make_thumbnail
+from src.services.images.mosaic import apply_pixel_mosaic
 from src.services.images.processing_vision import (
     filter_dimensions_from_processing_json,
     global_filter_dimensions_from_completion_json,
     selected_standard_from_processing_json,
 )
+from src.services.images.quality import QualityEngine
+from src.services.images.redaction import decode_image
+from src.services.images.redaction import encode_jpeg as encode_redaction_jpeg
 from src.services.jobs.callback_security import (
     CallbackConfigurationError,
     validate_callback_destination,
@@ -50,6 +60,10 @@ from src.services.managed_profiles import (
     standards_from_snapshots,
 )
 from src.services.profiles import ProfileLoader, ProfileNotFoundError
+from src.services.storage.factory import get_storage_provider
+from src.services.storage.keys import build_redaction_base_object_key
+
+logger = logging.getLogger(__name__)
 
 
 class JobNotFound(AppError):
@@ -457,6 +471,149 @@ class ImageJobService:
             images=images,
         )
 
+    async def update_logo_redaction(
+        self,
+        job_id: str,
+        image_id: str,
+        boxes: list[tuple[int, int, int, int]],
+    ) -> UpdateLogoRedactionResponse:
+        """Re-render one completed image from its private pre-logo base."""
+
+        item = await self.repository.get_item(image_id)
+        if item is None or item.job_id != job_id:
+            raise JobNotFound("图片结果不存在")
+        result = item.result
+        if (
+            result is None
+            or not result.enhanced_object_key
+            or item.purged_at is not None
+        ):
+            raise InvalidJobRequest("图片结果不可编辑或文件已过期")
+
+        audit = dict(result.enhancement_audit_json or {})
+        redaction = dict(audit.get("redaction") or {})
+        logos = dict(redaction.get("logos") or {})
+        if not logos.get("enabled") or not logos.get("manual_review_available"):
+            raise InvalidJobRequest("该图片未启用 Logo 马赛克人工复核")
+
+        storage = get_storage_provider()
+        base_object_key = build_redaction_base_object_key(job_id, image_id)
+        try:
+            base_bytes = await storage.download(base_object_key)
+        except Exception as exc:
+            raise InvalidJobRequest("人工复核基底图不存在，请重新处理该图片") from exc
+
+        base_image = decode_image(base_bytes)
+        image_height, image_width = base_image.shape[:2]
+        for x0, y0, x1, y1 in boxes:
+            if x1 > image_width or y1 > image_height:
+                raise InvalidJobRequest("Logo 框超出图片边界")
+
+        profile_snapshot = audit.get("profile_snapshot")
+        logo_profile = (
+            profile_snapshot.get("logo_mosaic", {})
+            if isinstance(profile_snapshot, dict)
+            else {}
+        )
+        block_ratio = float(
+            logo_profile.get("mosaic_block_ratio", 0.08)
+            if isinstance(logo_profile, dict)
+            else 0.08
+        )
+        rendered, applied_boxes = apply_pixel_mosaic(
+            base_image,
+            boxes,
+            expansion=0,
+            block_ratio=block_ratio,
+        )
+        jpeg_quality = int(
+            profile_snapshot.get("jpeg_quality", 95)
+            if isinstance(profile_snapshot, dict)
+            else 95
+        )
+        rendered_bytes = encode_redaction_jpeg(rendered, quality=jpeg_quality)
+        await storage.upload(result.enhanced_object_key, rendered_bytes, "image/jpeg")
+
+        with Image.open(BytesIO(rendered_bytes)) as rendered_image:
+            rendered_image.load()
+            metrics_image = make_thumbnail(
+                rendered_image, self.settings.thumbnail_long_side
+            )
+            if (
+                item.analysis_object_key
+                and item.analysis_object_key != result.enhanced_object_key
+            ):
+                analysis_bytes = encode_jpeg(
+                    make_thumbnail(
+                        rendered_image,
+                        self.settings.ai_tagging_image_long_side,
+                    )
+                )
+                await storage.upload(
+                    item.analysis_object_key,
+                    analysis_bytes,
+                    "image/jpeg",
+                )
+
+        metric_result = QualityEngine(self.settings).evaluate(
+            encode_jpeg(metrics_image)
+        )
+        enhanced_metrics = {
+            "sharpness": metric_result.sharpness_score,
+            "exposure": metric_result.exposure_score,
+            "contrast": metric_result.contrast_score,
+            "noise": metric_result.noise_score,
+        }
+
+        if "automatic_boxes" not in logos:
+            logos["automatic_boxes"] = list(logos.get("boxes") or [])
+        status = "manual_applied" if applied_boxes else "manual_cleared"
+        logos.update(
+            {
+                "status": status,
+                "source": "manual_review",
+                "image_size": [image_width, image_height],
+                "detections": len(applied_boxes),
+                "boxes": [list(box) for box in applied_boxes],
+                "confidences": [1.0] * len(applied_boxes),
+                "manual_revision": int(logos.get("manual_revision") or 0) + 1,
+            }
+        )
+        redaction["logos"] = logos
+        audit["redaction"] = redaction
+        reasons = [
+            *(result.reasons_json or []),
+            (
+                f"人工复核已应用 {len(applied_boxes)} 个 Logo 马赛克框"
+                if applied_boxes
+                else "人工复核已清除全部 Logo 马赛克框"
+            ),
+        ]
+        updated = await self.repository.update_manual_logo_redaction(
+            image_id,
+            enhancement_audit=audit,
+            enhanced_metrics=enhanced_metrics,
+            reasons=reasons,
+        )
+        if not updated:
+            raise InvalidJobRequest("图片状态已变化，请刷新后重试")
+        emit_metric(
+            logger,
+            "redaction_manual_review_total",
+            value=1,
+            labels={
+                "status": status,
+                "model_version": logos.get("model_version"),
+            },
+        )
+        return UpdateLogoRedactionResponse(
+            image_id=image_id,
+            status=status,
+            boxes=applied_boxes,
+            image_size=(image_width, image_height),
+            detections=len(applied_boxes),
+        )
+
     @staticmethod
     def _calculate_progress(stage_counts: dict[str, int], total: int, status: str) -> int:
         if status in {
@@ -592,6 +749,7 @@ def _beautify_response(item: ImageItem, result) -> ImageBeautifyResponse | None:
         if isinstance(acceptance_payload, dict)
         else None
     )
+    redaction_payload = audit.get("redaction")
     preview_attempts = audit.get("preview_attempts")
     decision = plan.decision if plan is not None else None
     return ImageBeautifyResponse(
@@ -612,6 +770,7 @@ def _beautify_response(item: ImageItem, result) -> ImageBeautifyResponse | None:
         ],
         preview_attempts=len(preview_attempts) if isinstance(preview_attempts, list) else 0,
         acceptance=acceptance,
+        redaction=redaction_payload if isinstance(redaction_payload, dict) else None,
     )
 
 

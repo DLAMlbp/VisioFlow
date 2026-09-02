@@ -229,6 +229,33 @@ class BeautifyAcceptanceResponse(BaseModel):
     fallback_reason: str | None = None
 
 
+class ImageRedactionResponse(BaseModel):
+    watermark: dict[str, object] = Field(default_factory=dict)
+    logos: dict[str, object] = Field(default_factory=dict)
+
+
+class UpdateLogoRedactionRequest(BaseModel):
+    """Final pixel boxes selected by an operator during result review."""
+
+    boxes: list[tuple[int, int, int, int]] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_boxes(self):
+        for x0, y0, x1, y1 in self.boxes:
+            if min(x0, y0) < 0 or x1 <= x0 or y1 <= y0:
+                raise ValueError("Logo 框必须使用非负且非空的 x0,y0,x1,y1 像素坐标")
+        return self
+
+
+class UpdateLogoRedactionResponse(BaseModel):
+    image_id: str
+    status: Literal["manual_applied", "manual_cleared"]
+    boxes: list[tuple[int, int, int, int]] = Field(default_factory=list)
+    image_size: tuple[int, int]
+    detections: int
+    source: Literal["manual_review"] = "manual_review"
+
+
 class ImageBeautifyResponse(BaseModel):
     status: str
     needed: bool | None = None
@@ -239,6 +266,7 @@ class ImageBeautifyResponse(BaseModel):
     corrections: list[str] = Field(default_factory=list)
     preview_attempts: int = 0
     acceptance: BeautifyAcceptanceResponse | None = None
+    redaction: ImageRedactionResponse | None = None
 
 
 class ImageJobResultItemResponse(BaseModel):

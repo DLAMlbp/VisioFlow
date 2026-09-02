@@ -26,6 +26,7 @@ from src.services.jobs.dispatch import (
     RoutedProcessingTaskPublisher,
 )
 from src.services.storage.factory import get_storage_provider
+from src.services.storage.keys import build_redaction_base_object_key
 from src.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,12 @@ async def _cleanup_expired_images() -> None:
             .limit(100)
         )
         for item in result.scalars().unique():
-            keys = [item.object_key, item.thumbnail_object_key, item.analysis_object_key]
+            keys = [
+                item.object_key,
+                item.thumbnail_object_key,
+                item.analysis_object_key,
+                build_redaction_base_object_key(item.job_id, item.id),
+            ]
             if item.result is not None:
                 keys.append(item.result.enhanced_object_key)
             for object_key in dict.fromkeys(key for key in keys if key):

@@ -1,0 +1,17 @@
+{
+  "id": "dangjia-watermark-v1",
+  "version": 1,
+  "status": "production-candidate",
+  "supported_mode": "dangjia_bottom_left",
+  "reference_size": [1080, 1440],
+  "roi": [0.0, 0.84, 0.48, 1.0],
+  "foreground_bgr": [220, 220, 220],
+  "alpha_map": "dangjia_alpha_v1.npz",
+  "migan_model": "migan.onnx",
+  "migan_sha256": "593eba0b7e04730f1b61c0a3cbca68d97d8d6a7ff5c6a44a7b9d7fcd880fc5ae",
+  "migan_source": "https://huggingface.co/andraniksargsyan/migan/resolve/main/migan.onnx",
+  "lama_model": "inpainting_lama_2025jan.onnx",
+  "lama_sha256": "7df918ac3921d3daf0aae1d219776cf0dc4e4935f035af81841b40adcf74fdf2",
+  "lama_source": "https://huggingface.co/opencv/inpainting_lama/resolve/main/inpainting_lama_2025jan.onnx",
+  "notes": "Prefer exact reverse-alpha when a calibrated alpha asset exists. Otherwise use ROI OCR plus OpenCV LaMa, with MI-GAN and Telea as fail-safe fallbacks."
+}

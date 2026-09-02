@@ -6,6 +6,8 @@ __pycache__/
 .ruff_cache/
 *.pyc
 *.log
+models/**/*.onnx
+models/**/*.npz
 
 frontend/node_modules/
 frontend/.env.local
@@ -13,5 +15,7 @@ frontend/dist/
 frontend/*.tsbuildinfo
 artifacts/
 tmp/
+test-data/redaction-private/*
+!test-data/redaction-private/README.md
 frontend/vite.config.js
 frontend/vite.config.d.ts

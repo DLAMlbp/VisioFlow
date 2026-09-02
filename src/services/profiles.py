@@ -1,7 +1,8 @@
 from pathlib import Path
+from typing import Literal
 
 import yaml
-from pydantic import AliasChoices, BaseModel, Field, ValidationError
+from pydantic import AliasChoices, BaseModel, Field, ValidationError, model_validator
 
 from src.core.config import Settings
 
@@ -48,6 +49,54 @@ class FilterProfile(BaseModel):
     evidence_rules: EvidenceRulesProfile | None = None
 
 
+class WatermarkRemovalConfig(BaseModel):
+    """Deterministic removal rules for the supported bottom-left overlay."""
+
+    enabled: bool = False
+    mode: Literal["dangjia_bottom_left"] = "dangjia_bottom_left"
+    roi: tuple[float, float, float, float] = (0.0, 0.84, 0.48, 1.0)
+    backend: Literal[
+        "deblend",
+        "deblend_then_telea",
+        "deblend_then_migan",
+        "deblend_then_lama",
+        "migan",
+        "lama",
+    ] = (
+        "deblend_then_lama"
+    )
+    preserve_outside_roi: bool = True
+    # This ratio is measured inside the protected ROI. Even at the default 0.50,
+    # at most 4% of the full image can change because the ROI itself is only 8%.
+    max_modified_ratio: float = Field(default=0.50, gt=0, le=0.65)
+    detection_threshold: float = Field(default=0.38, ge=0, le=1)
+    inpaint_radius: int = Field(default=3, ge=1, le=12)
+    roi_ocr_enabled: bool = True
+
+    @model_validator(mode="after")
+    def validate_roi(self):
+        x0, y0, x1, y1 = self.roi
+        if not (0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1):
+            raise ValueError("watermark ROI must be normalized as x0,y0,x1,y1")
+        if self.preserve_outside_roi and (x1 - x0) * (y1 - y0) > 0.25:
+            raise ValueError("protected watermark ROI cannot cover more than 25% of the image")
+        return self
+
+
+class LogoMosaicConfig(BaseModel):
+    """Single-brand logo detection and irreversible pixelation settings."""
+
+    enabled: bool = False
+    targets: list[Literal["dangjia_logo"]] = Field(
+        default_factory=lambda: ["dangjia_logo"]
+    )
+    confidence: float = Field(default=0.45, ge=0.05, le=0.99)
+    nms_iou: float = Field(default=0.50, ge=0.1, le=0.9)
+    box_expansion: float = Field(default=0.08, ge=0, le=0.5)
+    mosaic_block_ratio: float = Field(default=0.16, ge=0.02, le=0.5)
+    include_product_logos: bool = False
+
+
 class BeautifyProfile(BaseModel):
     id: str
     version: int = Field(ge=1)
@@ -69,6 +118,10 @@ class BeautifyProfile(BaseModel):
     max_straighten_degrees: float = Field(default=3, gt=0, le=12)
     min_output_long_side: int = Field(default=2048, ge=1, le=8192)
     jpeg_quality: int = Field(ge=60, le=100)
+    watermark_removal: WatermarkRemovalConfig = Field(
+        default_factory=WatermarkRemovalConfig
+    )
+    logo_mosaic: LogoMosaicConfig = Field(default_factory=LogoMosaicConfig)
 
 
 class ProcessingStandard(BaseModel):

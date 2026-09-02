@@ -11,6 +11,41 @@ interface Props {
 
 type EditorType = "global" | "filter" | "beautify";
 
+function redactionFlags(config: Record<string, unknown>) {
+  const watermark = config.watermark_removal as Record<string, unknown> | undefined;
+  const logos = config.logo_mosaic as Record<string, unknown> | undefined;
+  return {
+    removeWatermark: watermark?.enabled === true,
+    mosaicLogo: logos?.enabled === true
+  };
+}
+
+function withRedactionFlags(
+  config: Record<string, unknown>,
+  removeWatermark: boolean,
+  mosaicLogo: boolean
+) {
+  const watermark = config.watermark_removal as Record<string, unknown> | undefined;
+  const logos = config.logo_mosaic as Record<string, unknown> | undefined;
+  return {
+    ...config,
+    watermark_removal: {
+      ...(watermark ?? {}),
+      enabled: removeWatermark,
+      mode: "dangjia_bottom_left",
+      roi: [0, 0.84, 0.48, 1],
+      preserve_outside_roi: true
+    },
+    logo_mosaic: {
+      ...(logos ?? {}),
+      enabled: mosaicLogo,
+      targets: ["dangjia_logo"],
+      box_expansion: 0.08,
+      mosaic_block_ratio: 0.16
+    }
+  };
+}
+
 export function ProfileWorkspace({ onMessage, onProfilesChanged, onConfigureAI }: Props) {
   const [type, setType] = useState<EditorType>("global");
   const [profiles, setProfiles] = useState<ProfileOption[]>([]);
@@ -24,6 +59,8 @@ export function ProfileWorkspace({ onMessage, onProfilesChanged, onConfigureAI }
   const [preview, setPreview] = useState<ProfilePreview | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [removeWatermark, setRemoveWatermark] = useState(false);
+  const [mosaicLogo, setMosaicLogo] = useState(false);
 
   async function loadList(nextType = type, preferredId?: string | null) {
     setLoading(true);
@@ -57,6 +94,8 @@ export function ProfileWorkspace({ onMessage, onProfilesChanged, onConfigureAI }
         setIsFallback(Boolean(detail.is_fallback));
         setVersion(detail.version);
         setPreview({ description: detail.description, config: {}, unsupported: [], can_save: true });
+        setRemoveWatermark(false);
+        setMosaicLogo(false);
       } else {
         const detail = await api.getProcessingProfile(nextType === "global" ? "filter" : nextType, profileId);
         setSelectedId(detail.id);
@@ -67,6 +106,9 @@ export function ProfileWorkspace({ onMessage, onProfilesChanged, onConfigureAI }
         setIsFallback(false);
         setVersion(detail.version);
         setPreview({ description: detail.description, config: detail.config, unsupported: [], can_save: true });
+        const flags = redactionFlags(detail.config);
+        setRemoveWatermark(nextType === "beautify" && flags.removeWatermark);
+        setMosaicLogo(nextType === "beautify" && flags.mosaicLogo);
       }
     } catch (error) {
       onMessage(error instanceof Error ? error.message : "读取标准详情失败");
@@ -91,6 +133,11 @@ export function ProfileWorkspace({ onMessage, onProfilesChanged, onConfigureAI }
     }
     setVersion(null);
     setPreview(copy ? { description: copy.description, config: "config" in copy ? copy.config : {}, unsupported: [], can_save: true } : null);
+    const flags = copy && "config" in copy
+      ? redactionFlags(copy.config)
+      : { removeWatermark: false, mosaicLogo: false };
+    setRemoveWatermark(type === "beautify" && flags.removeWatermark);
+    setMosaicLogo(type === "beautify" && flags.mosaicLogo);
   }
 
   async function copyCurrent() {
@@ -119,7 +166,10 @@ export function ProfileWorkspace({ onMessage, onProfilesChanged, onConfigureAI }
       const result = type === "filter"
         ? await api.previewProcessingStandard({ classification_rule: classificationRule.trim(), filter_rule: instruction.trim(), priority, is_fallback: isFallback })
         : await api.previewProcessingProfile(type === "global" ? "filter" : type, instruction.trim());
-      setPreview(result);
+      setPreview(type === "beautify" ? {
+        ...result,
+        config: withRedactionFlags(result.config, removeWatermark, mosaicLogo)
+      } : result);
       onMessage("标准已校验，可以保存");
     } catch (error) {
       onMessage(error instanceof Error ? error.message : "校验标准失败");
@@ -183,6 +233,31 @@ export function ProfileWorkspace({ onMessage, onProfilesChanged, onConfigureAI }
           <label className="fallback-toggle"><input type="checkbox" checked={isFallback} onChange={(event) => { setIsFallback(event.target.checked); setPreview(null); }} /><span><strong>设为兜底分类</strong><small>没有任何明确分类命中时使用；启用中的标准只能有一条兜底分类。</small></span></label>
         </>}
         <label className="profile-field">{type === "global" ? "全局过滤规则" : type === "filter" ? "对应分类专属过滤规则" : "美化要求"}<textarea value={instruction} rows={type === "global" ? 12 : 5} maxLength={2000} onChange={(event) => { setInstruction(event.target.value); setPreview(null); }} /></label>
+        {type === "beautify" && <fieldset className="redaction-options">
+          <legend>隐私保护与品牌遮挡</legend>
+          <label>
+            <input type="checkbox" checked={removeWatermark} onChange={(event) => {
+              const enabled = event.target.checked;
+              setRemoveWatermark(enabled);
+              setPreview((current) => current ? {
+                ...current,
+                config: withRedactionFlags(current.config, enabled, mosaicLogo)
+              } : current);
+            }} />
+            <span><strong>去除左下角水印</strong><small>仅处理左下角受保护区域，中央文案不会被删除。</small></span>
+          </label>
+          <label>
+            <input type="checkbox" checked={mosaicLogo} onChange={(event) => {
+              const enabled = event.target.checked;
+              setMosaicLogo(enabled);
+              setPreview((current) => current ? {
+                ...current,
+                config: withRedactionFlags(current.config, removeWatermark, enabled)
+              } : current);
+            }} />
+            <span><strong>当家 APP Logo 自动打码</strong><small>检测衣服、背景布和桌布上的实体 Logo 并打强马赛克。</small></span>
+          </label>
+        </fieldset>}
         <button className="profile-generate" type="button" disabled={busy} onClick={() => void generatePreview()}>{busy ? <Loader2 className="spin" size={16} /> : <WandSparkles size={16} />}{busy ? "正在校验" : "校验规则"}</button>
         {preview && <p className="profile-muted">{preview.description}</p>}
         <div className="profile-save-row"><button className="primary-button" type="button" disabled={busy || !preview} onClick={() => void save()}><Save size={16} />保存标准</button></div>

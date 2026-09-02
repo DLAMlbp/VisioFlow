@@ -80,7 +80,7 @@ services:
 
   worker-enhance:
     <<: *worker
-    command: celery -A src.workers.celery_app worker -Q enhance -l info --concurrency=2 --without-mingle --without-gossip
+    command: celery -A src.workers.celery_app worker -Q enhance -l info --concurrency=1 --without-mingle --without-gossip
     environment:
       WORKER_ROLE: enhance
 

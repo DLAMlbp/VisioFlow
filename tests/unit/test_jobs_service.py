@@ -637,6 +637,18 @@ def test_beautify_response_returns_plan_execution_and_acceptance_audit() -> None
                 ],
                 "fallback_reason": None,
             },
+            "redaction": {
+                "watermark": {
+                    "enabled": True,
+                    "status": "applied",
+                    "outside_roi_changed_pixels": 0,
+                },
+                "logos": {
+                    "enabled": True,
+                    "status": "applied",
+                    "detections": 2,
+                },
+            },
         }
     )
 
@@ -648,6 +660,9 @@ def test_beautify_response_returns_plan_execution_and_acceptance_audit() -> None
     assert response.effective_parameters["brightness"] == 1.03
     assert response.acceptance is not None
     assert response.acceptance.checks[0].name == "exposure"
+    assert response.redaction is not None
+    assert response.redaction.watermark["outside_roi_changed_pixels"] == 0
+    assert response.redaction.logos["detections"] == 2
 
 
 def test_classification_response_exposes_structured_content_analysis() -> None:

@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     upload_batch_presign_expires_seconds: int = 3600
     job_dispatch_chunk_size: int = 25
     max_image_size_mb: int = 25
+    max_image_pixels: int = Field(default=12_000_000, ge=1_000_000, le=100_000_000)
     allowed_image_content_types: set[str] = Field(
         default_factory=lambda: {"image/jpeg", "image/png", "image/webp"}
     )
@@ -68,6 +69,8 @@ class Settings(BaseSettings):
     quality_noise_penalty: float = 1.5
     profiles_directory: str = "profiles"
     image_retention_days: int = 30
+    redaction_models_directory: str = "models"
+    redaction_onnx_threads: int = Field(default=1, ge=1, le=8)
 
     ai_tagging_enabled: bool = True
     ai_tagging_provider: str = "openai"

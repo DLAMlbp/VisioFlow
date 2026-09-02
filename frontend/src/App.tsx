@@ -25,7 +25,7 @@ import {
   UploadCloud,
   X
 } from "lucide-react";
-import { ChangeEvent, DragEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, DragEvent, PointerEvent as ReactPointerEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./services/api";
 import { LibraryWorkspace } from "./LibraryWorkspace";
 import { ProfileWorkspace } from "./ProfileWorkspace";
@@ -764,7 +764,7 @@ function App() {
 
             {workflowStep === 5 && <>
               <header className="sop-stage-heading result-heading-row"><div><span>步骤 5 / 6</span><h2>人工复核</h2><p>检查处理结果、修正待复核项，并按需要重试失败图片。</p></div>{results && <button className="primary-inline" type="button" onClick={() => setWorkflowStep(6)}>进入交付<ChevronRight size={16} /></button>}</header>
-              {results ? <ResultsPanel results={results} averageScore={averageScore} resultFilter={resultFilter} visibleResults={visibleResults} selectedImage={selectedImage} page={resultPage} onFilterChange={(filter) => void changeResultPage(0, filter)} onPageChange={(page) => void changeResultPage(page)} onSelectImage={setSelectedImage} onReviewResolved={applyReviewResult} onRetry={(imageId) => void retryImage(imageId)} /> : <div className="queue-empty">结果正在汇总，完成后会自动进入复核。</div>}
+              {results ? <ResultsPanel results={results} averageScore={averageScore} resultFilter={resultFilter} visibleResults={visibleResults} selectedImage={selectedImage} page={resultPage} onFilterChange={(filter) => void changeResultPage(0, filter)} onPageChange={(page) => void changeResultPage(page)} onSelectImage={setSelectedImage} onReviewResolved={applyReviewResult} onRetry={(imageId) => void retryImage(imageId)} onRedactionSaved={async () => { await loadResultPage(results.job_id, operationVersionRef.current, resultPage, resultFilter); setMessage("Logo 马赛克框已人工复核并重新生成图片"); }} /> : <div className="queue-empty">结果正在汇总，完成后会自动进入复核。</div>}
             </>}
 
             {workflowStep === 6 && <>
@@ -829,7 +829,8 @@ function ResultsPanel({
   onPageChange,
   onSelectImage,
   onReviewResolved,
-  onRetry
+  onRetry,
+  onRedactionSaved
 }: {
   results: JobResults;
   averageScore: number;
@@ -842,15 +843,18 @@ function ResultsPanel({
   onSelectImage: (image: ResultImage | null) => void;
   onReviewResolved: (imageId: string, result: SimilarityTaggingResult) => void;
   onRetry: (imageId: string) => void;
+  onRedactionSaved: () => Promise<void>;
 }) {
   if (selectedImage) {
     return (
       <section className="results-panel detail-mode">
         <ImageDetail
           image={selectedImage}
+          jobId={results.job_id}
           onBack={() => onSelectImage(null)}
           onReviewResolved={onReviewResolved}
           onRetry={onRetry}
+          onRedactionSaved={onRedactionSaved}
         />
       </section>
     );
@@ -1039,8 +1043,12 @@ function ResultCard({ image, active, onOpen }: { image: ResultImage; active: boo
   );
 }
 
-function ImageDetail({ image, onBack, onReviewResolved, onRetry }: { image: ResultImage; onBack: () => void; onReviewResolved: (imageId: string, result: SimilarityTaggingResult) => void; onRetry: (imageId: string) => void }) {
+function ImageDetail({ image, jobId, onBack, onReviewResolved, onRetry, onRedactionSaved }: { image: ResultImage; jobId: string; onBack: () => void; onReviewResolved: (imageId: string, result: SimilarityTaggingResult) => void; onRetry: (imageId: string) => void; onRedactionSaved: () => Promise<void> }) {
   const [showEnhanced, setShowEnhanced] = useState(true);
+  const [showRedactionOverlay, setShowRedactionOverlay] = useState(false);
+  const [editingLogoBoxes, setEditingLogoBoxes] = useState(false);
+  const [savingLogoBoxes, setSavingLogoBoxes] = useState(false);
+  const [logoEditError, setLogoEditError] = useState<string | null>(null);
   const [compare, setCompare] = useState(50);
   const [auditExpanded, setAuditExpanded] = useState(false);
   const [beautifyExpanded, setBeautifyExpanded] = useState(false);
@@ -1057,13 +1065,44 @@ function ImageDetail({ image, onBack, onReviewResolved, onRetry }: { image: Resu
   const beautifyRegionId = `beautify-details-${image.image_id}`;
   const processingRegionId = `processing-details-${image.image_id}`;
   const classificationRegionId = `classification-content-${image.image_id}`;
+  const hasRedactionOverlay = Boolean(
+    image.beautify?.redaction?.watermark?.roi_px
+      || image.beautify?.redaction?.logos?.boxes
+  );
+  const logoAudit = image.beautify?.redaction?.logos;
+  const logoReviewAvailable = logoAudit?.manual_review_available === true && Boolean(image.enhanced_url);
+  const logoStatus = typeof logoAudit?.status === "string" ? logoAudit.status : "";
+  const logoWarning = logoStatus === "failed_safe"
+    ? "Logo 自动识别不可用：当前结果未伪装为已处理，请手动画框后保存。"
+    : logoStatus === "not_detected"
+      ? "未自动发现当家 Logo；如有漏检，可以进入人工复核手动画框。"
+      : null;
 
   useEffect(() => {
     setAuditExpanded(false);
     setBeautifyExpanded(false);
     setProcessingExpanded(false);
     setClassificationExpanded(false);
+    setShowRedactionOverlay(false);
+    setEditingLogoBoxes(false);
+    setLogoEditError(null);
   }, [image.image_id]);
+
+  async function saveLogoBoxes(boxes: LogoBox[]) {
+    setSavingLogoBoxes(true);
+    setLogoEditError(null);
+    try {
+      await api.updateLogoRedaction(jobId, image.image_id, boxes);
+      await onRedactionSaved();
+      setEditingLogoBoxes(false);
+      setShowRedactionOverlay(true);
+    } catch (error) {
+      setLogoEditError(error instanceof Error ? error.message : "Logo 框保存失败");
+      throw error;
+    } finally {
+      setSavingLogoBoxes(false);
+    }
+  }
 
   return (
     <div className="result-detail-workspace">
@@ -1101,13 +1140,28 @@ function ImageDetail({ image, onBack, onReviewResolved, onRetry }: { image: Resu
             ) : (
               <p>该图片的预览地址暂不可用。</p>
             )}
+            {showEnhanced && showRedactionOverlay && image.beautify?.redaction && !editingLogoBoxes && (
+              <RedactionOverlay redaction={image.beautify.redaction} />
+            )}
+            {showEnhanced && editingLogoBoxes && image.beautify?.redaction && (
+              <LogoBoxEditor
+                redaction={image.beautify.redaction}
+                saving={savingLogoBoxes}
+                onSave={saveLogoBoxes}
+                onCancel={() => { setEditingLogoBoxes(false); setLogoEditError(null); }}
+              />
+            )}
           </div>
         </div>
         <footer className="preview-actions">
           <button type="button" className={!showEnhanced ? "active" : ""} onClick={() => setShowEnhanced(false)}><Eye size={16} aria-hidden="true" />原图</button>
           <button type="button" className={showEnhanced ? "active" : ""} onClick={() => setShowEnhanced(true)} disabled={!image.enhanced_url}><Sparkles size={16} aria-hidden="true" />美化图</button>
+          {hasRedactionOverlay && <button type="button" className={showRedactionOverlay ? "active" : ""} onClick={() => setShowRedactionOverlay((current) => !current)}><ScanSearch size={16} aria-hidden="true" />处理区域</button>}
+          {logoReviewAvailable && <button type="button" className={editingLogoBoxes ? "active" : ""} onClick={() => { setShowEnhanced(true); setEditingLogoBoxes(true); setShowRedactionOverlay(false); }}><SlidersHorizontal size={16} aria-hidden="true" />复核 Logo 框</button>}
           {openUrl ? <a href={openUrl} target="_blank" rel="noreferrer"><ArrowDownToLine size={16} aria-hidden="true" />打开文件</a> : <span />}
         </footer>
+        {logoWarning && <p className="redaction-status-warning"><AlertTriangle size={15} aria-hidden="true" />{logoWarning}</p>}
+        {logoEditError && <p className="redaction-status-warning"><CircleX size={15} aria-hidden="true" />{logoEditError}</p>}
       </section>
 
       <aside className="formal-result-inspector" aria-label="结果详情">
@@ -1199,6 +1253,201 @@ function ImageDetail({ image, onBack, onReviewResolved, onRetry }: { image: Resu
       </aside>
     </div>
   );
+}
+
+export type LogoBox = [number, number, number, number];
+
+function RedactionOverlay({ redaction }: { redaction: NonNullable<NonNullable<ResultImage["beautify"]>["redaction"]> }) {
+  const watermark = redaction.watermark;
+  const logos = redaction.logos;
+  const size = numericArray(watermark.image_size, 2) ?? numericArray(logos.image_size, 2);
+  if (!size || size[0] <= 0 || size[1] <= 0) return null;
+  const roi = numericArray(watermark.roi_px, 4);
+  const boxes = Array.isArray(logos.boxes)
+    ? logos.boxes.map((box) => numericArray(box, 4)).filter((box): box is number[] => box !== null)
+    : [];
+  const confidences = Array.isArray(logos.confidences) ? logos.confidences.map(Number) : [];
+  return (
+    <svg className="redaction-preview-overlay" viewBox={`0 0 ${size[0]} ${size[1]}`} preserveAspectRatio="xMidYMid meet" aria-label="图像处理区域">
+      {roi && <rect className="watermark-roi" x={roi[0]} y={roi[1]} width={roi[2] - roi[0]} height={roi[3] - roi[1]} />}
+      {boxes.map((box, index) => <g key={`${box.join("-")}-${index}`}>
+        <rect className="logo-box" x={box[0]} y={box[1]} width={box[2] - box[0]} height={box[3] - box[1]} />
+        <text className="logo-confidence" x={box[0]} y={Math.max(18, box[1] - 6)}>{Number.isFinite(confidences[index]) ? `Logo ${Math.round(confidences[index] * 100)}%` : "Logo"}</text>
+      </g>)}
+    </svg>
+  );
+}
+
+type BoxInteraction = {
+  kind: "draw" | "move" | "resize";
+  index: number;
+  startX: number;
+  startY: number;
+  original: LogoBox;
+};
+
+export function LogoBoxEditor({ redaction, saving, onSave, onCancel }: {
+  redaction: NonNullable<NonNullable<ResultImage["beautify"]>["redaction"]>;
+  saving: boolean;
+  onSave: (boxes: LogoBox[]) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const logos = redaction.logos;
+  const watermark = redaction.watermark;
+  const sizeValue = numericArray(logos.image_size, 2) ?? numericArray(watermark.image_size, 2);
+  const width = sizeValue?.[0] ?? 0;
+  const height = sizeValue?.[1] ?? 0;
+  const initialBoxes = Array.isArray(logos.boxes)
+    ? logos.boxes.map((box) => numericArray(box, 4)).filter((box): box is number[] => box !== null).map((box) => box as LogoBox)
+    : [];
+  const initialKey = JSON.stringify(initialBoxes);
+  const [boxes, setBoxes] = useState<LogoBox[]>(initialBoxes);
+  const [selected, setSelected] = useState<number | null>(initialBoxes.length ? 0 : null);
+  const [drawing, setDrawing] = useState(false);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const interaction = useRef<BoxInteraction | null>(null);
+
+  useEffect(() => {
+    const next = JSON.parse(initialKey) as LogoBox[];
+    setBoxes(next);
+    setSelected(next.length ? 0 : null);
+  }, [initialKey]);
+
+  if (width <= 0 || height <= 0) return null;
+
+  function imagePoint(event: ReactPointerEvent<SVGElement>): [number, number] {
+    const svg = svgRef.current;
+    if (!svg) return [0, 0];
+    const rect = svg.getBoundingClientRect();
+    const scale = Math.min(rect.width / width, rect.height / height);
+    const offsetX = (rect.width - width * scale) / 2;
+    const offsetY = (rect.height - height * scale) / 2;
+    return [
+      Math.max(0, Math.min(width, (event.clientX - rect.left - offsetX) / scale)),
+      Math.max(0, Math.min(height, (event.clientY - rect.top - offsetY) / scale)),
+    ];
+  }
+
+  function beginDraw(event: ReactPointerEvent<SVGSVGElement>) {
+    if (!drawing || event.target !== event.currentTarget) {
+      if (event.target === event.currentTarget) setSelected(null);
+      return;
+    }
+    const [x, y] = imagePoint(event);
+    const index = boxes.length;
+    const box: LogoBox = [Math.round(x), Math.round(y), Math.round(x), Math.round(y)];
+    setBoxes((current) => [...current, box]);
+    setSelected(index);
+    interaction.current = { kind: "draw", index, startX: x, startY: y, original: box };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function beginMove(event: ReactPointerEvent<SVGRectElement>, index: number) {
+    event.stopPropagation();
+    const [x, y] = imagePoint(event);
+    setSelected(index);
+    interaction.current = { kind: "move", index, startX: x, startY: y, original: boxes[index] };
+    svgRef.current?.setPointerCapture(event.pointerId);
+  }
+
+  function beginResize(event: ReactPointerEvent<SVGCircleElement>, index: number) {
+    event.stopPropagation();
+    const [x, y] = imagePoint(event);
+    setSelected(index);
+    interaction.current = { kind: "resize", index, startX: x, startY: y, original: boxes[index] };
+    svgRef.current?.setPointerCapture(event.pointerId);
+  }
+
+  function movePointer(event: ReactPointerEvent<SVGSVGElement>) {
+    const active = interaction.current;
+    if (!active) return;
+    const [x, y] = imagePoint(event);
+    setBoxes((current) => current.map((box, index) => {
+      if (index !== active.index) return box;
+      if (active.kind === "draw") {
+        return [
+          Math.round(Math.min(active.startX, x)),
+          Math.round(Math.min(active.startY, y)),
+          Math.round(Math.max(active.startX, x)),
+          Math.round(Math.max(active.startY, y)),
+        ];
+      }
+      if (active.kind === "resize") {
+        return [
+          active.original[0],
+          active.original[1],
+          Math.round(Math.max(active.original[0] + 8, Math.min(width, x))),
+          Math.round(Math.max(active.original[1] + 8, Math.min(height, y))),
+        ];
+      }
+      const boxWidth = active.original[2] - active.original[0];
+      const boxHeight = active.original[3] - active.original[1];
+      const x0 = Math.max(0, Math.min(width - boxWidth, active.original[0] + x - active.startX));
+      const y0 = Math.max(0, Math.min(height - boxHeight, active.original[1] + y - active.startY));
+      return [Math.round(x0), Math.round(y0), Math.round(x0 + boxWidth), Math.round(y0 + boxHeight)];
+    }));
+  }
+
+  function endPointer(event: ReactPointerEvent<SVGSVGElement>) {
+    const active = interaction.current;
+    interaction.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    if (active?.kind === "draw") {
+      setBoxes((current) => current.filter((box, index) => index !== active.index || (box[2] - box[0] >= 8 && box[3] - box[1] >= 8)));
+      setDrawing(false);
+    }
+  }
+
+  function deleteSelected() {
+    if (selected === null) return;
+    setBoxes((current) => current.filter((_, index) => index !== selected));
+    setSelected(null);
+  }
+
+  const handleRadius = Math.max(8, Math.min(width, height) * 0.009);
+  return (
+    <div className="redaction-editor-shell">
+      <svg
+        ref={svgRef}
+        className={`redaction-preview-overlay redaction-box-editor ${drawing ? "drawing" : ""}`}
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="xMidYMid meet"
+        aria-label="Logo 马赛克框编辑器"
+        onPointerDown={beginDraw}
+        onPointerMove={movePointer}
+        onPointerUp={endPointer}
+        onPointerCancel={endPointer}
+      >
+        {boxes.map((box, index) => <g key={`${index}-${box.join("-")}`}>
+          <rect
+            className={`logo-box editable ${selected === index ? "selected" : ""}`}
+            x={box[0]}
+            y={box[1]}
+            width={box[2] - box[0]}
+            height={box[3] - box[1]}
+            onPointerDown={(event) => beginMove(event, index)}
+          />
+          <text className="logo-confidence" x={box[0]} y={Math.max(18, box[1] - 6)}>Logo {index + 1}</text>
+          {selected === index && <circle className="resize-handle" cx={box[2]} cy={box[3]} r={handleRadius} onPointerDown={(event) => beginResize(event, index)} />}
+        </g>)}
+      </svg>
+      <div className="redaction-editor-toolbar" role="toolbar" aria-label="Logo 框编辑操作">
+        <span>{boxes.length} 个框</span>
+        <button type="button" className={drawing ? "active" : ""} onClick={() => setDrawing((current) => !current)} disabled={saving}>手动画框</button>
+        <button type="button" onClick={deleteSelected} disabled={saving || selected === null}><Trash2 size={14} aria-hidden="true" />删除选中</button>
+        <button type="button" onClick={onCancel} disabled={saving}>取消</button>
+        <button type="button" className="primary" onClick={() => void onSave(boxes).catch(() => undefined)} disabled={saving}>{saving ? <Loader2 className="spin" size={14} /> : <Check size={14} />}保存并重新生成</button>
+      </div>
+    </div>
+  );
+}
+
+function numericArray(value: unknown, length: number): number[] | null {
+  if (!Array.isArray(value) || value.length !== length) return null;
+  const numbers = value.map(Number);
+  return numbers.every(Number.isFinite) ? numbers : null;
 }
 
 function RejectedResult({ reasons }: { reasons: string[] }) {

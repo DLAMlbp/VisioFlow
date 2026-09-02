@@ -63,6 +63,11 @@ class ImageMetadataService:
 
                 orientation = image.getexif().get(274)
                 width, height = image.size
+                if width * height > self.settings.max_image_pixels:
+                    raise ImageMetadataError(
+                        "图片解码像素超过安全上限"
+                        f"（最大 {self.settings.max_image_pixels:,} 像素）"
+                    )
                 thumbnail = make_thumbnail(image, self.settings.thumbnail_long_side)
         except (Image.DecompressionBombError, OSError, UnidentifiedImageError) as exc:
             raise ImageMetadataError("图片无法解码或已损坏") from exc
