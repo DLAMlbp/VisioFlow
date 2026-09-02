@@ -90,46 +90,74 @@ def release_recovery_lease(publisher_name: str, entity_id: str) -> None:
         )
 
 
+def _publish_pipeline_task(
+    publisher_name: str,
+    entity_id: str,
+    task_name: str,
+    *,
+    queue: str,
+    lease_publisher_name: str | None = None,
+    **options,
+) -> None:
+    lease_name = lease_publisher_name or publisher_name
+    if not acquire_recovery_lease(lease_name, entity_id):
+        return
+    try:
+        celery_app.send_task(task_name, args=[entity_id], queue=queue, **options)
+    except Exception:
+        release_recovery_lease(lease_name, entity_id)
+        raise
+
+
 class TaskPublisher(Protocol):
     def publish(self, entity_id: str) -> None: ...
 
 
 class JobDispatchTaskPublisher:
     def publish(self, job_id: str) -> None:
-        celery_app.send_task("image.dispatch_job", args=[job_id], queue="control")
+        _publish_pipeline_task(
+            type(self).__name__, job_id, "image.dispatch_job", queue="control"
+        )
 
 
 class MetadataTaskPublisher:
     def publish(self, image_id: str) -> None:
-        celery_app.send_task("image.preprocess_metadata", args=[image_id], queue="preprocess")
+        _publish_pipeline_task(
+            type(self).__name__, image_id, "image.preprocess_metadata", queue="preprocess"
+        )
 
 
 class CompletionTaskPublisher:
     def publish(self, image_id: str) -> None:
-        celery_app.send_task(
-            "image.classify_completion", args=[image_id], queue="classification"
+        _publish_pipeline_task(
+            type(self).__name__, image_id, "image.classify_completion", queue="classification"
         )
 
 
 class RoutedProcessingTaskPublisher:
     def publish(self, image_id: str) -> None:
-        celery_app.send_task(
-            "image.apply_routed_processing", args=[image_id], queue="filtering"
+        _publish_pipeline_task(
+            type(self).__name__, image_id, "image.apply_routed_processing", queue="filtering"
         )
 
 
 class AnalysisTaskPublisher:
     def publish(self, image_id: str) -> None:
-        celery_app.send_task(
-            "image.analyze_content", args=[image_id], queue="analysis", countdown=0.5
+        _publish_pipeline_task(
+            type(self).__name__,
+            image_id,
+            "image.analyze_content",
+            queue="analysis",
+            countdown=0.5,
         )
 
 
 class EmbeddingTaskPublisher:
     def publish(self, image_id: str) -> None:
-        celery_app.send_task(
+        _publish_pipeline_task(
+            type(self).__name__,
+            image_id,
             "image.generate_embedding",
-            args=[image_id],
             queue="openclip",
             priority=9,
         )
@@ -137,17 +165,21 @@ class EmbeddingTaskPublisher:
 
 class ProvisionalEmbeddingTaskPublisher:
     def publish(self, image_id: str) -> None:
-        celery_app.send_task(
+        _publish_pipeline_task(
+            type(self).__name__,
+            image_id,
             "image.generate_embedding",
-            args=[image_id],
             queue="openclip",
             priority=5,
+            lease_publisher_name="EmbeddingTaskPublisher",
         )
 
 
 class MatchTaskPublisher:
     def publish(self, image_id: str) -> None:
-        celery_app.send_task("image.match_library", args=[image_id], queue="matching")
+        _publish_pipeline_task(
+            type(self).__name__, image_id, "image.match_library", queue="matching"
+        )
 
 
 class LibraryAssetTaskPublisher:
@@ -162,24 +194,24 @@ class LibraryAssetTaskPublisher:
 
 class EnhancementTaskPublisher:
     def publish(self, image_id: str) -> None:
-        celery_app.send_task("image.enhance", args=[image_id], queue="enhance")
+        _publish_pipeline_task(type(self).__name__, image_id, "image.enhance", queue="enhance")
 
 
 class BeautifyPlanTaskPublisher:
     def publish(self, image_id: str) -> None:
-        celery_app.send_task(
-            "image.plan_beautify", args=[image_id], queue="beautify_plan"
+        _publish_pipeline_task(
+            type(self).__name__, image_id, "image.plan_beautify", queue="beautify_plan"
         )
 
 
 class RankingTaskPublisher:
     def publish(self, job_id: str) -> None:
-        celery_app.send_task("image.rank_job", args=[job_id], queue="control")
+        _publish_pipeline_task(type(self).__name__, job_id, "image.rank_job", queue="control")
 
 
 class CallbackTaskPublisher:
     def publish(self, job_id: str) -> None:
-        celery_app.send_task("image.deliver_callback", args=[job_id], queue="control")
+        celery_app.send_task("image.deliver_callback", args=[job_id], queue="callback")
 
 
 CeleryMetadataTaskPublisher = MetadataTaskPublisher

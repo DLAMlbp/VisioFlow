@@ -19,7 +19,7 @@ from src.workers.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(name="image.deliver_callback", queue="control", max_retries=0)
+@celery_app.task(name="image.deliver_callback", queue="callback", max_retries=0)
 def deliver_job_callback(job_id: str) -> None:
     asyncio.run(_deliver_job_callback(job_id))
 
@@ -82,7 +82,7 @@ async def _deliver_job_callback(job_id: str) -> None:
         )
 
 
-@celery_app.task(name="maintenance.recover_pending_callbacks", queue="control", max_retries=0)
+@celery_app.task(name="maintenance.recover_pending_callbacks", queue="callback", max_retries=0)
 def recover_pending_callbacks() -> None:
     asyncio.run(_recover_pending_callbacks())
 

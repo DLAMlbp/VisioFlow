@@ -24,6 +24,7 @@ _ALL_TASK_IMPORTS = (
 
 _ROLE_TASK_IMPORTS: dict[str, tuple[str, ...]] = {
     "control": ("src.workers.control", "src.workers.callbacks"),
+    "callback": ("src.workers.callbacks",),
     "preprocess": ("src.workers.preprocess",),
     # The combined path only uses classification. The legacy filtering task is
     # registered here as a rollback queue without keeping another container.
@@ -85,7 +86,7 @@ celery_app.conf.beat_schedule = {
     "recover-pending-callbacks": {
         "task": "maintenance.recover_pending_callbacks",
         "schedule": settings.callback_recovery_interval_seconds,
-        "options": {"queue": "control"},
+        "options": {"queue": "callback"},
     },
 }
 
@@ -128,8 +129,10 @@ def mark_pipeline_recovery_lease_started(task=None, args=None, **_kwargs) -> Non
 
 
 @task_postrun.connect
-def release_pipeline_recovery_lease(task=None, args=None, **_kwargs) -> None:
+def release_pipeline_recovery_lease(task=None, args=None, state=None, **_kwargs) -> None:
     if task is None or not args:
+        return
+    if state == "RETRY":
         return
     from src.services.jobs.dispatch import release_recovery_lease_for_task
 
