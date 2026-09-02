@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ResultImage } from "../types";
-import { downloadResultImages, getDownloadableResultCount } from "./download";
+import { downloadResultArchive, getDownloadableResultCount } from "./download";
 
 function makeImage(overrides: Partial<ResultImage> = {}): ResultImage {
   return {
@@ -18,33 +18,39 @@ function makeImage(overrides: Partial<ResultImage> = {}): ResultImage {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("result image downloads", () => {
-  it("triggers the preferred full-size URL in the original click task", () => {
+  it("downloads one ZIP archive", () => {
     const clicked: Array<{ href: string; download: string }> = [];
+    vi.stubGlobal("URL", {
+      createObjectURL: vi.fn(() => "blob:archive"),
+      revokeObjectURL: vi.fn()
+    });
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
       clicked.push({ href: this.href, download: this.download });
     });
 
-    const count = downloadResultImages([
-      makeImage({
-        original_download_url: "https://storage.test/original.jpg",
-        enhanced_download_url: "https://storage.test/enhanced.jpg"
-      })
-    ]);
+    downloadResultArchive(new Blob(["zip"]), "job_test_enhanced_images.zip");
 
-    expect(count).toBe(1);
     expect(clicked).toEqual([{
-      href: "https://storage.test/enhanced.jpg",
-      download: "image-01.jpg"
+      href: "blob:archive",
+      download: "job_test_enhanced_images.zip"
     }]);
   });
 
-  it("counts only results that have a downloadable URL", () => {
+  it("counts only selected and non-expired results", () => {
     expect(getDownloadableResultCount([
       makeImage(),
-      makeImage({ image_id: "image-02", original_url: "https://storage.test/preview.jpg" })
+      makeImage({
+        image_id: "image-02",
+        decision: "rejected"
+      }),
+      makeImage({
+        image_id: "image-03",
+        files_expired: true
+      })
     ])).toBe(1);
   });
 });

@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Annotated
 
 from fastapi import Depends
@@ -56,6 +58,12 @@ class JobNotFound(AppError):
 
 class InvalidJobRequest(AppError):
     code = "INVALID_JOB_REQUEST"
+
+
+@dataclass(frozen=True)
+class SelectedImageDownload:
+    object_key: str
+    archive_filename: str
 
 
 class ImageJobService:
@@ -474,6 +482,37 @@ class ImageJobService:
             + terminal
         )
         return min(99, max(0, int(weighted / total * 100)))
+
+    async def get_selected_downloads(
+        self, job_id: str, image_ids: list[str] | None = None
+    ) -> list[SelectedImageDownload]:
+        if await self.repository.get_progress_snapshot(job_id) is None:
+            raise JobNotFound("Job 不存在")
+        _, items = await self.repository.list_result_items(
+            job_id,
+            limit=self.settings.max_images_per_job,
+            offset=0,
+            decision="selected",
+        )
+        requested_ids = set(image_ids) if image_ids is not None else None
+        downloads: list[SelectedImageDownload] = []
+        for index, item in enumerate(items, start=1):
+            if requested_ids is not None and item.id not in requested_ids:
+                continue
+            result = item.result
+            enhanced_key = result.enhanced_object_key if result is not None else None
+            if not enhanced_key or item.purged_at is not None:
+                continue
+            source_name = str(item.client_object_key or item.object_key).replace("\\", "/")
+            filename = PurePosixPath(source_name).name.rsplit(".", 1)[0].strip()
+            filename = "".join(char for char in filename if char.isprintable()).strip()
+            downloads.append(
+                SelectedImageDownload(
+                    object_key=enhanced_key,
+                    archive_filename=f"{index:03d}_{filename or item.id}.jpg",
+                )
+            )
+        return downloads
 
     async def cancel_job(self, job_id: str) -> ImageJobProgressResponse:
         if not await self.repository.cancel_job(job_id):

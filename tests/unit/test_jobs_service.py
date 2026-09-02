@@ -16,6 +16,7 @@ from src.services.jobs.service import (
     ImageJobService,
     InvalidJobRequest,
     JobNotFound,
+    SelectedImageDownload,
     _beautify_response,
     _classification_response,
 )
@@ -386,6 +387,57 @@ async def test_get_progress_raises_for_missing_job() -> None:
 
     with pytest.raises(JobNotFound):
         await service.get_progress("job_missing")
+
+
+@pytest.mark.asyncio
+async def test_get_selected_downloads_only_returns_retained_enhanced_images() -> None:
+    selected = ImageItem(id="img_selected", job_id="job_download", object_key="uploads/source.jpg")
+    selected.client_object_key = "uploads/2026/09/02/客厅 原图.png"
+    selected.result = ImageResult(
+        id="res_selected",
+        image_id=selected.id,
+        decision="selected",
+        enhanced_object_key="enhanced/job_download/img_selected.jpg",
+    )
+    rejected = ImageItem(id="img_rejected", job_id="job_download", object_key="uploads/rejected.jpg")
+    rejected.result = ImageResult(id="res_rejected", image_id=rejected.id, decision="rejected")
+    missing_enhanced = ImageItem(id="img_missing", job_id="job_download", object_key="uploads/missing.jpg")
+    missing_enhanced.result = ImageResult(
+        id="res_missing", image_id=missing_enhanced.id, decision="selected"
+    )
+    expired = ImageItem(id="img_expired", job_id="job_download", object_key="uploads/expired.jpg")
+    expired.purged_at = datetime.now(UTC)
+    expired.result = ImageResult(
+        id="res_expired",
+        image_id=expired.id,
+        decision="selected",
+        enhanced_object_key="enhanced/job_download/img_expired.jpg",
+    )
+    job = ImageJob(
+        id="job_download",
+        status="completed",
+        filter_profile_id="filter",
+        beautify_profile_id="beautify",
+        enhance_level=1,
+        max_selected=4,
+        total_count=4,
+        processed_count=4,
+        selected_count=3,
+        rejected_count=1,
+        items=[selected, rejected, missing_enhanced, expired],
+    )
+    repository = FakeJobRepository()
+    repository.jobs[job.id] = job
+    service = ImageJobService(repository=repository, settings=Settings(max_images_per_job=50))
+
+    downloads = await service.get_selected_downloads(job.id, [selected.id, rejected.id, expired.id])
+
+    assert downloads == [
+        SelectedImageDownload(
+            object_key="enhanced/job_download/img_selected.jpg",
+            archive_filename="001_客厅 原图.jpg",
+        )
+    ]
 
 
 @pytest.mark.asyncio

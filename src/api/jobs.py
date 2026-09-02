@@ -1,6 +1,12 @@
-from typing import Annotated
+from collections.abc import Iterator
+from tempfile import TemporaryFile
+from typing import Annotated, BinaryIO
+from zipfile import ZIP_STORED, ZipFile
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from src.schemas.jobs import (
     CreateImageJobRequest,
@@ -15,9 +21,14 @@ from src.services.jobs.service import (
     JobNotFound,
     get_job_service,
 )
+from src.services.storage.factory import get_storage_provider
 
 router = APIRouter()
 JobServiceDep = Annotated[ImageJobService, Depends(get_job_service)]
+
+
+class SelectedImageArchiveRequest(BaseModel):
+    image_ids: list[str] | None = Field(default=None, max_length=100)
 
 
 @router.post("", response_model=CreateImageJobResponse, status_code=status.HTTP_201_CREATED)
@@ -78,6 +89,47 @@ async def get_image_job_results(
         )
     except JobNotFound as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
+
+
+@router.post("/{job_id}/downloads/selected")
+async def download_selected_images(
+    job_id: str,
+    payload: SelectedImageArchiveRequest,
+    service: JobServiceDep,
+) -> StreamingResponse:
+    try:
+        downloads = await service.get_selected_downloads(job_id, payload.image_ids)
+    except JobNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
+    if not downloads:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="没有可下载的美化图片")
+
+    archive = TemporaryFile(mode="w+b")
+    try:
+        storage = get_storage_provider()
+        with ZipFile(archive, mode="w", compression=ZIP_STORED) as zip_file:
+            for download in downloads:
+                zip_file.writestr(download.archive_filename, await storage.download(download.object_key))
+        archive.seek(0)
+    except Exception as exc:
+        archive.close()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="部分美化图片暂时无法下载，请稍后重试",
+        ) from exc
+
+    filename = f"{job_id}_enhanced_images.zip"
+    return StreamingResponse(
+        _read_archive_chunks(archive),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        background=BackgroundTask(archive.close),
+    )
+
+
+def _read_archive_chunks(archive: BinaryIO, chunk_size: int = 1024 * 1024) -> Iterator[bytes]:
+    while chunk := archive.read(chunk_size):
+        yield chunk
 
 
 @router.post("/{job_id}/cancel", response_model=ImageJobProgressResponse)

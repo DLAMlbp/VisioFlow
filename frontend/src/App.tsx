@@ -47,7 +47,7 @@ import type {
   UploadItem
 } from "./types";
 import { decisionLabel, isTerminalStatus, processingReasons, rejectCodeLabel, statusLabel } from "./utils/decision";
-import { downloadResultImages, getDownloadableResultCount, getResultDownloadFilename, getResultDownloadUrl } from "./utils/download";
+import { downloadResultArchive, getDownloadableResultCount } from "./utils/download";
 import { createClientId } from "./utils/id";
 
 const MAX_IMAGES = 500;
@@ -777,7 +777,13 @@ function App() {
                 <span className="delivery-icon"><Check size={32} aria-hidden="true" /></span>
                 <p>处理流程已完成，可以下载交付文件。</p>
                 <div className="delivery-metrics"><Metric label="总图片" value={results?.summary.total ?? 0} /><Metric label="保留并美化" value={results?.summary.selected ?? 0} tone="selected" /><Metric label="过滤未通过" value={results?.summary.rejected ?? 0} tone="rejected" /><Metric label="合格未入选" value={results?.summary.not_selected ?? 0} /></div>
-                <DownloadAction images={results?.images ?? []} className="primary-inline delivery-download" label="下载当前结果" iconSize={17} />
+                <DownloadAction
+                  jobId={results?.job_id ?? ""}
+                  className="primary-inline delivery-download"
+                  label="下载全部美化图片"
+                  iconSize={17}
+                  expectedCount={results?.summary.selected ?? 0}
+                />
                 <button className="ghost-button" type="button" onClick={resetWorkspace}>创建新任务</button>
               </div>
             </>}
@@ -865,7 +871,14 @@ function ResultsPanel({
             <button key={value} className={resultFilter === value ? "active" : ""} type="button" role="tab" aria-selected={resultFilter === value} onClick={() => onFilterChange(value as ResultFilter)}>{label}</button>
           ))}
         </div>
-        <DownloadAction images={visibleResults} className="page-download-button" label="下载本页" iconSize={15} />
+        <DownloadAction
+          jobId={results.job_id}
+          imageIds={visibleResults.map((image) => image.image_id)}
+          className="page-download-button"
+          label="下载本页"
+          iconSize={15}
+          expectedCount={getDownloadableResultCount(visibleResults)}
+        />
       </div>
       <div className="result-grid">
         {visibleResults.map((image) => <ResultCard key={image.image_id} image={image} active={false} onOpen={() => onSelectImage(image)} />)}
@@ -1723,33 +1736,43 @@ function matchOutcomeLabel(result?: SimilarityTaggingResult, status?: string | n
   return stageStatusLabel(status);
 }
 
-function DownloadAction({ images, className, label, iconSize }: {
-  images: ResultImage[];
+function DownloadAction({ jobId, imageIds, className, label, iconSize, expectedCount }: {
+  jobId: string;
+  imageIds?: string[];
   className: string;
   label: string;
   iconSize: number;
+  expectedCount?: number;
 }) {
-  const total = getDownloadableResultCount(images);
+  const total = expectedCount ?? 0;
   const [feedback, setFeedback] = useState<string | null>(null);
-  const singleImage = total === 1 ? images.find((image) => getResultDownloadUrl(image)) : undefined;
-  const singleUrl = singleImage ? getResultDownloadUrl(singleImage) : undefined;
+  const [downloading, setDownloading] = useState(false);
 
-  function reportDownloadStarted(count: number) {
-    setFeedback(`已开始下载 ${count} 张图片。`);
+  async function startDownload() {
+    setDownloading(true);
+    setFeedback(null);
+    try {
+      const archive = await api.downloadSelectedResultsArchive(jobId, imageIds);
+      downloadResultArchive(archive, `${jobId}_enhanced_images.zip`);
+      setFeedback(`已开始下载 ${total} 张美化图片压缩包。`);
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : "准备下载文件失败。");
+    } finally {
+      setDownloading(false);
+    }
   }
 
   return <div className="download-action">
-    {singleImage && singleUrl ? <a
-      className={className}
-      href={singleUrl}
-      download={getResultDownloadFilename(singleImage, singleUrl)}
-      onClick={() => reportDownloadStarted(1)}
-    ><ArrowDownToLine size={iconSize} aria-hidden="true" />{label}</a> : <button
+    <button
       className={className}
       type="button"
-      disabled={!total}
-      onClick={() => reportDownloadStarted(downloadResultImages(images))}
-    ><ArrowDownToLine size={iconSize} aria-hidden="true" />{label}</button>}
+      disabled={!jobId || !total || downloading}
+      onClick={() => void startDownload()}
+    >{downloading
+      ? <Loader2 className="spin" size={iconSize} aria-hidden="true" />
+      : <ArrowDownToLine size={iconSize} aria-hidden="true" />}
+      {downloading ? "正在准备下载" : label}
+    </button>
     {feedback && <span className="download-feedback success" role="status">{feedback}</span>}
   </div>;
 }

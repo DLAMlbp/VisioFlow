@@ -25,6 +25,7 @@ import type {
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 const REQUEST_TIMEOUT_MS = 30_000;
+const DOWNLOAD_REQUEST_TIMEOUT_MS = 5 * 60_000;
 const LIBRARY_ASSET_PAGE_SIZE = 200;
 
 interface BackendResultImage {
@@ -112,6 +113,42 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
+}
+
+async function requestBlob(path: string, init?: RequestInit): Promise<Blob> {
+  const headers = new Headers(init?.headers);
+  if (init?.body) headers.set("Content-Type", "application/json");
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), DOWNLOAD_REQUEST_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      headers,
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("压缩包准备超时，请稍后重试");
+    }
+    throw new Error("无法连接服务，请确认正式后端已启动");
+  } finally {
+    window.clearTimeout(timeout);
+  }
+
+  if (!response.ok) {
+    const raw = await response.text();
+    let detail = raw;
+    try {
+      const payload = JSON.parse(raw) as { detail?: string; message?: string };
+      detail = payload.detail ?? payload.message ?? raw;
+    } catch {
+      // Keep the plain-text response when the server did not return JSON.
+    }
+    throw new Error(detail || `请求失败：${response.status}`);
+  }
+
+  return response.blob();
 }
 
 export const api = {
@@ -235,6 +272,12 @@ export const api = {
           offset: result.offset,
           images
         };
+      },
+      downloadSelectedResultsArchive(jobId: string, imageIds?: string[]): Promise<Blob> {
+        return requestBlob(`/api/v1/image/jobs/${jobId}/downloads/selected`, {
+          method: "POST",
+          body: JSON.stringify({ image_ids: imageIds })
+        });
       },
       cancelJob(jobId: string): Promise<JobProgress> {
         return request<JobProgress>(`/api/v1/image/jobs/${jobId}/cancel`, { method: "POST" });

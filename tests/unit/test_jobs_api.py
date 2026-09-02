@@ -1,3 +1,6 @@
+from io import BytesIO
+from zipfile import ZipFile
+
 from fastapi.testclient import TestClient
 
 from src.api.jobs import get_job_service
@@ -9,6 +12,7 @@ from src.schemas.jobs import (
     ImageJobProgressResponse,
     ImageJobResultsResponse,
 )
+from src.services.jobs.service import SelectedImageDownload
 
 
 class FakeJobService:
@@ -49,6 +53,21 @@ class FakeJobService:
 
     async def list_history(self, limit: int, offset: int):
         return ImageJobHistoryResponse(total=1, limit=limit, offset=offset, items=[])
+
+    async def get_selected_downloads(self, job_id: str, image_ids: list[str] | None = None):
+        downloads = [
+            SelectedImageDownload(
+                object_key="enhanced/job_test/image-1.jpg",
+                archive_filename="001_living-room.jpg",
+            ),
+            SelectedImageDownload(
+                object_key="enhanced/job_test/image-2.jpg",
+                archive_filename="002_kitchen.jpg",
+            ),
+        ]
+        if image_ids is None:
+            return downloads
+        return downloads[:1] if "img_1" in image_ids else []
 
 
 class NotFoundJobService(FakeJobService):
@@ -165,3 +184,57 @@ def test_get_image_job_results_returns_final_summary() -> None:
     assert response.status_code == 200
     assert response.json()["selected"] == 1
     assert response.json()["rejected"] == 1
+
+
+def test_download_selected_images_returns_one_zip_with_enhanced_files(
+    monkeypatch,
+) -> None:
+    class FakeStorage:
+        def __init__(self) -> None:
+            self.downloaded_keys: list[str] = []
+
+        async def download(self, object_key: str) -> bytes:
+            self.downloaded_keys.append(object_key)
+            return {"enhanced/job_test/image-1.jpg": b"enhanced-one"}[object_key]
+
+    storage = FakeStorage()
+    monkeypatch.setattr("src.api.jobs.get_storage_provider", lambda: storage)
+    app.dependency_overrides[get_job_service] = lambda: FakeJobService()
+    app.dependency_overrides[get_settings] = lambda: Settings(api_key="test-api-key")
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/image/jobs/job_test/downloads/selected",
+        json={"image_ids": ["img_1", "rejected-image"]},
+        headers={"X-API-Key": "test-api-key"},
+    )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/zip")
+    assert storage.downloaded_keys == ["enhanced/job_test/image-1.jpg"]
+    with ZipFile(BytesIO(response.content)) as archive:
+        assert archive.namelist() == ["001_living-room.jpg"]
+        assert archive.read("001_living-room.jpg") == b"enhanced-one"
+
+
+def test_download_selected_images_rejects_empty_archive() -> None:
+    class EmptyDownloadService(FakeJobService):
+        async def get_selected_downloads(self, job_id: str, image_ids: list[str] | None = None):
+            return []
+
+    app.dependency_overrides[get_job_service] = lambda: EmptyDownloadService()
+    app.dependency_overrides[get_settings] = lambda: Settings(api_key="test-api-key")
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/image/jobs/job_test/downloads/selected",
+        json={},
+        headers={"X-API-Key": "test-api-key"},
+    )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "没有可下载的美化图片"
