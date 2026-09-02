@@ -50,7 +50,10 @@ function Invoke-RemoteBash {
         [string[]]$Arguments = @()
     )
 
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Script))
+    # A clean Windows checkout may use CRLF. Normalize before sending the
+    # script to Bash so shell options and here-doc delimiters remain valid.
+    $normalizedScript = $Script.Replace("`r`n", "`n").Replace("`r", "`n")
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($normalizedScript))
     $remoteArguments = ($Arguments | ForEach-Object { ConvertTo-BashLiteral $_ }) -join " "
     $remoteCommand = "printf '%s' '$encoded' | base64 -d | bash -s -- $remoteArguments"
     & ssh @script:SshArguments $script:RemoteTarget $remoteCommand
