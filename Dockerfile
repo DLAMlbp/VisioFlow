@@ -1,34 +1,18 @@
-FROM python:3.12.11-slim-bookworm
+ARG RUNTIME_BASE=ghcr.io/zuixi01/tuxiangshibie-api@sha256:6ecb52b7792794e9f2a5a8c433dcd8b9c25ffbad9bcb071eaf058200618d2c24
+FROM ${RUNTIME_BASE}
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    HF_HOME=/opt/model-cache/huggingface \
-    HF_HUB_DISABLE_XET=1
+USER root
 
-WORKDIR /app
+# The pinned runtime base already contains Python, application dependencies,
+# PyTorch and the offline OpenCLIP model cache. A normal release only replaces
+# application-owned files, so production hosts reuse the expensive base layers.
+RUN rm -rf /app/src /app/profiles /app/alembic /app/alembic.ini
 
-COPY pyproject.toml ./
-COPY docker/package-placeholder/README.md ./README.md
-COPY docker/package-placeholder/src ./src
-RUN pip install --no-cache-dir \
-      --index-url https://download.pytorch.org/whl/cpu \
-      torch==2.8.0 torchvision==0.23.0 \
-    && pip install --no-cache-dir . \
-    && python -c "import open_clip; open_clip.create_model_and_transforms('ViT-B-32', pretrained='laion2b_s34b_b79k', device='cpu')" \
-    && rm -rf /app/src
+COPY --chown=app:app src /app/src
+COPY --chown=app:app profiles /app/profiles
+COPY --chown=app:app alembic.ini /app/alembic.ini
+COPY --chown=app:app alembic /app/alembic
 
-RUN groupadd --system app && useradd --system --gid app --home-dir /app app \
-    && chown app:app /app
-
-# Application changes stay above the expensive dependency/model layer so a
-# normal release does not redownload PyTorch or OpenCLIP weights.
-COPY --chown=app:app src ./src
-COPY --chown=app:app profiles ./profiles
-COPY --chown=app:app alembic.ini ./
-COPY --chown=app:app alembic ./alembic
-
-# Runtime containers are intentionally offline for model loading. The immutable
-# image must contain all weights so a processing job never blocks on a download.
 ENV HF_HUB_OFFLINE=1
 
 USER app
