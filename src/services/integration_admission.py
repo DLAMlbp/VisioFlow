@@ -20,6 +20,13 @@ _PIPELINE_QUEUES = (
     "matching",
 )
 
+# Kombu's Redis transport stores priority 0 in the logical queue and higher
+# priorities in lists named ``<queue>\x06\x16<priority>``.  Older project
+# releases used ``<queue>:<priority>`` in operational scripts, so include both
+# physical layouts while those keys can still exist in persistent Redis.
+_REDIS_PRIORITY_SEPARATOR = "\x06\x16"
+_LEGACY_PRIORITY_SEPARATOR = ":"
+
 _TOKEN_BUCKET_SCRIPT = """
 local key = KEYS[1]
 local now_ms = tonumber(ARGV[1])
@@ -132,6 +139,7 @@ def _pipeline_queue_depth(client: Redis) -> int:
     pipeline = client.pipeline(transaction=False)
     for queue in _PIPELINE_QUEUES:
         pipeline.llen(queue)
-        for priority in range(10):
-            pipeline.llen(f"{queue}:{priority}")
+        for priority in range(1, 10):
+            pipeline.llen(f"{queue}{_REDIS_PRIORITY_SEPARATOR}{priority}")
+            pipeline.llen(f"{queue}{_LEGACY_PRIORITY_SEPARATOR}{priority}")
     return sum(int(value or 0) for value in pipeline.execute())

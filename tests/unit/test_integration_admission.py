@@ -54,13 +54,32 @@ def test_admission_accepts_burst_below_queue_limit() -> None:
 
 
 def test_admission_rejects_when_pipeline_would_exceed_limit() -> None:
-    client = FakeRedis(queue_lengths={"classification": 95})
+    client = FakeRedis(
+        queue_lengths={
+            "classification\x06\x169": 60,
+            "classification:4": 35,
+        }
+    )
 
     with pytest.raises(IntegrationAdmissionRejected) as raised:
         enforce_integration_admission(settings(), 10, client=client)
 
     assert raised.value.retry_after_seconds == 300
     assert raised.value.queue_depth == 95
+
+
+def test_admission_counts_kombu_and_legacy_priority_lists() -> None:
+    client = FakeRedis(
+        queue_lengths={
+            "preprocess": 1,
+            "preprocess\x06\x163": 2,
+            "preprocess:6": 4,
+        }
+    )
+
+    snapshot = enforce_integration_admission(settings(), 1, client=client)
+
+    assert snapshot.queue_depth == 7
 
 
 def test_admission_returns_token_bucket_retry_delay() -> None:
