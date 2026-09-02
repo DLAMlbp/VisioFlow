@@ -21,6 +21,7 @@ _RECOVERY_TASK_PUBLISHERS = {
     "image.analyze_content": "AnalysisTaskPublisher",
     "image.generate_embedding": "EmbeddingTaskPublisher",
     "image.match_library": "MatchTaskPublisher",
+    "image.deliver_callback": "CallbackTaskPublisher",
 }
 
 
@@ -33,14 +34,19 @@ def recovery_lease_redis() -> Redis:
     return Redis.from_url(get_settings().redis_url, decode_responses=True)
 
 
-def acquire_recovery_lease(publisher_name: str, entity_id: str) -> bool:
+def acquire_recovery_lease(
+    publisher_name: str,
+    entity_id: str,
+    *,
+    lease_seconds: int | None = None,
+) -> bool:
     try:
         return bool(
             recovery_lease_redis().set(
                 recovery_lease_key(publisher_name, entity_id),
                 "queued",
                 nx=True,
-                ex=get_settings().pipeline_recovery_lease_seconds,
+                ex=lease_seconds or get_settings().pipeline_recovery_lease_seconds,
             )
         )
     except RedisError:
@@ -97,10 +103,16 @@ def _publish_pipeline_task(
     *,
     queue: str,
     lease_publisher_name: str | None = None,
+    lease_seconds: int | None = None,
     **options,
 ) -> None:
     lease_name = lease_publisher_name or publisher_name
-    if not acquire_recovery_lease(lease_name, entity_id):
+    acquired = (
+        acquire_recovery_lease(lease_name, entity_id)
+        if lease_seconds is None
+        else acquire_recovery_lease(lease_name, entity_id, lease_seconds=lease_seconds)
+    )
+    if not acquired:
         return
     try:
         celery_app.send_task(task_name, args=[entity_id], queue=queue, **options)
@@ -211,7 +223,13 @@ class RankingTaskPublisher:
 
 class CallbackTaskPublisher:
     def publish(self, job_id: str) -> None:
-        celery_app.send_task("image.deliver_callback", args=[job_id], queue="callback")
+        _publish_pipeline_task(
+            type(self).__name__,
+            job_id,
+            "image.deliver_callback",
+            queue="callback",
+            lease_seconds=get_settings().pipeline_stale_seconds,
+        )
 
 
 CeleryMetadataTaskPublisher = MetadataTaskPublisher
