@@ -12,6 +12,7 @@ from src.schemas.jobs import (
     ImageJobResultsResponse,
 )
 from src.services.integration_urls import StagedIntegrationImage
+from src.services.integration_admission import IntegrationAdmissionRejected
 from src.services.storage.interfaces import StorageProvider
 
 
@@ -273,6 +274,47 @@ def test_integration_job_accepts_customer_image_urls(monkeypatch) -> None:
     ]
     assert jobs.payload.filter_route.completion_profile == "completion_renovation_v1"
     assert jobs.payload.beautify_profile == "integration_natural_v1"
+
+
+def test_integration_job_returns_429_before_downloading_images(monkeypatch) -> None:
+    staged = False
+
+    async def fake_stage(*_args, **_kwargs):
+        nonlocal staged
+        staged = True
+        return []
+
+    def reject(_settings, _image_count):
+        raise IntegrationAdmissionRejected(
+            "图片处理队列繁忙，请稍后重试",
+            retry_after_seconds=300,
+            queue_depth=100,
+        )
+
+    monkeypatch.setattr("src.api.integration.stage_integration_urls", fake_stage)
+    monkeypatch.setattr("src.api.integration.enforce_integration_admission", reject)
+    app.dependency_overrides[get_storage_provider] = lambda: FakeStorageProvider()
+    app.dependency_overrides[get_job_service] = lambda: FakeJobService()
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        integration_api_key="test-integration-key",
+        integration_admission_enabled=True,
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/integration/jobs",
+        json={
+            "notifyUrl": "https://client.test/callback",
+            "images": [{"objectKey": "a.jpg", "imageUrl": "https://obs.test/a.jpg"}],
+        },
+        headers={"X-API-Key": "test-integration-key"},
+    )
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "300"
+    assert response.headers["x-pipeline-queue-depth"] == "100"
+    assert staged is False
 
 
 def test_customer_legacy_submit_path_accepts_same_url_contract(monkeypatch) -> None:
