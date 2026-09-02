@@ -24,6 +24,7 @@ COPY --chown=app:app src ./src
 COPY --chown=app:app profiles ./profiles
 COPY --chown=app:app alembic.ini ./
 COPY --chown=app:app alembic ./alembic
+COPY --chown=app:app scripts/dedupe_celery_queue.py ./scripts/dedupe_celery_queue.py
 
 # Runtime containers are intentionally offline for model loading. The immutable
 # image must contain all weights so a processing job never blocks on a download.

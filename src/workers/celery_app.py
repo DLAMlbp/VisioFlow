@@ -2,7 +2,7 @@ import logging
 import os
 
 from celery import Celery
-from celery.signals import worker_process_init, worker_ready
+from celery.signals import task_postrun, task_prerun, worker_process_init, worker_ready
 
 from src.core.config import get_settings
 
@@ -116,3 +116,21 @@ def prewarm_embedding_solo_worker(**_kwargs) -> None:
     # The production OpenCLIP worker uses the solo pool so the Celery parent
     # does not keep a second Python/Torch runtime beside a single child.
     _prewarm_embedding_model()
+
+
+@task_prerun.connect
+def mark_pipeline_recovery_lease_started(task=None, args=None, **_kwargs) -> None:
+    if task is None or not args:
+        return
+    from src.services.jobs.dispatch import mark_recovery_lease_started
+
+    mark_recovery_lease_started(task.name, str(args[0]))
+
+
+@task_postrun.connect
+def release_pipeline_recovery_lease(task=None, args=None, **_kwargs) -> None:
+    if task is None or not args:
+        return
+    from src.services.jobs.dispatch import release_recovery_lease_for_task
+
+    release_recovery_lease_for_task(task.name, str(args[0]))

@@ -49,6 +49,7 @@ import type {
 import { decisionLabel, isTerminalStatus, processingReasons, rejectCodeLabel, statusLabel } from "./utils/decision";
 import { downloadResultArchive, getDownloadableResultCount } from "./utils/download";
 import { createClientId } from "./utils/id";
+import { workflowStageState } from "./utils/workflowProgress";
 
 const MAX_IMAGES = 500;
 const MAX_IMAGE_SIZE_MB = 25;
@@ -751,10 +752,10 @@ function App() {
               </div>
               <div className="processing-stages">
                 {["上传校验", "标准分类", "规则过滤", "逐图美化", "内容与向量", "素材匹配", "汇总结果"].map((label, index) => {
-                  const progress = job?.progress ?? (busy ? 8 : 0);
-                  const threshold = [5, 18, 34, 54, 72, 88, 96][index];
-                  const done = progress >= threshold;
-                  const active = !done && (index === 0 || progress >= [0, 5, 18, 34, 54, 72, 88][index]);
+                  const state = job
+                    ? workflowStageState(job, index)
+                    : { done: false, active: busy && index === 0 };
+                  const { done, active } = state;
                   return <div key={label} className={`${done ? "done" : ""} ${active ? "active" : ""}`}><span>{done ? <Check size={15} /> : index + 1}</span><strong>{label}</strong></div>;
                 })}
               </div>

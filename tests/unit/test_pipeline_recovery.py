@@ -72,3 +72,47 @@ def test_final_embedding_overtakes_provisional_and_library_work(monkeypatch) -> 
         ("image.generate_embedding", 9),
         ("library.process_asset", 1),
     ]
+
+
+def test_recovery_publish_uses_cross_run_lease(monkeypatch) -> None:
+    published: list[str] = []
+    acquired: list[tuple[str, str]] = []
+
+    class Publisher:
+        def publish(self, entity_id: str) -> None:
+            published.append(entity_id)
+
+    def acquire(publisher_name: str, entity_id: str) -> bool:
+        acquired.append((publisher_name, entity_id))
+        return entity_id == "new"
+
+    monkeypatch.setattr(cleanup, "acquire_recovery_lease", acquire)
+
+    cleanup._publish_many(Publisher(), ["already-queued", "new"])
+
+    assert acquired == [("Publisher", "already-queued"), ("Publisher", "new")]
+    assert published == ["new"]
+
+
+def test_recovery_publish_releases_lease_when_broker_publish_fails(monkeypatch) -> None:
+    released: list[tuple[str, str]] = []
+
+    class BrokenPublisher:
+        def publish(self, _entity_id: str) -> None:
+            raise RuntimeError("broker unavailable")
+
+    monkeypatch.setattr(cleanup, "acquire_recovery_lease", lambda *_args: True)
+    monkeypatch.setattr(
+        cleanup,
+        "release_recovery_lease",
+        lambda publisher_name, entity_id: released.append((publisher_name, entity_id)),
+    )
+
+    try:
+        cleanup._publish_many(BrokenPublisher(), ["img_test"])
+    except RuntimeError as exc:
+        assert str(exc) == "broker unavailable"
+    else:
+        raise AssertionError("publish failure was not propagated")
+
+    assert released == [("BrokenPublisher", "img_test")]

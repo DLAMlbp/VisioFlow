@@ -12,6 +12,7 @@ COPY --chown=app:app src /app/src
 COPY --chown=app:app profiles /app/profiles
 COPY --chown=app:app alembic.ini /app/alembic.ini
 COPY --chown=app:app alembic /app/alembic
+COPY --chown=app:app scripts/dedupe_celery_queue.py /app/scripts/dedupe_celery_queue.py
 
 ENV HF_HUB_OFFLINE=1
 

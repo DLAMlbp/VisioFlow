@@ -24,6 +24,8 @@ from src.services.jobs.dispatch import (
     MetadataTaskPublisher,
     RankingTaskPublisher,
     RoutedProcessingTaskPublisher,
+    acquire_recovery_lease,
+    release_recovery_lease,
 )
 from src.services.storage.factory import get_storage_provider
 from src.workers.celery_app import celery_app
@@ -524,5 +526,12 @@ async def _reset_substage(
 
 
 def _publish_many(publisher, entity_ids: list[str]) -> None:
+    publisher_name = type(publisher).__name__
     for entity_id in entity_ids:
-        publisher.publish(entity_id)
+        if not acquire_recovery_lease(publisher_name, entity_id):
+            continue
+        try:
+            publisher.publish(entity_id)
+        except Exception:
+            release_recovery_lease(publisher_name, entity_id)
+            raise

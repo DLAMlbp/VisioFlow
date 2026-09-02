@@ -111,6 +111,7 @@ class Settings(BaseSettings):
     cleanup_interval_seconds: int = 3600
     pipeline_recovery_interval_seconds: int = 300
     pipeline_stale_seconds: int = 900
+    pipeline_recovery_lease_seconds: int = Field(default=86400, ge=3600, le=604800)
 
     @model_validator(mode="after")
     def validate_production_configuration(self):
