@@ -155,12 +155,70 @@ def test_retry_keeps_pipeline_recovery_lease(monkeypatch) -> None:
 
 def test_callback_publisher_uses_dedicated_queue(monkeypatch) -> None:
     calls: list[tuple[str, str]] = []
+    leases: list[tuple[str, str, int | None]] = []
+    monkeypatch.setattr(
+        dispatch,
+        "acquire_recovery_lease",
+        lambda publisher_name, entity_id, *, lease_seconds=None: (
+            leases.append((publisher_name, entity_id, lease_seconds)) or True
+        ),
+    )
+    monkeypatch.setattr(
+        dispatch,
+        "get_settings",
+        lambda: type("Settings", (), {"pipeline_stale_seconds": 900})(),
+    )
     monkeypatch.setattr(
         dispatch.celery_app,
         "send_task",
-        lambda name, *, args, queue: calls.append((name, queue)),
+        lambda name, *, args, queue, **_kwargs: calls.append((name, queue)),
     )
 
     dispatch.CallbackTaskPublisher().publish("job_test")
 
     assert calls == [("image.deliver_callback", "callback")]
+    assert leases == [("CallbackTaskPublisher", "job_test", 900)]
+
+
+def test_duplicate_callback_publish_is_suppressed(monkeypatch) -> None:
+    published: list[str] = []
+    acquired = False
+
+    def acquire(_publisher_name, _entity_id, *, lease_seconds=None):
+        nonlocal acquired
+        assert lease_seconds == 900
+        if acquired:
+            return False
+        acquired = True
+        return True
+
+    monkeypatch.setattr(dispatch, "acquire_recovery_lease", acquire)
+    monkeypatch.setattr(
+        dispatch,
+        "get_settings",
+        lambda: type("Settings", (), {"pipeline_stale_seconds": 900})(),
+    )
+    monkeypatch.setattr(
+        dispatch.celery_app,
+        "send_task",
+        lambda _name, *, args, **_kwargs: published.append(args[0]),
+    )
+
+    publisher = dispatch.CallbackTaskPublisher()
+    publisher.publish("job_test")
+    publisher.publish("job_test")
+
+    assert published == ["job_test"]
+
+
+def test_callback_completion_releases_publish_lease(monkeypatch) -> None:
+    released: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        dispatch,
+        "release_recovery_lease",
+        lambda publisher_name, entity_id: released.append((publisher_name, entity_id)),
+    )
+
+    dispatch.release_recovery_lease_for_task("image.deliver_callback", "job_test")
+
+    assert released == [("CallbackTaskPublisher", "job_test")]
