@@ -154,6 +154,20 @@ class LibraryRepository:
         )
         return [(asset, max(0.0, min(1.0, 1.0 - float(value)))) for asset, value in result]
 
+    async def find_exact_active_assets(self, sha256: str) -> list[LibraryAsset]:
+        result = await self.session.execute(
+            select(LibraryAsset)
+            .join(LibraryAsset.group)
+            .options(selectinload(LibraryAsset.group))
+            .where(
+                LibraryAsset.sha256 == sha256,
+                LibraryAsset.status == "active",
+                LibraryAssetGroup.status == "active",
+            )
+            .order_by(LibraryAsset.created_at)
+        )
+        return list(result.scalars())
+
     async def list_active_assets_missing_analysis(self, *, limit: int) -> list[str]:
         result = await self.session.execute(
             select(LibraryAsset.id)

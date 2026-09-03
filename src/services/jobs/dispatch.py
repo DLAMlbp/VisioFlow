@@ -17,7 +17,10 @@ _RECOVERY_TASK_PUBLISHERS = {
     "image.apply_routed_processing": "RoutedProcessingTaskPublisher",
     "image.rank_job": "RankingTaskPublisher",
     "image.plan_beautify": "BeautifyPlanTaskPublisher",
+    "image.detect_redaction": "RedactionDetectionTaskPublisher",
+    "image.inpaint_watermark": "InpaintTaskPublisher",
     "image.enhance": "EnhancementTaskPublisher",
+    "image.render_image": "RenderTaskPublisher",
     "image.analyze_content": "AnalysisTaskPublisher",
     "image.generate_embedding": "EmbeddingTaskPublisher",
     "image.match_library": "MatchTaskPublisher",
@@ -207,6 +210,34 @@ class LibraryAssetTaskPublisher:
 class EnhancementTaskPublisher:
     def publish(self, image_id: str) -> None:
         _publish_pipeline_task(type(self).__name__, image_id, "image.enhance", queue="enhance")
+
+
+class RedactionDetectionTaskPublisher:
+    def publish(self, image_id: str) -> None:
+        _publish_pipeline_task(
+            type(self).__name__,
+            image_id,
+            "image.detect_redaction",
+            queue="redaction",
+        )
+
+
+class InpaintTaskPublisher:
+    def publish(self, image_id: str) -> None:
+        _publish_pipeline_task(
+            type(self).__name__,
+            image_id,
+            "image.inpaint_watermark",
+            queue="inpaint",
+            lease_seconds=get_settings().pipeline_stale_seconds,
+        )
+
+
+class RenderTaskPublisher:
+    def publish(self, image_id: str) -> None:
+        _publish_pipeline_task(
+            type(self).__name__, image_id, "image.render_image", queue="render"
+        )
 
 
 class BeautifyPlanTaskPublisher:

@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from src.core.config import Settings
 from src.services.images.vision_rate_limit import run_vision_request
 
-PROMPT_VERSION = "generic_visual_analysis_v1"
+PROMPT_VERSION = "generic_visual_analysis_v2"
 
 
 class TagPayload(BaseModel):

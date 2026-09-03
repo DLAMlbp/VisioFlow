@@ -146,6 +146,19 @@ async def test_create_job_persists_job_and_image_items() -> None:
     assert repository.item_count == 2
     assert repository.jobs[response.job_id].ai_tagging_model == "vision-model-test"
     assert repository.jobs[response.job_id].similarity_profile_id == "library_similarity_v2"
+    assert repository.jobs[response.job_id].watermark_processing_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_create_job_freezes_enabled_watermark_processing() -> None:
+    repository = FakeJobRepository()
+    service = ImageJobService(repository=repository, settings=Settings())
+    payload = make_payload(1)
+    payload.watermark_processing_enabled = True
+
+    response = await service.create_job(payload)
+
+    assert repository.jobs[response.job_id].watermark_processing_enabled is True
 
 
 @pytest.mark.asyncio
@@ -596,7 +609,7 @@ async def test_get_results_returns_decision_metrics_and_enhanced_key() -> None:
     assert response.images[0].enhanced_metrics is not None
     assert response.images[0].tagging_result is not None
     assert response.images[0].tagging_result.auto_threshold == 0.6
-    assert response.images[0].tagging_result.review_threshold == 0.6
+    assert response.images[0].tagging_result.review_threshold == 0.45
     assert response.images[0].enhanced_metrics.exposure == 92
     assert response.images[0].audit_dimensions[0].dimension == "分类 · 画面清晰度"
     assert response.images[0].audit_dimensions[0].passed is True

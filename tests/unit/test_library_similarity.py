@@ -1,6 +1,7 @@
 from io import BytesIO
 
 from PIL import Image, ImageFilter
+import pytest
 
 from src.models.library_asset import LibraryAsset
 from src.models.library_asset_group import LibraryAssetGroup
@@ -10,6 +11,8 @@ from src.services.images.similarity import (
     combined_similarity_score,
     decide_similarity,
     feature_similarity,
+    feature_similarity_evidence,
+    reliability_weighted_similarity_score,
 )
 from src.services.profiles import SimilarityProfile
 from src.workers.library import _prepare_library_image
@@ -34,13 +37,13 @@ def test_hybrid_match_combines_image_and_content_scores() -> None:
     assert result.feature_score == 0.80
 
 
-def test_close_candidates_require_review_without_final_tags() -> None:
+def test_final_score_above_sixty_matches_even_when_candidates_are_close() -> None:
     result = decide_similarity(candidates=[
         _candidate("ast_1", ["完工", "厨房"], 0.90, 0.90),
         _candidate("ast_2", ["完工", "客厅"], 0.88, 0.88)],
         settings=_policy().model_copy(update={"similarity_min_margin": 0.05}))
-    assert result.decision == "pending_review"
-    assert result.tags == []
+    assert result.decision == "matched"
+    assert result.tags == ["完工", "厨房"]
     assert result.candidates[0]["tags"] == ["完工", "厨房"]
     assert result.candidates[0]["preview_object_key"] == "uploads/ast_1.jpg"
 
@@ -66,14 +69,15 @@ def test_same_reference_image_prefers_the_broader_tag_set() -> None:
     assert "标签范围更广" in result.message
 
 
-def test_missing_content_features_require_review_without_final_tags() -> None:
+def test_missing_content_features_fall_back_to_image_score() -> None:
     result = decide_similarity(
         candidates=[_candidate("ast_1", ["施工", "水电"], 0.78, None)],
         settings=_policy(),
     )
-    assert result.decision == "pending_review"
-    assert result.tags == []
+    assert result.decision == "matched"
+    assert result.tags == ["施工", "水电"]
     assert result.feature_score is None
+    assert result.final_score == 0.78
 
 
 def test_low_content_score_prevents_automatic_match() -> None:
@@ -115,13 +119,13 @@ def test_shadow_mode_converts_automatic_match_to_review_without_tags() -> None:
 
 
 def test_shadow_mode_does_not_change_review_or_unmatched_decisions() -> None:
-    review = decide_similarity(
-        candidates=[_candidate("ast_1", ["施工", "水电"], 0.78, None)],
+    unmatched = decide_similarity(
+        candidates=[_candidate("ast_1", ["施工", "水电"], 0.40, None)],
         settings=_policy(),
     )
 
-    assert apply_shadow_mode(review, enabled=True) is review
-    assert apply_shadow_mode(review, enabled=False) is review
+    assert apply_shadow_mode(unmatched, enabled=True) is unmatched
+    assert apply_shadow_mode(unmatched, enabled=False) is unmatched
 
 
 def test_structured_content_feature_similarity() -> None:
@@ -141,6 +145,128 @@ def test_structured_content_feature_similarity() -> None:
     )
     assert score is not None
     assert score > 0.60
+
+
+def test_missing_fields_are_excluded_and_weights_are_renormalized() -> None:
+    evidence = feature_similarity_evidence(
+        {"scene": "住宅室内", "space": "厨房"},
+        {"scene": "住宅室内"},
+    )
+
+    assert evidence.score == 1.0
+    assert evidence.reliability == 0.7
+    assert evidence.coverage == 0.15
+    assert set(evidence.field_scores) == {"scene"}
+
+
+def test_semantically_related_long_descriptions_are_not_false_conflicts() -> None:
+    evidence = feature_similarity_evidence(
+        {"scene": "室内装修开工庆祝活动现场", "confidence": 0.9},
+        {"scene": "室内庆祝活动现场，三人站在红色背景前", "confidence": 0.9},
+    )
+
+    assert evidence.score is not None
+    assert evidence.score > 0.0
+    assert evidence.field_scores["scene"]["method"] == "canonical"
+
+
+def test_inconclusive_free_text_is_audited_but_does_not_change_score() -> None:
+    evidence = feature_similarity_evidence(
+        {"scene": "红色背景前多人合影", "confidence": 0.95},
+        {"scene": "装修公司开工大吉", "confidence": 0.95},
+    )
+
+    assert evidence.score is None
+    assert evidence.reliability == 0.0
+    assert evidence.coverage == 0.15
+    assert evidence.field_scores["scene"]["method"] == "inconclusive"
+
+    result = reliability_weighted_similarity_score(
+        similarity_score=0.6632,
+        feature_score=evidence.score,
+        feature_reliability=evidence.reliability,
+        feature_coverage=evidence.coverage,
+    )
+    assert result.final_score == 0.6632
+
+
+def test_only_canonical_mutually_exclusive_values_are_hard_conflicts() -> None:
+    evidence = feature_similarity_evidence(
+        {"condition": "施工中", "confidence": 0.95},
+        {"condition": "已经完工", "confidence": 0.95},
+    )
+
+    assert evidence.score == 0.0
+    assert evidence.field_scores["condition"]["method"] == "canonical_conflict"
+
+
+def test_low_coverage_content_does_not_over_penalize_image_score() -> None:
+    result = reliability_weighted_similarity_score(
+        similarity_score=0.6632,
+        feature_score=0.4379,
+        feature_reliability=0.7,
+        feature_coverage=0.15,
+    )
+
+    assert result.feature_weight == pytest.approx(0.0315)
+    assert result.final_score > 0.60
+
+
+def test_high_reliability_conflict_can_block_an_automatic_match() -> None:
+    result = reliability_weighted_similarity_score(
+        similarity_score=0.80,
+        feature_score=0.10,
+        feature_reliability=1.0,
+    )
+
+    assert result.feature_weight == pytest.approx(0.30)
+    assert result.final_score < 0.60
+
+
+def test_similarity_score_is_always_clamped_to_valid_range() -> None:
+    high = reliability_weighted_similarity_score(
+        similarity_score=2.0,
+        feature_score=3.0,
+        feature_reliability=4.0,
+    )
+    low = reliability_weighted_similarity_score(
+        similarity_score=-2.0,
+        feature_score=-3.0,
+        feature_reliability=-4.0,
+    )
+
+    assert high.final_score == 1.0
+    assert low.final_score == 0.0
+
+
+def test_candidate_margin_is_audit_only_and_does_not_veto_sixty_points() -> None:
+    result = decide_similarity(
+        candidates=[
+            _candidate("ast_1", ["厨房"], 0.80, 0.80),
+            _candidate("ast_2", ["客厅"], 0.76, 0.76),
+        ],
+        settings=_policy().model_copy(update={"similarity_min_margin": 0.05}),
+    )
+
+    assert result.decision == "matched"
+    assert round(result.candidate_margin or 0, 6) == 0.04
+    assert "candidate_margin" not in result.candidates[0]
+
+
+def test_same_candidates_produce_identical_result_twenty_times() -> None:
+    candidates = [
+        _candidate("ast_1", ["开工大吉"], 0.6632, 0.72),
+        _candidate("ast_2", ["完工"], 0.57, 0.80),
+    ]
+
+    results = [
+        decide_similarity(candidates=candidates, settings=_policy())
+        for _ in range(20)
+    ]
+
+    assert {result.matched_asset_id for result in results} == {"ast_1"}
+    assert {result.final_score for result in results} == {results[0].final_score}
+    assert {result.decision for result in results} == {"matched"}
 
 
 def _candidate(
@@ -169,7 +295,8 @@ def _candidate(
 
 def _policy() -> SimilarityProfile:
     return SimilarityProfile.model_validate({
-        "id": "library_similarity_v2", "version": 7, "description": "hybrid",
+        "id": "library_similarity_v2", "version": 9, "description": "hybrid",
         "similarity_candidate_limit": 20, "similarity_image_weight": 0.70,
         "similarity_feature_weight": 0.30, "similarity_auto_threshold": 0.60,
-        "similarity_review_threshold": 0.60, "similarity_min_margin": 0.00})
+        "similarity_dynamic_weighting_enabled": True,
+        "similarity_review_threshold": 0.45, "similarity_min_margin": 0.00})

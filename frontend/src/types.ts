@@ -61,6 +61,7 @@ export interface CreateJobRequest {
   redaction_profile?: string;
   filter_enabled: boolean;
   beautify_enabled: boolean;
+  watermark_processing_enabled: boolean;
   similarity_enabled: boolean;
   similarity_profile: string;
   unmatched_standard_policy: "reject";

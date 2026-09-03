@@ -9,6 +9,7 @@ from src.repositories.jobs import ImageJobRepository
 from src.services.ai_model_config import load_ai_model_settings
 from src.services.images.tagging import (
     PROMPT_VERSION,
+    TagPayload,
     TaggingOutcome,
     analyze_many_with_retries,
     get_tag_provider,
@@ -23,14 +24,13 @@ logger = logging.getLogger(__name__)
 
 @celery_app.task(name="image.analyze_content", queue="analysis", max_retries=0)
 def analyze_image_content(image_id: str) -> None:
-    """Recognize matching-only content features from beautified images."""
+    """Recognize matching-only content features from a stable source image."""
     asyncio.run(_analyze_image_content(image_id))
 
 
 async def _analyze_image_content(image_id: str) -> None:
     workflow_settings = get_settings()
     settings = load_ai_model_settings(workflow_settings)
-    early_semantic = getattr(workflow_settings, "early_semantic_branch_enabled", False)
     batch_limit = max(1, min(settings.ai_tagging_concurrency, 8))
     async with AsyncSessionLocal() as session:
         repository = ImageJobRepository(session)
@@ -47,20 +47,40 @@ async def _analyze_image_content(image_id: str) -> None:
         outcomes: dict[str, TaggingOutcome] = {}
         source_keys: dict[str, str] = {}
         for item in items:
-            source_key = (
-                item.thumbnail_object_key
-                if early_semantic
-                else item.analysis_object_key
-            )
+            source_key = item.thumbnail_object_key or item.object_key
             if not source_key:
                 outcomes[item.id] = TaggingOutcome(
                     status="failed",
-                    error_message=(
-                        "缺少预处理内容分析文件"
-                        if early_semantic
-                        else "缺少美化图内容分析文件"
-                    ),
+                    error_message="缺少稳定的预处理内容分析文件",
                 )
+                continue
+            reusable = (
+                await repository.find_reusable_content_analysis(
+                    image_id=item.id,
+                    sha256=item.sha256,
+                    prompt_version=PROMPT_VERSION,
+                    model_name=settings.ai_tagging_model,
+                )
+                if getattr(item, "sha256", None)
+                and hasattr(repository, "find_reusable_content_analysis")
+                else None
+            )
+            if reusable is not None:
+                try:
+                    reusable_payload = dict(reusable)
+                    reusable_payload["confidence"] = reusable_payload.get(
+                        "content_confidence", reusable_payload.get("confidence", 0.0)
+                    )
+                    outcomes[item.id] = TaggingOutcome(
+                        status="completed",
+                        payload=matching_content_payload(
+                            TagPayload.model_validate(reusable_payload)
+                        ),
+                    )
+                except (TypeError, ValueError):
+                    pass
+            if reusable is not None and item.id in outcomes:
+                source_keys[item.id] = source_key
                 continue
             try:
                 image_bytes_batch.append(await storage.download(source_key))
@@ -104,12 +124,14 @@ async def _analyze_image_content(image_id: str) -> None:
                 else None
             )
             succeeded = content is not None
+            serialized_content = content.model_dump(mode="json") if content else None
+            if serialized_content is not None:
+                serialized_content["content_confidence"] = content.confidence
             await repository.upsert_ai_tag(
                 image_id=item.id,
                 source_object_key=(
                     source_keys.get(item.id)
                     or item.thumbnail_object_key
-                    or item.analysis_object_key
                     or item.object_key
                 ),
                 provider=settings.ai_tagging_provider,
@@ -117,7 +139,7 @@ async def _analyze_image_content(image_id: str) -> None:
                 prompt_version=PROMPT_VERSION,
                 status="completed" if succeeded else "failed",
                 duration_ms=outcome.duration_ms,
-                tag_json=content.model_dump(mode="json") if content else None,
+                tag_json=serialized_content,
                 raw_response_json=(
                     outcome.raw_response if settings.ai_tagging_store_raw_response else None
                 ),

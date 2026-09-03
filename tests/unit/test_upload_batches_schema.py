@@ -64,6 +64,7 @@ def test_upload_batch_does_not_require_manual_standard_selection() -> None:
     )
 
     assert payload.processing_standards == []
+    assert payload.watermark_processing_enabled is False
 
 
 @pytest.mark.asyncio
@@ -115,6 +116,7 @@ async def test_upload_batch_freezes_all_active_standards_and_ignores_subset(
         CreateUploadBatchRequest(
             processing_standards=["requested-only"],
             beautify_profile="beautify",
+            watermark_processing_enabled=True,
             files=_files(1),
         )
     )
@@ -127,3 +129,4 @@ async def test_upload_batch_freezes_all_active_standards_and_ignores_subset(
     ]
     assert captured[0].filter_profile_id == "flt_global"
     assert captured[0].filter_profile_snapshot["instruction"] == "全局过滤规则"
+    assert captured[0].watermark_processing_enabled is True

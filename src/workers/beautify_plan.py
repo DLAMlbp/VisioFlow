@@ -14,7 +14,7 @@ from src.services.images.beautify_planning import (
     build_stored_plan,
 )
 from src.services.images.quality import QualityEngine
-from src.services.jobs.dispatch import EnhancementTaskPublisher
+from src.services.jobs.dispatch import RedactionDetectionTaskPublisher
 from src.services.managed_profiles import beautify_from_snapshot
 from src.services.storage.factory import get_storage_provider
 from src.workers.celery_app import celery_app
@@ -119,7 +119,7 @@ async def _plan_beautify(image_id: str) -> None:
             error_message=None,
         )
         if saved:
-            EnhancementTaskPublisher().publish(item.id)
+            RedactionDetectionTaskPublisher().publish(item.id)
 
 
 def _image_context(item) -> dict[str, int | float]:

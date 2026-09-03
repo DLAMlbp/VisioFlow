@@ -98,6 +98,7 @@ def test_integration_job_uploads_files_and_creates_async_job() -> None:
         data={
             **_route_form(),
             "beautify_profile": "bty_user",
+            "watermark_processing_enabled": "true",
             "max_selected": "1",
             "enhance_level": "2",
             "callback_url": "https://client.test/api/image-callback",
@@ -112,6 +113,7 @@ def test_integration_job_uploads_files_and_creates_async_job() -> None:
     assert len(storage.uploaded) == 2
     assert [image.object_key for image in jobs.payload.images] == [item[0] for item in storage.uploaded]
     assert jobs.payload.enhance_level == 2
+    assert jobs.payload.watermark_processing_enabled is True
     assert str(jobs.payload.callback_url) == "https://client.test/api/image-callback"
 
 
@@ -247,6 +249,7 @@ def test_integration_job_accepts_customer_image_urls(monkeypatch) -> None:
         "/api/v1/integration/jobs",
         json={
             "notifyUrl": "https://client.test/v1/callback/ai/theme-image/notify",
+            "watermarkProcessingEnabled": True,
             "images": [
                 {"objectKey": "customer/a.jpg", "imageUrl": "https://obs.test/a.jpg"},
                 {"objectKey": "customer/b.jpg", "imageUrl": "https://obs.test/b.jpg"},
@@ -268,6 +271,7 @@ def test_integration_job_accepts_customer_image_urls(monkeypatch) -> None:
         "taskId": "job_integration",
     }
     assert jobs.payload.callback_contract == "customer_v1"
+    assert jobs.payload.watermark_processing_enabled is True
     assert [image.client_object_key for image in jobs.payload.images] == [
         "customer/a.jpg",
         "customer/b.jpg",

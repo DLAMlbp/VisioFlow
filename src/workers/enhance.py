@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from io import BytesIO
-
-from PIL import Image
 
 from src.core.config import get_settings
 from src.core.metrics import emit_metric
@@ -23,29 +20,15 @@ from src.services.images.beautify_planning import (
     neutralize_beautify_profile,
 )
 from src.services.images.beautify_policy import validate_beautify_plan
-from src.services.images.logo_detector import load_logo_detector
-from src.services.images.metadata import encode_jpeg, make_thumbnail
-from src.services.images.processing_vision import selected_standard_from_processing_json
-from src.services.images.quality import QualityEngine
-from src.services.images.redaction import (
-    ImageRedactionService,
-    decode_image,
+from src.services.images.enhancement_pipeline import (
+    decode_pipeline_state,
+    encode_pipeline_state,
+    pipeline_object_key,
+    pipeline_state_object_key,
 )
-from src.services.images.redaction import (
-    encode_jpeg as encode_redaction_jpeg,
-)
-from src.services.images.watermark import load_watermark_processor
-from src.services.jobs.dispatch import AnalysisTaskPublisher, EmbeddingTaskPublisher
-from src.services.managed_profiles import (
-    beautify_from_snapshot,
-    redaction_from_snapshot,
-)
+from src.services.jobs.dispatch import RenderTaskPublisher
+from src.services.managed_profiles import beautify_from_snapshot
 from src.services.storage.factory import get_storage_provider
-from src.services.storage.keys import (
-    build_analysis_object_key,
-    build_enhanced_object_key,
-    build_redaction_base_object_key,
-)
 from src.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -69,51 +52,39 @@ async def _enhance_image(image_id: str) -> None:
         return
     async with AsyncSessionLocal() as session:
         repository = ImageJobRepository(session)
-        item = await repository.claim_enhancement(image_id)
+        item = await repository.continue_enhancement(image_id, "enhance")
         if item is None:
             return
         job = await repository.get_config(item.job_id)
         if job is None or job.cancel_requested_at is not None:
             return
         settings = load_ai_model_settings(get_settings())
-        selected_standard_id, _ = selected_standard_from_processing_json(item.ai_processing_json)
-        if item.routed_filter_profile_id and selected_standard_id != item.routed_filter_profile_id:
-            await repository.fail_item(item, "命中的条件过滤标准不存在，请重试图片处理")
-            return
         profile = beautify_from_snapshot(
             job.beautify_profile_snapshot, job.beautify_profile_id, settings
         )
-        redaction_profile = redaction_from_snapshot(
-            getattr(job, "redaction_profile_snapshot", None),
-            legacy_beautify_snapshot=getattr(job, "beautify_profile_snapshot", None),
-        )
         storage = get_storage_provider()
-        beautify_service = NaturalBeautifyService()
-        original_bytes = await storage.download(item.object_key)
+        state_key = pipeline_state_object_key(item.job_id, item.id)
+        state = decode_pipeline_state(await storage.download(state_key))
+        if state.get("stage") != "enhance":
+            if state.get("stage") == "render":
+                if await repository.advance_enhancement_stage(
+                    item.id,
+                    current_stage="enhance",
+                    next_stage="render",
+                ):
+                    RenderTaskPublisher().publish(item.id)
+                return
+            raise ValueError(
+                f"unexpected enhancement state during beautify: {state.get('stage')}"
+            )
+        beautify_input_bytes = await storage.download(str(state["watermark_object_key"]))
         neutral_profile = neutralize_beautify_profile(profile)
-        orientation_result = beautify_service.normalize_orientation(original_bytes, neutral_profile)
-        redaction_service = ImageRedactionService(
-            watermark_processor=load_watermark_processor(settings),
-            logo_detector=load_logo_detector(settings),
-        )
-        watermark_result = redaction_service.remove_watermark(
-            decode_image(orientation_result.image_bytes),
-            redaction_profile.watermark,
-        )
-        watermark_status = str(watermark_result.audit.get("status") or "")
-        beautify_input_bytes = (
-            encode_redaction_jpeg(watermark_result.image_bgr, quality=profile.jpeg_quality)
-            if watermark_status == "applied"
-            else orientation_result.image_bytes
-        )
         stored_plan = beautify_plan_from_json(item.beautify_plan_json)
         if job.beautify_enabled and stored_plan is None:
             await repository.fail_item(item, "缺少 AI 美化决策，请重试图片处理")
             return
         ai_beautify = stored_plan.decision if stored_plan is not None else None
-        policy_corrections: list[str] = (
-            list(stored_plan.corrections) if stored_plan is not None else []
-        )
+        policy_corrections = list(stored_plan.corrections) if stored_plan is not None else []
         if job.beautify_enabled and ai_beautify is not None:
             try:
                 policy_result = validate_beautify_plan(
@@ -129,6 +100,7 @@ async def _enhance_image(image_id: str) -> None:
         else:
             effective_profile = neutral_profile
 
+        beautify_service = NaturalBeautifyService()
         preview_attempts: list[dict[str, object]] = []
         fallback_reason: str | None = None
         execution_needed = bool(
@@ -144,13 +116,11 @@ async def _enhance_image(image_id: str) -> None:
                 correction = correct_after_preview(effective_profile, preview_checks)
                 effective_profile = correction.profile
                 policy_corrections.extend(correction.reasons)
-                corrected_preview_profile = effective_profile.model_copy(
+                corrected_profile = effective_profile.model_copy(
                     update={"min_output_long_side": 1}
                 )
-                corrected_trial_bytes = beautify_service.enhance(
-                    preview_bytes, corrected_preview_profile
-                )
-                corrected_checks = evaluate_acceptance(preview_bytes, corrected_trial_bytes)
+                corrected_trial = beautify_service.enhance(preview_bytes, corrected_profile)
+                corrected_checks = evaluate_acceptance(preview_bytes, corrected_trial)
                 preview_attempts.append({"attempt": 2, "checks": corrected_checks})
                 if not acceptance_passed(corrected_checks):
                     fallback_reason = "小图预演经一次参数修正后仍未通过安全验收"
@@ -179,80 +149,25 @@ async def _enhance_image(image_id: str) -> None:
             if fallback_reason:
                 reasons = [f"美化安全回退：{fallback_reason}"]
 
-        final_checks = evaluate_acceptance(
-            beautify_input_bytes,
-            enhanced_bytes,
-        )
+        final_checks = evaluate_acceptance(beautify_input_bytes, enhanced_bytes)
         if execution_needed and not acceptance_passed(final_checks):
             fallback_reason = "正式图最终验收未通过，已回退为中性输出"
             effective_profile = neutral_profile
             enhanced_bytes = beautify_service.prepare_delivery_image(
                 beautify_input_bytes, neutral_profile
             )
-            final_checks = evaluate_acceptance(
-                beautify_input_bytes,
-                enhanced_bytes,
-            )
+            final_checks = evaluate_acceptance(beautify_input_bytes, enhanced_bytes)
             reasons = [f"美化安全回退：{fallback_reason}"]
-
-        if redaction_profile.logo.enabled:
-            # Keep a private, deterministic pre-logo base. Manual review always
-            # re-renders from this image, so deleting an automatic box genuinely
-            # restores the underlying pixels instead of editing an irreversible
-            # mosaic. The cleanup worker removes this key with the job assets.
-            await storage.upload(
-                build_redaction_base_object_key(item.job_id, item.id),
-                enhanced_bytes,
-                "image/jpeg",
-            )
-
-        logo_result = redaction_service.mosaic_logos(
-            decode_image(enhanced_bytes),
-            redaction_profile.logo,
-        )
-        logo_result.audit["manual_review_available"] = redaction_profile.logo.enabled
-        if logo_result.audit.get("status") == "applied":
-            enhanced_bytes = encode_redaction_jpeg(
-                logo_result.image_bgr,
-                quality=effective_profile.jpeg_quality,
-            )
-        for stage, audit in (
-            ("watermark", watermark_result.audit),
-            ("logo", logo_result.audit),
-        ):
-            metric_labels = {
-                "stage": stage,
-                "status": audit.get("status"),
-                "version": audit.get("profile_version")
-                or audit.get("model_version"),
-            }
-            emit_metric(logger, "redaction_stage_total", labels=metric_labels)
-            emit_metric(
-                logger,
-                "redaction_stage_duration_ms",
-                value=float(audit.get("duration_ms") or 0),
-                labels=metric_labels,
-            )
-        emit_metric(
-            logger,
-            "redaction_logo_detections_total",
-            value=float(logo_result.audit.get("detections") or 0),
-            labels={"model_version": logo_result.audit.get("model_version")},
-        )
-        reasons.extend(watermark_result.reasons)
-        reasons.extend(logo_result.reasons)
 
         planned_parameters = (
             ai_beautify.parameters.model_dump(mode="json") if ai_beautify is not None else {}
         )
-        effective_parameters = {
-            name: getattr(effective_profile, name) for name in planned_parameters
-        }
-        enhancement_audit = {
+        state["beautify_audit"] = {
             "profile_snapshot": job.beautify_profile_snapshot,
-            "redaction_profile_snapshot": getattr(job, "redaction_profile_snapshot", None),
             "planned_parameters": planned_parameters,
-            "effective_parameters": effective_parameters,
+            "effective_parameters": {
+                name: getattr(effective_profile, name) for name in planned_parameters
+            },
             "corrections": list(dict.fromkeys(policy_corrections)),
             "preview_attempts": preview_attempts,
             "acceptance": {
@@ -266,92 +181,31 @@ async def _enhance_image(image_id: str) -> None:
                 "checks": final_checks,
                 "fallback_reason": fallback_reason,
             },
-            "redaction": {
-                "standard": {
-                    "id": redaction_profile.id,
-                    "version": redaction_profile.version,
-                    "description": redaction_profile.description,
-                    "ground_film_threshold": redaction_profile.branded_ground_film.reject_coverage_gte,
-                },
-                "screening": (
-                    item.ai_processing_json.get("redaction_analysis")
-                    if isinstance(item.ai_processing_json, dict)
-                    else None
-                ),
-                "watermark": watermark_result.audit,
-                "logos": logo_result.audit,
-            },
         }
-
-        enhanced_object_key = build_enhanced_object_key(item.job_id, item.id)
-        analysis_object_key = (
-            build_analysis_object_key(item.job_id, item.id)
-            if job.similarity_enabled
-            else enhanced_object_key
+        state["beautify_reasons"] = reasons
+        state["stage"] = "render"
+        beautified_key = pipeline_object_key(item.job_id, item.id, "beautified", "jpg")
+        state["beautified_object_key"] = beautified_key
+        await storage.upload(beautified_key, enhanced_bytes, "image/jpeg")
+        await storage.upload(
+            state_key,
+            encode_pipeline_state(state),
+            "application/json",
         )
-        await storage.upload(enhanced_object_key, enhanced_bytes, "image/jpeg")
-        with Image.open(BytesIO(enhanced_bytes)) as enhanced_image:
-            enhanced_image.load()
-            enhanced_thumbnail = encode_jpeg(
-                make_thumbnail(enhanced_image, settings.thumbnail_long_side)
-            )
-            if job.similarity_enabled:
-                analysis_bytes = encode_jpeg(
-                    make_thumbnail(enhanced_image, settings.ai_tagging_image_long_side)
-                )
-        if job.similarity_enabled:
-            await storage.upload(analysis_object_key, analysis_bytes, "image/jpeg")
-        enhanced_metrics = QualityEngine(settings).evaluate(enhanced_thumbnail)
-        enhanced_metric_values = {
-            "sharpness": enhanced_metrics.sharpness_score,
-            "exposure": enhanced_metrics.exposure_score,
-            "contrast": enhanced_metrics.contrast_score,
-            "noise": enhanced_metrics.noise_score,
-        }
-        enhancement_saved = await repository.complete_enhancement(
-            item,
-            enhanced_object_key=enhanced_object_key,
-            analysis_object_key=analysis_object_key,
-            enhanced_metrics=enhanced_metric_values,
-            reasons=reasons,
-            enhancement_audit=enhancement_audit,
-        )
-        if not enhancement_saved:
-            return
-        if not job.similarity_enabled:
-            await repository.select_item(
-                item,
-                enhanced_object_key,
-                float(item.result.final_score or 0) if item.result else 0,
-                reasons=[*reasons, "已跳过素材相似匹配"],
-                enhanced_metrics=enhanced_metric_values,
-            )
-            return
-        if get_settings().early_semantic_branch_enabled:
-            if await repository.queue_final_embedding(item.id):
-                EmbeddingTaskPublisher().publish(item.id)
-                return
-            refreshed = await repository.get_item(item.id)
-            if refreshed is not None:
-                match_reason = (
-                    refreshed.similarity_match.message
-                    if refreshed.similarity_match is not None
-                    else "素材库匹配完成"
-                )
-                await repository.finalize_selected_if_ready(
-                    refreshed,
-                    reason=match_reason,
-                )
-            return
-        if await repository.start_tagging(
-            item,
-            final_score=float(item.result.final_score or 0) if item.result else 0,
-            reasons=reasons,
-            enhanced_object_key=enhanced_object_key,
-            enhanced_metrics=enhanced_metric_values,
-            provider="library",
-            model_name=settings.image_embedding_version,
-            prompt_version=job.similarity_profile_id,
+        if not await repository.advance_enhancement_stage(
+            item.id,
+            current_stage="enhance",
+            next_stage="render",
         ):
-            AnalysisTaskPublisher().publish(item.id)
-            EmbeddingTaskPublisher().publish(item.id)
+            return
+        emit_metric(
+            logger,
+            "enhancement_stage_total",
+            labels={
+                "stage": "beautify",
+                "outcome": state["beautify_audit"]["acceptance"]["status"],
+                "image_id": item.id,
+                "job_id": item.job_id,
+            },
+        )
+        RenderTaskPublisher().publish(item.id)

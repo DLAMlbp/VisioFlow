@@ -1,3 +1,7 @@
+from datetime import UTC, datetime
+
+import pytest
+
 from src.services.jobs import dispatch
 from src.workers import celery_app as celery_app_module
 from src.workers import cleanup
@@ -18,16 +22,55 @@ def test_recovery_republishes_lost_messages_for_each_pipeline_stage(monkeypatch)
         routed_processing=["img_filter"],
         ranking=["job_ranking", "job_ranking"],
         beautify_plan=["img_plan"],
+        redaction=["img_redaction", "img_redaction"],
+        inpaint=["img_inpaint", "img_inpaint"],
         enhancement=["img_enhance", "img_enhance"],
+        render=["img_render", "img_render"],
         analysis=["img_legacy_analysis"],
         embedding=["img_embedding"],
         matching=["img_match", "img_match"],
     )
 
     assert published["RankingTaskPublisher"] == ["job_ranking"]
+    assert published["RedactionDetectionTaskPublisher"] == ["img_redaction"]
+    assert published["InpaintTaskPublisher"] == ["img_inpaint"]
     assert published["EnhancementTaskPublisher"] == ["img_enhance"]
+    assert published["RenderTaskPublisher"] == ["img_render"]
     assert published["EmbeddingTaskPublisher"] == ["img_embedding"]
     assert published["MatchTaskPublisher"] == ["img_match"]
+
+
+@pytest.mark.asyncio
+async def test_stalled_enhancement_recovery_keeps_the_current_stage() -> None:
+    class Result:
+        def __init__(self, values):
+            self.values = values
+
+        def scalars(self):
+            return self.values
+
+    class Session:
+        def __init__(self) -> None:
+            self.statements = []
+
+        async def execute(self, statement):
+            self.statements.append(statement)
+            return Result(["img_stalled"] if len(self.statements) == 1 else ["img_pending"])
+
+    session = Session()
+    recovered = await cleanup._recover_enhancement_stage(
+        session,
+        "inpaint",
+        datetime(2026, 9, 3, tzinfo=UTC),
+    )
+
+    assert recovered == ["img_stalled", "img_pending"]
+    update_sql = str(session.statements[0])
+    select_sql = str(session.statements[1])
+    assert "enhancement_stage_started_at <" in update_sql
+    assert "enhancement_stage_started_at IS NULL" in select_sql
+    assert "inpaint" in session.statements[0].compile().params.values()
+    assert "inpaint" in session.statements[1].compile().params.values()
 
 
 def test_pipeline_publishers_use_independent_stage_queues(monkeypatch) -> None:
@@ -38,10 +81,16 @@ def test_pipeline_publishers_use_independent_stage_queues(monkeypatch) -> None:
         calls.append((name, queue))
 
     monkeypatch.setattr(dispatch.celery_app, "send_task", send_task)
-    monkeypatch.setattr(dispatch, "acquire_recovery_lease", lambda *_args: True)
+    monkeypatch.setattr(
+        dispatch, "acquire_recovery_lease", lambda *_args, **_kwargs: True
+    )
 
     dispatch.CompletionTaskPublisher().publish("img_test")
     dispatch.RoutedProcessingTaskPublisher().publish("img_test")
+    dispatch.RedactionDetectionTaskPublisher().publish("img_test")
+    dispatch.InpaintTaskPublisher().publish("img_test")
+    dispatch.EnhancementTaskPublisher().publish("img_test")
+    dispatch.RenderTaskPublisher().publish("img_test")
     dispatch.AnalysisTaskPublisher().publish("img_test")
     dispatch.EmbeddingTaskPublisher().publish("img_test")
     dispatch.MatchTaskPublisher().publish("img_test")
@@ -49,6 +98,10 @@ def test_pipeline_publishers_use_independent_stage_queues(monkeypatch) -> None:
     assert calls == [
         ("image.classify_completion", "classification"),
         ("image.apply_routed_processing", "filtering"),
+        ("image.detect_redaction", "redaction"),
+        ("image.inpaint_watermark", "inpaint"),
+        ("image.enhance", "enhance"),
+        ("image.render_image", "render"),
         ("image.analyze_content", "analysis"),
         ("image.generate_embedding", "openclip"),
         ("image.match_library", "matching"),

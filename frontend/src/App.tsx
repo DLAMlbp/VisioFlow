@@ -79,6 +79,7 @@ function App() {
   const [beautifyProfile, setBeautifyProfile] = useState("");
   const [redactionProfiles, setRedactionProfiles] = useState<ProfileOption[]>([]);
   const [redactionProfile, setRedactionProfile] = useState("");
+  const [watermarkProcessingEnabled, setWatermarkProcessingEnabled] = useState(false);
   const filterEnabled = true;
   const beautifyEnabled = true;
   const similarityEnabled = true;
@@ -386,6 +387,7 @@ function App() {
     setUploadPage(0);
     setBusy(false);
     setMessage(null);
+    setWatermarkProcessingEnabled(false);
     setWorkflowStep(1);
   }
 
@@ -519,6 +521,7 @@ function App() {
         redaction_profile: redactionProfile,
         filter_enabled: filterEnabled,
         beautify_enabled: beautifyEnabled,
+        watermark_processing_enabled: watermarkProcessingEnabled,
         similarity_enabled: similarityEnabled,
         unmatched_standard_policy: "reject",
         enhance_level: 1,
@@ -529,14 +532,26 @@ function App() {
         }))
       });
       const successfulIds: string[] = [];
+      const uploadErrors: string[] = [];
       const registrations = uploadable.map((item, index) => ({ item, registered: batch.items[index] }));
       await runConcurrent(registrations, UPLOAD_CONCURRENCY, async ({ item, registered }) => {
-        if (!registered) return;
-        const uploadedId = await uploadOne(item, registered, operationVersion);
-        if (uploadedId) successfulIds.push(uploadedId);
+        if (!registered) {
+          const message = `${item.filename}：上传凭据缺失`;
+          uploadErrors.push(message);
+          updateItem(item.id, { status: "failed", error: message }, operationVersion);
+          return;
+        }
+        try {
+          const uploadedId = await uploadOne(item, registered, operationVersion);
+          if (uploadedId) successfulIds.push(uploadedId);
+        } catch (error) {
+          uploadErrors.push(error instanceof Error ? error.message : "图片上传失败");
+        }
       });
       if (!isCurrentOperation(operationVersion)) return;
-      if (!successfulIds.length) throw new Error("没有成功上传的图片，无法创建任务");
+      if (!successfulIds.length) {
+        throw new Error(uploadErrors[0] ?? "没有成功上传的图片，无法创建任务");
+      }
       const created = await api.completeUploadBatch(batch.batch_id, successfulIds);
       if (!isCurrentOperation(operationVersion)) return;
 
@@ -762,11 +777,22 @@ function App() {
                     <option value="" disabled>请选择水印与Logo标准</option>
                     {redactionProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
                   </select>
-                  <small>{selectedRedactionProfile?.description ?? "请先在标准管理中创建水印与Logo标准。"}</small>
+                  <small>{selectedRedactionProfile ? `${selectedRedactionProfile.description}。左下角水印以本次任务开关为准，开启后仅遮挡英文 APP。` : "请先在标准管理中创建水印与Logo标准。"}</small>
+                </label>
+                <label className="watermark-task-toggle">
+                  <span><strong>处理左下角拍摄水印</strong><small>{watermarkProcessingEnabled ? "已开启：识别英文 APP 并使用透明小当图标遮挡" : "已关闭：保留水印，不执行水印处理"}</small></span>
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    checked={watermarkProcessingEnabled}
+                    disabled={busy}
+                    onChange={(event) => setWatermarkProcessingEnabled(event.target.checked)}
+                    aria-label="处理左下角拍摄水印"
+                  />
                 </label>
                 {!redactionProfiles.length && <p className="inline-warning">没有启用中的水印与Logo标准，请先在“标准管理”中配置。</p>}
               </section>
-              <section className="pipeline-note"><Sparkles size={20} aria-hidden="true" /><div><strong>逐图连续流水线</strong><p>唯一分类 → 地膜阈值筛选 → 对应过滤 → 去水印与美化 → 保留当家并遮挡APP → 内容与向量 → 素材匹配。图片之间互不等待。</p></div></section>
+              <section className="pipeline-note"><Sparkles size={20} aria-hidden="true" /><div><strong>逐图连续流水线</strong><p>唯一分类 → 地膜阈值筛选 → 对应过滤 → {watermarkProcessingEnabled ? "定位水印APP并透明覆盖 → " : ""}美化 → Logo处理与编码 → 内容与向量 → 素材匹配。图片之间互不等待。</p></div></section>
             </>}
 
             {workflowStep === 3 && <>
@@ -780,7 +806,7 @@ function App() {
                 <PreflightRow icon={<Images size={20} />} title="图片清单" detail={`${items.length} 张图片已就绪`} valid={items.length > 0} action="返回修改" onAction={() => setWorkflowStep(1)} />
                 <PreflightRow icon={<Check size={20} />} title="全局与分类过滤" detail={`${globalFilterProfiles[0]?.name ?? "未配置全局标准"} · ${processingStandards.length} 条分类标准`} valid={hasGlobalFilter && processingStandards.length > 0 && hasFallbackStandard} action="查看" onAction={() => setWorkflowStep(2)} />
                 <PreflightRow icon={<Sparkles size={20} />} title="AI 与美化方案" detail={`AI 识别已启用 · ${selectedBeautifyProfile?.name ?? "尚未选择"}`} valid={Boolean(beautifyProfile)} action="修改" onAction={() => setWorkflowStep(2)} />
-                <PreflightRow icon={<ShieldCheck size={20} />} title="水印与Logo标准" detail={selectedRedactionProfile?.name ?? "尚未选择"} valid={Boolean(redactionProfile)} action="修改" onAction={() => setWorkflowStep(2)} />
+                <PreflightRow icon={<ShieldCheck size={20} />} title="水印与Logo标准" detail={`${selectedRedactionProfile?.name ?? "尚未选择"} · 水印处理${watermarkProcessingEnabled ? "开启" : "关闭"}`} valid={Boolean(redactionProfile)} action="修改" onAction={() => setWorkflowStep(2)} />
                 <PreflightRow icon={<Database size={20} />} title="素材库匹配" detail="独立美化后自动匹配，未匹配项进入人工复核" valid action="查看素材库" onAction={() => setActiveWorkspace("library")} />
               </div>
               <div className="preflight-notice"><AlertCircle size={18} aria-hidden="true" /><div><strong>开始后配置将被锁定</strong><p>如需修改图片或处理方案，请在开始处理前返回对应步骤。</p></div></div>
@@ -845,7 +871,7 @@ function App() {
               <div><dt>图片数量</dt><dd><strong>{items.length}</strong> 张{items.length > 0 && <small className="summary-file-status"><em>{items.length - failedCount} 张已校验</em>{failedCount > 0 && <b>{failedCount} 张需处理</b>}</small>}</dd></div>
               <div><dt>分类与过滤</dt><dd>{workflowStep === 1 ? "自动配置" : `全局审核 + ${processingStandards.length} 条分类`}</dd></div>
               <div><dt>美化方案</dt><dd>{workflowStep === 1 ? "待选择" : selectedBeautifyProfile?.name ?? "待选择"}</dd></div>
-              <div><dt>水印与Logo</dt><dd>{workflowStep === 1 ? "待选择" : selectedRedactionProfile?.name ?? "待选择"}</dd></div>
+              <div><dt>水印与Logo</dt><dd>{workflowStep === 1 ? "待选择" : `${selectedRedactionProfile?.name ?? "待选择"} · 水印${watermarkProcessingEnabled ? "开启" : "关闭"}`}</dd></div>
               <div><dt>预计处理</dt><dd><Clock3 size={15} aria-hidden="true" />约 {estimatedMinutes}–{estimatedMinutes + 2} 分钟</dd></div>
             </dl>
             {workflowStep === 1 && <button className="summary-primary" type="button" disabled={!items.length} onClick={() => setWorkflowStep(2)}>继续选择方案<ChevronRight size={17} /></button>}

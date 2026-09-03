@@ -26,9 +26,24 @@ class IntegrationUrlJobRequest(BaseModel):
     non_completed_filter_profile: str | None = Field(default=None, min_length=1, max_length=80)
     beautify_profile: str | None = Field(default=None, min_length=1, max_length=80)
     redaction_profile: str | None = Field(default=None, min_length=1, max_length=80)
+    watermark_processing_enabled: bool = False
     similarity_profile: str = Field(default="library_similarity_v2", min_length=1, max_length=80)
     enhance_level: int = Field(default=1, ge=0, le=2)
     max_selected: int = Field(default=10, ge=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_camel_case_watermark_switch(cls, value):
+        if (
+            isinstance(value, dict)
+            and "watermark_processing_enabled" not in value
+            and "watermarkProcessingEnabled" in value
+        ):
+            return {
+                **value,
+                "watermark_processing_enabled": value["watermarkProcessingEnabled"],
+            }
+        return value
 
     @model_validator(mode="after")
     def require_unique_object_keys(self):

@@ -8,6 +8,12 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from src.services.images.similarity import reliability_weighted_similarity_score
+
+
+AUTO_THRESHOLD = 0.60
+REVIEW_THRESHOLD = 0.45
+
 
 @dataclass(frozen=True)
 class QueryResult:
@@ -17,6 +23,8 @@ class QueryResult:
     top1_score: float
     top1_similarity_score: float
     top1_feature_score: float | None
+    top1_feature_reliability: float | None
+    top1_feature_coverage: float | None
     top2_score: float
     margin: float
     correct: bool
@@ -36,11 +44,22 @@ def load_rows(path: Path) -> list[dict[str, Any]]:
 def summarize_queries(
     rows: list[dict[str, Any]],
     *,
-    image_weight: float = 0.70,
-    feature_weight: float = 0.30,
+    min_content_weight: float = 0.0,
+    max_content_weight: float = 0.30,
 ) -> list[QueryResult]:
     grouped: dict[
-        str, list[tuple[str, float, float | None, float, str | None]]
+        str,
+        list[
+            tuple[
+                str,
+                float,
+                float | None,
+                float | None,
+                float | None,
+                float,
+                str | None,
+            ]
+        ],
     ] = defaultdict(list)
     for row in rows:
         query_id = str(row.get("query_id", "")).strip()
@@ -62,11 +81,44 @@ def summarize_queries(
         )
         if feature_score is not None and not 0 <= feature_score <= 1:
             raise ValueError("feature_score 必须是 0 到 1 之间的数字")
+        reliability_raw = row.get("feature_reliability")
+        feature_reliability = (
+            float(reliability_raw)
+            if reliability_raw is not None and str(reliability_raw).strip()
+            else None
+        )
+        if feature_reliability is not None and not 0 <= feature_reliability <= 1:
+            raise ValueError("feature_reliability 必须是 0 到 1 之间的数字")
+        coverage_raw = row.get("feature_coverage")
+        feature_coverage = (
+            float(coverage_raw)
+            if coverage_raw is not None and str(coverage_raw).strip()
+            else None
+        )
+        if feature_coverage is not None and not 0 <= feature_coverage <= 1:
+            raise ValueError("feature_coverage 必须是 0 到 1 之间的数字")
         final_raw = row.get("final_score")
         if final_raw is not None and str(final_raw).strip():
             final_score = float(final_raw)
         elif feature_score is not None:
-            final_score = similarity_score * image_weight + feature_score * feature_weight
+            if feature_reliability is None:
+                raise ValueError(
+                    "使用 reliability_v4 校准时，feature_score 必须同时提供 "
+                    "feature_reliability 或 final_score"
+                )
+            if feature_coverage is None:
+                raise ValueError(
+                    "使用 reliability_v4 校准时，feature_score 必须同时提供 "
+                    "feature_coverage 或 final_score"
+                )
+            final_score = reliability_weighted_similarity_score(
+                similarity_score=similarity_score,
+                feature_score=feature_score,
+                feature_reliability=feature_reliability,
+                feature_coverage=feature_coverage,
+                min_content_weight=min_content_weight,
+                max_content_weight=max_content_weight,
+            ).final_score
         else:
             final_score = similarity_score
         if not 0 <= final_score <= 1:
@@ -76,6 +128,8 @@ def summarize_queries(
                 candidate_id,
                 similarity_score,
                 feature_score,
+                feature_reliability,
+                feature_coverage,
                 final_score,
                 expected_raw or None,
             )
@@ -83,13 +137,21 @@ def summarize_queries(
 
     results: list[QueryResult] = []
     for query_id, candidates in grouped.items():
-        expected_values = {candidate[4] for candidate in candidates}
+        expected_values = {candidate[6] for candidate in candidates}
         if len(expected_values) != 1:
             raise ValueError(f"query_id={query_id} 的 expected_asset_id 不一致")
         expected = expected_values.pop()
-        ranked = sorted(candidates, key=lambda candidate: candidate[3], reverse=True)
-        top1_asset_id, top1_similarity, top1_feature, top1_score, _ = ranked[0]
-        top2_score = ranked[1][3] if len(ranked) > 1 else 0.0
+        ranked = sorted(candidates, key=lambda candidate: candidate[5], reverse=True)
+        (
+            top1_asset_id,
+            top1_similarity,
+            top1_feature,
+            top1_reliability,
+            top1_coverage,
+            top1_score,
+            _,
+        ) = ranked[0]
+        top2_score = ranked[1][5] if len(ranked) > 1 else 0.0
         results.append(
             QueryResult(
                 query_id=query_id,
@@ -98,6 +160,8 @@ def summarize_queries(
                 top1_score=top1_score,
                 top1_similarity_score=top1_similarity,
                 top1_feature_score=top1_feature,
+                top1_feature_reliability=top1_reliability,
+                top1_feature_coverage=top1_coverage,
                 top2_score=top2_score,
                 margin=top1_score - top2_score if len(ranked) > 1 else 1.0,
                 correct=expected is not None and top1_asset_id == expected,
@@ -106,6 +170,8 @@ def summarize_queries(
                         "asset_id": candidate_id,
                         "similarity_score": similarity_score,
                         "feature_score": feature_score,
+                        "feature_reliability": feature_reliability,
+                        "feature_coverage": feature_coverage,
                         "final_score": candidate_score,
                         "expected": candidate_id == expected,
                     }
@@ -113,6 +179,8 @@ def summarize_queries(
                         candidate_id,
                         similarity_score,
                         feature_score,
+                        feature_reliability,
+                        feature_coverage,
                         candidate_score,
                         _,
                     ) in ranked[:5]
@@ -133,57 +201,44 @@ def calibrate(
 ) -> dict[str, Any]:
     if not queries:
         raise ValueError("没有可校准的人工标注样本")
-    score_thresholds = sorted({round(query.top1_score, 6) for query in queries})
-    margin_thresholds = sorted({round(query.margin, 6) for query in queries})
-    candidates: list[dict[str, Any]] = []
-    for score_threshold in score_thresholds:
-        for margin_threshold in margin_thresholds:
-            automatic = [
-                query
-                for query in queries
-                if query.top1_similarity_score >= score_threshold
-                and query.top1_score >= score_threshold
-                and query.margin >= margin_threshold
-            ]
-            if len(automatic) < min_auto_matches:
-                continue
-            correct = sum(query.correct for query in automatic)
-            precision = correct / len(automatic)
-            if precision >= target_precision:
-                candidates.append(
-                    {
-                        "auto_threshold": score_threshold,
-                        "min_margin": margin_threshold,
-                        "auto_matches": len(automatic),
-                        "precision": round(precision, 6),
-                        "coverage": round(len(automatic) / len(queries), 6),
-                    }
-                )
-    candidates.sort(
-        key=lambda candidate: (
-            candidate["auto_matches"],
-            candidate["precision"],
-            -candidate["auto_threshold"],
-            -candidate["min_margin"],
-        ),
-        reverse=True,
+    automatic = [query for query in queries if query.top1_score >= AUTO_THRESHOLD]
+    automatic_correct = sum(query.correct for query in automatic)
+    automatic_precision = (
+        automatic_correct / len(automatic) if automatic else None
     )
     correct_top1 = sum(query.correct for query in queries)
-    recommendation = candidates[0] if candidates else None
     positive_queries = [query for query in queries if query.expected_asset_id is not None]
     negative_queries = [query for query in queries if query.expected_asset_id is None]
-    review_threshold = _recommend_review_threshold(
-        positive_queries,
-        target_recall=target_review_recall,
-        maximum=(recommendation or {}).get("auto_threshold", 1.0),
+    retrievable_positives = sum(
+        query.top1_score >= REVIEW_THRESHOLD
+        and any(candidate["expected"] for candidate in query.top5)
+        for query in positive_queries
+    )
+    review_recall = (
+        retrievable_positives / len(positive_queries) if positive_queries else None
     )
     enough_samples = (
         len(positive_queries) >= min_positive_samples
         and len(negative_queries) >= min_negative_samples
     )
-    ready = recommendation is not None and review_threshold is not None and enough_samples
-    if recommendation is not None:
-        recommendation = {**recommendation, "review_threshold": review_threshold}
+    enough_automatic = len(automatic) >= min_auto_matches
+    precision_met = (
+        automatic_precision is not None and automatic_precision >= target_precision
+    )
+    review_recall_met = review_recall is not None and review_recall >= target_review_recall
+    ready = enough_samples and enough_automatic and precision_met and review_recall_met
+    evaluation = {
+        "auto_threshold": AUTO_THRESHOLD,
+        "review_threshold": REVIEW_THRESHOLD,
+        "decision_rule": "top1_final_score >= auto_threshold",
+        "auto_matches": len(automatic),
+        "correct_auto_matches": automatic_correct,
+        "precision": (
+            round(automatic_precision, 6) if automatic_precision is not None else None
+        ),
+        "coverage": round(len(automatic) / len(queries), 6),
+        "review_recall": round(review_recall, 6) if review_recall is not None else None,
+    }
     return {
         "sample_count": len(queries),
         "target_precision": target_precision,
@@ -194,37 +249,16 @@ def calibrate(
         "minimum_positive_samples": min_positive_samples,
         "minimum_negative_samples": min_negative_samples,
         "top1_accuracy": round(correct_top1 / len(queries), 6),
-        "recommendation": recommendation,
+        "evaluation": evaluation,
+        "recommendation": evaluation if ready else None,
         "status": "recommended" if ready else "insufficient_evidence",
         "message": (
-            "已找到满足目标精确率且覆盖率最高的阈值组合"
+            "固定阈值策略已满足样本量、自动匹配精确率和复核召回率要求"
             if ready
-            else "当前样本量、自动匹配精确率或复核召回率尚未达到上线要求"
+            else "固定阈值策略的样本量、自动匹配精确率或复核召回率尚未达到上线要求"
         ),
         "queries": [asdict(query) for query in queries],
     }
-
-
-def _recommend_review_threshold(
-    positives: list[QueryResult],
-    *,
-    target_recall: float,
-    maximum: float,
-) -> float | None:
-    if not positives:
-        return None
-    thresholds = sorted(
-        {round(query.top1_score, 6) for query in positives if query.top1_score <= maximum},
-        reverse=True,
-    )
-    for threshold in thresholds:
-        reviewable = sum(
-            query.top1_score >= threshold and any(candidate["expected"] for candidate in query.top5)
-            for query in positives
-        )
-        if reviewable / len(positives) >= target_recall:
-            return threshold
-    return None
 
 
 def main() -> None:

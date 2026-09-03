@@ -198,6 +198,7 @@ class ImageJobService:
             routing_policy_json=routing_policy,
             filter_enabled=payload.filter_enabled,
             beautify_enabled=payload.beautify_enabled,
+            watermark_processing_enabled=payload.watermark_processing_enabled,
             similarity_enabled=payload.similarity_enabled,
             similarity_profile_id=payload.similarity_profile,
             unmatched_standard_policy=payload.unmatched_standard_policy,
@@ -435,6 +436,13 @@ class ImageJobService:
                             similarity=item.similarity_match.similarity_score,
                             feature_score=item.similarity_match.feature_score,
                             final_score=item.similarity_match.final_score,
+                            score_version=item.similarity_match.score_version,
+                            feature_reliability=(
+                                item.similarity_match.feature_reliability
+                            ),
+                            feature_coverage=item.similarity_match.feature_coverage,
+                            candidate_margin=item.similarity_match.candidate_margin,
+                            field_scores=item.similarity_match.field_scores or {},
                             auto_threshold=(
                                 similarity_profile.similarity_auto_threshold
                                 if similarity_profile
@@ -462,6 +470,13 @@ class ImageJobService:
                             similarity=item.similarity_match.similarity_score,
                             feature_score=item.similarity_match.feature_score,
                             final_score=item.similarity_match.final_score,
+                            score_version=item.similarity_match.score_version,
+                            feature_reliability=(
+                                item.similarity_match.feature_reliability
+                            ),
+                            feature_coverage=item.similarity_match.feature_coverage,
+                            candidate_margin=item.similarity_match.candidate_margin,
+                            field_scores=item.similarity_match.field_scores or {},
                             auto_threshold=(
                                 similarity_profile.similarity_auto_threshold
                                 if similarity_profile

@@ -74,11 +74,11 @@ curl --fail --silent https://<service-host>/health/ready
 - 确认一张图片过滤通过后立即并行启动美化规划、内容分析和 OpenCLIP 预向量，不等待同批其他图片完成过滤；预向量状态为 `provisional`，不得触发素材匹配。
 - 确认美化完成后从最终交付图刷新权威 OpenCLIP 向量，只有最终向量状态为 `completed` 或 `failed` 才允许进入素材匹配。
 - 确认素材匹配使用预处理方向归一化图的向量和内容特征，最终标签仍只来自素材组人工标签；增强和匹配都完成前图片不得进入交付终态。
-- 确认 `worker-classification`、`worker-beautify-plan`、`worker-analysis`、`worker-openclip` 和 `worker-matching` 均健康；旧 `filtering` 队列由 `worker-classification` 兼容消费，不再保留独立过滤容器。
+- 确认 `worker-classification`、`worker-beautify-plan`、`worker-redaction`、`worker-inpaint`、`worker-enhance`、`worker-render`、`worker-analysis`、`worker-openclip` 和 `worker-matching` 均健康；旧 `filtering` 队列由 `worker-classification` 兼容消费，不再保留独立过滤容器。
 - 确认回调包含时间戳和 HMAC 签名，接收方完成签名、时效和幂等校验。
 - 检查 API、控制 Worker、各处理 Worker 和 beat 的有限量日志，不输出完整环境变量或密钥。
 - 检查结构化日志中的 `combined_classify_filter_requests_total`、`beautify_plan_failures_total`、`enhancement_failures_total`、`redaction_stage_total`、`redaction_stage_duration_ms`、`redaction_logo_detections_total`、`redaction_manual_review_total`、`embedding_failures_total`、`library_match_total` 和 `forbidden_llm_tag_write_total`；新任务不应出现 `filter_classification_requests_total`、`routed_filter_requests_total` 或 `filter_barrier_trigger_total`，最后一项必须为零。
-- 确认 `worker-enhance` 保持并发 1 和 2 GiB 内存上限；水印处理的 `outside_roi_changed_pixels` 必须为 0，Logo 未检出必须报告 `not_detected` 而非 `applied`。
+- 确认 `worker-inpaint` 保持并发 1、4 GiB 内存上限并定期回收子进程；`worker-redaction` 只做 OCR/水印检测，`worker-enhance` 只做普通美化，`worker-render` 负责 Logo 与最终编码。水印处理的 `outside_roi_changed_pixels` 必须为 0，Logo 未检出必须报告 `not_detected` 而非 `applied`。
 
 ## 回滚
 

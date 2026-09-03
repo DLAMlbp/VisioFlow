@@ -80,6 +80,11 @@ class TagReviewResponse(BaseModel):
     similarity_score: float | None
     feature_score: float | None
     final_score: float | None
+    score_version: str
+    feature_reliability: float | None
+    feature_coverage: float | None
+    candidate_margin: float | None
+    field_scores: dict[str, dict[str, object]]
     decision: str
     message: str
     candidates: list[dict[str, object]]

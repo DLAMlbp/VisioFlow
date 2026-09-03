@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -11,7 +13,8 @@ import numpy as np
 from src.core.config import Settings
 from src.services.images.adapters.lama_opencv import erase_lama_opencv
 from src.services.images.adapters.migan_openvino import erase_migan_openvino
-from src.services.images.adapters.rapidocr import detect_text_polygons
+from src.services.images.adapters.rapidocr import detect_text_lines, detect_text_polygons
+from src.services.images.mosaic import Box
 from src.services.images.adapters.remove_ai_watermarks import erase_mask
 from src.services.images.redaction import (
     ImageStageResult,
@@ -19,6 +22,87 @@ from src.services.images.redaction import (
     normalized_roi_to_box,
 )
 from src.services.profiles import WatermarkRemovalConfig
+
+
+@dataclass(frozen=True)
+class WatermarkPreparation:
+    image_bgr: np.ndarray
+    mask: np.ndarray
+    audit: dict[str, Any]
+    requires_inpaint: bool
+    reasons: tuple[str, ...] = ()
+
+
+_APP_TOKEN = re.compile(r"(?<![A-Z])A\s*P\s*P(?![A-Z])", re.IGNORECASE)
+
+
+def app_token_box_from_text_line(
+    polygon: np.ndarray,
+    text: str,
+    *,
+    offset: tuple[int, int] = (0, 0),
+) -> Box | None:
+    """Project the exact APP substring from an OCR line into an axis-aligned box."""
+    match = _APP_TOKEN.search(text)
+    points = np.asarray(polygon, dtype=np.float32)
+    if match is None or points.shape != (4, 2) or not text:
+        return None
+    start_ratio = match.start() / len(text)
+    end_ratio = match.end() / len(text)
+    top_left, top_right, bottom_right, bottom_left = points
+    token_points = np.asarray(
+        [
+            top_left + (top_right - top_left) * start_ratio,
+            top_left + (top_right - top_left) * end_ratio,
+            bottom_left + (bottom_right - bottom_left) * end_ratio,
+            bottom_left + (bottom_right - bottom_left) * start_ratio,
+        ]
+    )
+    xs, ys = token_points[:, 0], token_points[:, 1]
+    token_height = max(1.0, float(ys.max() - ys.min()))
+    padding = token_height * 0.08
+    offset_x, offset_y = offset
+    return (
+        round(float(xs.min() - padding)) + offset_x,
+        round(float(ys.min() - padding)) + offset_y,
+        round(float(xs.max() + padding)) + offset_x,
+        round(float(ys.max() + padding)) + offset_y,
+    )
+
+
+def detect_watermark_app_boxes(
+    image_bgr: np.ndarray,
+    config: WatermarkRemovalConfig,
+) -> tuple[list[Box], list[float], Box]:
+    """Detect only explicit APP tokens inside the protected bottom-left ROI."""
+    height, width = image_bgr.shape[:2]
+    roi_box = normalized_roi_to_box(
+        config.roi, image_width=width, image_height=height
+    )
+    x0, y0, x1, y1 = roi_box
+    boxes: list[Box] = []
+    confidences: list[float] = []
+    for line in detect_text_lines(image_bgr[y0:y1, x0:x1]):
+        if line.confidence < config.detection_threshold:
+            continue
+        box = app_token_box_from_text_line(
+            line.polygon,
+            line.text,
+            offset=(x0, y0),
+        )
+        if box is None:
+            continue
+        clipped = (
+            max(x0, box[0]),
+            max(y0, box[1]),
+            min(x1, box[2]),
+            min(y1, box[3]),
+        )
+        if clipped[2] <= clipped[0] or clipped[3] <= clipped[1]:
+            continue
+        boxes.append(clipped)
+        confidences.append(round(line.confidence, 4))
+    return boxes, confidences, roi_box
 
 
 def reverse_alpha_blend(
@@ -242,9 +326,34 @@ class DangjiaWatermarkProcessor:
             alpha = np.asarray(payload["alpha"], dtype=np.float32)
         return manifest, alpha
 
-    def remove(
+    def prepare_app_overlay(
         self, image_bgr: np.ndarray, config: WatermarkRemovalConfig
-    ) -> ImageStageResult:
+    ) -> WatermarkPreparation:
+        """Create render instructions without changing pixels or invoking inpainting."""
+        height, width = image_bgr.shape[:2]
+        boxes, confidences, roi_box = detect_watermark_app_boxes(image_bgr, config)
+        return WatermarkPreparation(
+            image_bgr=image_bgr.copy(),
+            mask=np.zeros((height, width), dtype=np.uint8),
+            audit={
+                "enabled": True,
+                "status": "detected" if boxes else "not_detected",
+                "image_size": [width, height],
+                "roi_px": list(roi_box),
+                "automatic_boxes": [list(box) for box in boxes],
+                "confidences": confidences,
+                "method": "rapidocr_app_token",
+                "outside_roi_changed_pixels": 0,
+            },
+            requires_inpaint=False,
+            reasons=("已定位左下角拍摄水印中的 APP，等待使用小当图标遮挡",)
+            if boxes
+            else (),
+        )
+
+    def prepare(
+        self, image_bgr: np.ndarray, config: WatermarkRemovalConfig
+    ) -> WatermarkPreparation:
         height, width = image_bgr.shape[:2]
         roi_box = normalized_roi_to_box(
             config.roi, image_width=width, image_height=height
@@ -304,8 +413,9 @@ class DangjiaWatermarkProcessor:
         mask_area = int(np.count_nonzero(mask))
         mask_area_ratio = mask_area / float(max(1, (x1 - x0) * (y1 - y0)))
         if confidence < config.detection_threshold or mask_area == 0:
-            return ImageStageResult(
+            return WatermarkPreparation(
                 image_bgr=image_bgr.copy(),
+                mask=mask,
                 audit={
                     "status": "not_detected",
                     "image_size": [width, height],
@@ -315,9 +425,62 @@ class DangjiaWatermarkProcessor:
                     "outside_roi_changed_pixels": 0,
                     "method": method,
                 },
+                requires_inpaint=False,
             )
         if mask_area_ratio > config.max_modified_ratio:
             raise ValueError("watermark mask exceeds the configured safety limit")
+
+        if method == "reverse_alpha":
+            outside_changed = changed_pixels_outside_box(image_bgr, result, roi_box)
+            if config.preserve_outside_roi and outside_changed:
+                raise ValueError("watermark processor modified pixels outside the protected ROI")
+            return WatermarkPreparation(
+                image_bgr=result,
+                mask=mask,
+                audit={
+                    "status": "applied",
+                    "image_size": [width, height],
+                    "roi_px": list(roi_box),
+                    "confidence": round(confidence, 4),
+                    "mask_area_ratio": round(mask_area_ratio, 6),
+                    "outside_roi_changed_pixels": outside_changed,
+                    "method": method,
+                },
+                requires_inpaint=False,
+                reasons=("已在受保护的左下角区域去除当家 APP 拍摄水印",),
+            )
+
+        return WatermarkPreparation(
+            image_bgr=image_bgr.copy(),
+            mask=mask,
+            audit={
+                "status": "detected",
+                "image_size": [width, height],
+                "roi_px": list(roi_box),
+                "confidence": round(confidence, 4),
+                "mask_area_ratio": round(mask_area_ratio, 6),
+                "outside_roi_changed_pixels": 0,
+                "method": method,
+            },
+            requires_inpaint=True,
+        )
+
+    def apply_prepared(
+        self,
+        preparation: WatermarkPreparation,
+        config: WatermarkRemovalConfig,
+    ) -> ImageStageResult:
+        if not preparation.requires_inpaint:
+            return ImageStageResult(
+                preparation.image_bgr.copy(),
+                dict(preparation.audit),
+                preparation.reasons,
+            )
+
+        image_bgr = preparation.image_bgr
+        mask = preparation.mask
+        result = image_bgr.copy()
+        method = str(preparation.audit.get("method") or "stroke_mask_telea")
 
         if config.backend in {"deblend_then_lama", "lama"}:
             model_name = str(
@@ -364,22 +527,31 @@ class DangjiaWatermarkProcessor:
             )
             method = f"{method}+telea"
 
+        roi_values = preparation.audit.get("roi_px")
+        if not isinstance(roi_values, list) or len(roi_values) != 4:
+            raise ValueError("prepared watermark ROI is missing")
+        roi_box = tuple(int(value) for value in roi_values)
         outside_changed = changed_pixels_outside_box(image_bgr, result, roi_box)
         if config.preserve_outside_roi and outside_changed:
             raise ValueError("watermark processor modified pixels outside the protected ROI")
-        return ImageStageResult(
-            image_bgr=result,
-            audit={
+        audit = dict(preparation.audit)
+        audit.update(
+            {
                 "status": "applied",
-                "image_size": [width, height],
-                "roi_px": list(roi_box),
-                "confidence": round(confidence, 4),
-                "mask_area_ratio": round(mask_area_ratio, 6),
                 "outside_roi_changed_pixels": outside_changed,
                 "method": method,
-            },
+            }
+        )
+        return ImageStageResult(
+            image_bgr=result,
+            audit=audit,
             reasons=("已在受保护的左下角区域去除当家 APP 拍摄水印",),
         )
+
+    def remove(
+        self, image_bgr: np.ndarray, config: WatermarkRemovalConfig
+    ) -> ImageStageResult:
+        return self.apply_prepared(self.prepare(image_bgr, config), config)
 
 
 @lru_cache(maxsize=4)

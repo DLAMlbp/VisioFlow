@@ -118,15 +118,37 @@ services:
     mem_limit: 768m
     cpus: 1.0
 
+  worker-redaction:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q redaction -l info --concurrency=1 --without-mingle --without-gossip
+    environment:
+      WORKER_ROLE: redaction
+    mem_limit: 1536m
+    cpus: 1.0
+
+  worker-inpaint:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q inpaint -l info --concurrency=1 --max-tasks-per-child=5 --without-mingle --without-gossip
+    environment:
+      WORKER_ROLE: inpaint
+    mem_limit: 4096m
+    cpus: 2.0
+
   worker-enhance:
     <<: *worker
-    # Measured peak RSS is 1.45 GiB for OCR + LaMa at concurrency 1. Keep one model
-    # process and reserve headroom for Celery and the beautification pipeline.
-    command: celery -A src.workers.celery_app worker -Q enhance -l info --concurrency=1 --without-mingle --without-gossip
+    command: celery -A src.workers.celery_app worker -Q enhance -l info --concurrency=2 --without-mingle --without-gossip
     environment:
       WORKER_ROLE: enhance
-    mem_limit: 2048m
+    mem_limit: 1280m
     cpus: 1.5
+
+  worker-render:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q render -l info --concurrency=1 --without-mingle --without-gossip
+    environment:
+      WORKER_ROLE: render
+    mem_limit: 1536m
+    cpus: 1.0
 
   worker-analysis:
     <<: *worker

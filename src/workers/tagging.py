@@ -14,9 +14,8 @@ from src.services.ai_model_config import load_ai_model_settings
 from src.services.images.embedding import ImageEmbeddingError, OpenClipImageEmbedder
 from src.services.images.similarity import (
     ScoredCandidate,
-    combined_similarity_score,
     decide_similarity,
-    feature_similarity,
+    score_candidate,
     unmatched_decision,
 )
 from src.services.images.tagging import TaggingOutcome, get_tag_provider
@@ -86,21 +85,13 @@ async def _generate_image_tags(image_id: str) -> None:
                 )
                 scored: list[ScoredCandidate] = []
                 for asset, similarity_score in similar_assets:
-                    feature_score = feature_similarity(
-                        outcome.payload.model_dump(), asset.analysis_json
-                    )
-                    final_score = combined_similarity_score(
-                        similarity_score=similarity_score,
-                        feature_score=feature_score,
-                        settings=similarity_profile,
-                    )
                     scored.append(
-                        ScoredCandidate(
+                        score_candidate(
                             asset=asset,
                             tags=list(asset.group.tags),
                             similarity_score=similarity_score,
-                            feature_score=feature_score,
-                            final_score=final_score,
+                            query_content=outcome.payload.model_dump(),
+                            settings=similarity_profile,
                         )
                     )
                 match_decision = decide_similarity(candidates=scored, settings=similarity_profile)
@@ -118,12 +109,22 @@ async def _generate_image_tags(image_id: str) -> None:
                 "similarity_score": match_decision.similarity_score,
                 "feature_score": match_decision.feature_score,
                 "final_score": match_decision.final_score,
+                "score_version": match_decision.score_version,
+                "feature_reliability": match_decision.feature_reliability,
+                "feature_coverage": match_decision.feature_coverage,
+                "candidate_margin": match_decision.candidate_margin,
+                "field_scores": match_decision.field_scores,
                 "decision": match_decision.decision,
                 "message": match_decision.message,
                 "candidate_json": match_decision.candidates,
             },
         )
         if tag_json is not None:
+            tag_json["content_analysis_provenance"] = {
+                "provider": settings.ai_tagging_provider,
+                "model_name": settings.ai_tagging_model,
+                "prompt_version": item.ai_tag.prompt_version,
+            }
             tag_json["tags"] = (
                 match_decision.tags if match_decision.decision == "matched" else []
             )
@@ -139,8 +140,8 @@ async def _generate_image_tags(image_id: str) -> None:
         await repository.upsert_ai_tag(
             image_id=item.id,
             source_object_key=source_key,
-            provider=settings.ai_tagging_provider,
-            model_name=settings.ai_tagging_model,
+            provider="library",
+            model_name=item.ai_tag.model_name,
             prompt_version=item.ai_tag.prompt_version,
             status=outcome.status,
             duration_ms=outcome.duration_ms,

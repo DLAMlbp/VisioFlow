@@ -81,6 +81,7 @@ class CreateImageJobRequest(BaseModel):
     redaction_profile: str | None = Field(default=None, min_length=1, max_length=80)
     filter_enabled: bool = True
     beautify_enabled: bool = True
+    watermark_processing_enabled: bool = False
     similarity_enabled: bool = True
     similarity_profile: str = Field(default="library_similarity_v2", min_length=1, max_length=80)
     unmatched_standard_policy: Literal["reject"] = "reject"
@@ -177,6 +178,11 @@ class ImageSimilarityResultResponse(BaseModel):
     similarity: float | None = Field(default=None, ge=0, le=1)
     feature_score: float | None = Field(default=None, ge=0, le=1)
     final_score: float | None = Field(default=None, ge=0, le=1)
+    score_version: str | None = None
+    feature_reliability: float | None = Field(default=None, ge=0, le=1)
+    feature_coverage: float | None = Field(default=None, ge=0, le=1)
+    candidate_margin: float | None = Field(default=None, ge=-1, le=1)
+    field_scores: dict[str, dict[str, object]] = Field(default_factory=dict)
     auto_threshold: float | None = Field(default=None, ge=0, le=1)
     review_threshold: float | None = Field(default=None, ge=0, le=1)
     message: str

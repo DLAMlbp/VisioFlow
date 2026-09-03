@@ -87,6 +87,7 @@ class JobConfig:
     routing_policy_json: dict[str, object] | None
     filter_enabled: bool
     beautify_enabled: bool
+    watermark_processing_enabled: bool
     similarity_enabled: bool
     similarity_profile_id: str
     unmatched_standard_policy: str
@@ -178,6 +179,7 @@ class ImageJobRepository:
                     ImageJob.routing_policy_json,
                     ImageJob.filter_enabled,
                     ImageJob.beautify_enabled,
+                    ImageJob.watermark_processing_enabled,
                     ImageJob.similarity_enabled,
                     ImageJob.similarity_profile_id,
                     ImageJob.unmatched_standard_policy,
@@ -266,7 +268,12 @@ class ImageJobRepository:
                 ImageItem.status == "filtered",
                 ImageItem.beautify_plan_status == "completed",
             )
-            .values(status="enhancing", enhance_started_at=func.now())
+            .values(
+                status="enhancing",
+                enhance_started_at=func.now(),
+                enhancement_stage="redaction",
+                enhancement_stage_started_at=func.now(),
+            )
             .returning(ImageItem.id)
         )
         if row.scalar_one_or_none() is None:
@@ -274,6 +281,65 @@ class ImageJobRepository:
             return None
         await self.session.commit()
         return await self.get_item(image_id)
+
+    async def continue_enhancement(
+        self, image_id: str, expected_stage: str
+    ) -> ImageItem | None:
+        """Claim one queued enhancement substage without changing overall status."""
+
+        row = await self.session.execute(
+            update(ImageItem)
+            .where(
+                ImageItem.id == image_id,
+                ImageItem.status == "enhancing",
+                ImageItem.enhancement_stage == expected_stage,
+                ImageItem.enhancement_stage_started_at.is_(None),
+            )
+            .values(enhancement_stage_started_at=func.now())
+            .returning(ImageItem.id)
+        )
+        if row.scalar_one_or_none() is None:
+            await self.session.rollback()
+            return None
+        await self.session.commit()
+        return await self.get_item(image_id)
+
+    async def release_enhancement_stage(
+        self, image_id: str, expected_stage: str
+    ) -> bool:
+        result = await self.session.execute(
+            update(ImageItem)
+            .where(
+                ImageItem.id == image_id,
+                ImageItem.status == "enhancing",
+                ImageItem.enhancement_stage == expected_stage,
+            )
+            .values(enhancement_stage_started_at=None)
+        )
+        await self.session.commit()
+        return result.rowcount == 1
+
+    async def advance_enhancement_stage(
+        self,
+        image_id: str,
+        *,
+        current_stage: str,
+        next_stage: str,
+    ) -> bool:
+        result = await self.session.execute(
+            update(ImageItem)
+            .where(
+                ImageItem.id == image_id,
+                ImageItem.status == "enhancing",
+                ImageItem.enhancement_stage == current_stage,
+            )
+            .values(
+                enhancement_stage=next_stage,
+                enhancement_stage_started_at=None,
+            )
+        )
+        await self.session.commit()
+        return result.rowcount == 1
 
     async def queue_beautify_plan(self, image_id: str) -> bool:
         result = await self.session.execute(
@@ -703,6 +769,53 @@ class ImageJobRepository:
             return None
         await self.session.commit()
         return await self.get_item(image_id)
+
+    async def find_reusable_image_embedding(
+        self,
+        *,
+        image_id: str,
+        sha256: str,
+        embedding_version: str,
+    ) -> list[float] | None:
+        result = await self.session.execute(
+            select(ImageItem.embedding)
+            .where(
+                ImageItem.id != image_id,
+                ImageItem.sha256 == sha256,
+                ImageItem.embedding_version == embedding_version,
+                ImageItem.embedding_status.in_(("completed", "provisional")),
+                ImageItem.embedding.is_not(None),
+            )
+            .order_by(ImageItem.embedding_completed_at.desc())
+            .limit(1)
+        )
+        embedding = result.scalar_one_or_none()
+        return list(embedding) if embedding is not None else None
+
+    async def find_reusable_content_analysis(
+        self,
+        *,
+        image_id: str,
+        sha256: str,
+        prompt_version: str,
+        model_name: str,
+    ) -> dict[str, object] | None:
+        result = await self.session.execute(
+            select(ImageAITag.tag_json)
+            .join(ImageItem, ImageItem.id == ImageAITag.image_id)
+            .where(
+                ImageItem.id != image_id,
+                ImageItem.sha256 == sha256,
+                ImageAITag.prompt_version == prompt_version,
+                ImageAITag.model_name == model_name,
+                ImageAITag.status == "completed",
+                ImageAITag.tag_json.is_not(None),
+            )
+            .order_by(ImageAITag.updated_at.desc())
+            .limit(1)
+        )
+        payload = result.scalar_one_or_none()
+        return dict(payload) if isinstance(payload, dict) else None
 
     async def complete_embedding_stage(
         self,
@@ -1200,6 +1313,8 @@ class ImageJobRepository:
                 status="enhanced",
                 analysis_object_key=analysis_object_key,
                 enhance_completed_at=func.now(),
+                enhancement_stage="completed",
+                enhancement_stage_started_at=None,
             )
         )
         if transitioned.rowcount != 1:
@@ -1719,6 +1834,8 @@ class ImageJobRepository:
                 preprocess_completed_at=None,
                 enhance_started_at=None,
                 enhance_completed_at=None,
+                enhancement_stage=None,
+                enhancement_stage_started_at=None,
                 analysis_started_at=None,
                 analysis_completed_at=None,
                 embedding_started_at=None,

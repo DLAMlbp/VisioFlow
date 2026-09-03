@@ -11,11 +11,10 @@ from src.repositories.library import LibraryRepository
 from src.services.ai_model_config import load_ai_model_settings
 from src.services.images.embedding import ImageEmbeddingError, OpenClipImageEmbedder
 from src.services.images.similarity import (
+    SCORE_VERSION,
     ScoredCandidate,
-    apply_shadow_mode,
-    combined_similarity_score,
     decide_similarity,
-    feature_similarity,
+    score_candidate,
 )
 from src.services.jobs.dispatch import EmbeddingTaskPublisher, MatchTaskPublisher
 from src.services.profiles import ProfileLoader
@@ -53,21 +52,29 @@ async def _generate_image_embedding(image_id: str) -> None:
         if job is None or job.cancel_requested_at is not None:
             return
         settings = load_ai_model_settings(workflow_settings)
+        embedding_version = f"{settings.image_embedding_version}+source_v2"[:120]
         embedding: list[float] | None = None
         provisional = bool(
             early_semantic
             and not (item.status == "enhanced" and item.analysis_object_key)
         )
         try:
-            source_key = (
-                item.thumbnail_object_key
-                if provisional
-                else item.analysis_object_key
+            embedding = (
+                await repository.find_reusable_image_embedding(
+                    image_id=item.id,
+                    sha256=item.sha256,
+                    embedding_version=embedding_version,
+                )
+                if getattr(item, "sha256", None)
+                and hasattr(repository, "find_reusable_image_embedding")
+                else None
             )
-            if not source_key:
+            source_key = item.thumbnail_object_key or getattr(item, "object_key", None)
+            if embedding is None and not source_key:
                 raise ImageEmbeddingError("缺少向量分析图片")
-            image_bytes = await get_storage_provider().download(source_key)
-            embedding = await OpenClipImageEmbedder(settings).embed(image_bytes)
+            if embedding is None:
+                image_bytes = await get_storage_provider().download(source_key)
+                embedding = await OpenClipImageEmbedder(settings).embed(image_bytes)
         except Exception:
             logger.exception("Unable to generate image embedding")
         if embedding is None:
@@ -78,7 +85,7 @@ async def _generate_image_embedding(image_id: str) -> None:
                     "source": "job",
                     "job_id": item.job_id,
                     "image_id": item.id,
-                    "embedding_version": settings.image_embedding_version,
+                    "embedding_version": embedding_version,
                 },
             )
             await repository.fail_item(
@@ -91,7 +98,7 @@ async def _generate_image_embedding(image_id: str) -> None:
         await repository.complete_embedding_stage(
             item.id,
             embedding=embedding,
-            embedding_version=settings.image_embedding_version if embedding else None,
+            embedding_version=embedding_version if embedding else None,
             provisional=provisional,
         )
         emit_metric(
@@ -102,7 +109,7 @@ async def _generate_image_embedding(image_id: str) -> None:
                 "outcome": "success" if embedding is not None else "failed",
                 "job_id": item.job_id,
                 "image_id": item.id,
-                "embedding_version": settings.image_embedding_version,
+                "embedding_version": embedding_version,
             },
         )
         if provisional:
@@ -158,9 +165,11 @@ async def _match_image_library(image_id: str) -> None:
             return
         else:
             try:
-                similar_assets = await library_repository.find_similar_assets(
-                    list(item.embedding),
-                    similarity_profile.similarity_candidate_limit,
+                exact_assets = (
+                    await library_repository.find_exact_active_assets(item.sha256)
+                    if getattr(item, "sha256", None)
+                    and hasattr(library_repository, "find_exact_active_assets")
+                    else []
                 )
                 query_content = (
                     item.ai_tag.tag_json
@@ -169,24 +178,37 @@ async def _match_image_library(image_id: str) -> None:
                     and item.ai_tag.status == "completed"
                     else None
                 )
-                for asset, similarity_score in similar_assets:
-                    feature_score = feature_similarity(query_content, asset.analysis_json)
-                    scored.append(
+                if exact_assets:
+                    scored.extend(
                         ScoredCandidate(
                             asset=asset,
                             tags=list(asset.group.tags),
-                            similarity_score=similarity_score,
-                            feature_score=feature_score,
-                            final_score=combined_similarity_score(
-                                similarity_score=similarity_score,
-                                feature_score=feature_score,
-                                settings=similarity_profile,
-                            ),
+                            similarity_score=1.0,
+                            feature_score=1.0,
+                            final_score=1.0,
+                            feature_reliability=1.0,
+                            feature_coverage=1.0,
+                            score_version=SCORE_VERSION,
                         )
+                        for asset in exact_assets
                     )
-                decision = apply_shadow_mode(
-                    decide_similarity(candidates=scored, settings=similarity_profile),
-                    enabled=settings.library_match_shadow_mode,
+                else:
+                    similar_assets = await library_repository.find_similar_assets(
+                        list(item.embedding),
+                        similarity_profile.similarity_candidate_limit,
+                    )
+                    for asset, similarity_score in similar_assets:
+                        scored.append(
+                            score_candidate(
+                                asset=asset,
+                                tags=list(asset.group.tags),
+                                similarity_score=similarity_score,
+                                query_content=query_content,
+                                settings=similarity_profile,
+                            )
+                        )
+                decision = decide_similarity(
+                    candidates=scored, settings=similarity_profile
                 )
             except Exception as exc:
                 logger.exception("Unable to match image against material library")
@@ -232,6 +254,20 @@ async def _match_image_library(image_id: str) -> None:
                 value=round(decision.feature_score, 6),
                 labels=metric_labels,
             )
+        if decision.feature_reliability is not None:
+            emit_metric(
+                logger,
+                "library_match_feature_reliability",
+                value=round(decision.feature_reliability, 6),
+                labels=metric_labels,
+            )
+        if decision.feature_coverage is not None:
+            emit_metric(
+                logger,
+                "library_match_feature_coverage",
+                value=round(decision.feature_coverage, 6),
+                labels=metric_labels,
+            )
         if decision.final_score is not None:
             emit_metric(
                 logger,
@@ -239,14 +275,11 @@ async def _match_image_library(image_id: str) -> None:
                 value=round(decision.final_score, 6),
                 labels=metric_labels,
             )
-        if len(decision.candidates) >= 2:
-            margin = float(decision.candidates[0]["final_score"]) - float(
-                decision.candidates[1]["final_score"]
-            )
+        if decision.candidate_margin is not None:
             emit_metric(
                 logger,
                 "library_match_margin",
-                value=round(margin, 6),
+                value=round(decision.candidate_margin, 6),
                 labels=metric_labels,
             )
 
@@ -258,12 +291,23 @@ async def _match_image_library(image_id: str) -> None:
                 "similarity_score": decision.similarity_score,
                 "feature_score": decision.feature_score,
                 "final_score": decision.final_score,
+                "score_version": decision.score_version,
+                "feature_reliability": decision.feature_reliability,
+                "feature_coverage": decision.feature_coverage,
+                "candidate_margin": decision.candidate_margin,
+                "field_scores": decision.field_scores,
                 "decision": decision.decision,
                 "message": decision.message,
                 "candidate_json": decision.candidates,
             },
         )
         tag_json = dict(item.ai_tag.tag_json or {}) if item.ai_tag is not None else {}
+        if item.ai_tag is not None:
+            tag_json["content_analysis_provenance"] = {
+                "provider": item.ai_tag.provider,
+                "model_name": item.ai_tag.model_name,
+                "prompt_version": item.ai_tag.prompt_version,
+            }
         tag_json.update(
             {
                 "tags": decision.tags if decision.decision == "matched" else [],
@@ -274,6 +318,7 @@ async def _match_image_library(image_id: str) -> None:
                 ),
                 "candidate_tags": [],
                 "confidence": decision.final_score,
+                "match_confidence": decision.final_score,
                 "risks": list(tag_json.get("risks") or []),
             }
         )
@@ -287,9 +332,7 @@ async def _match_image_library(image_id: str) -> None:
                 image_id=item.id,
                 source_object_key=item.ai_tag.source_object_key,
                 provider="library",
-                model_name=(
-                    f"{settings.image_embedding_version}+{settings.ai_tagging_model}"
-                )[:120],
+                model_name=item.embedding_version or settings.image_embedding_version,
                 prompt_version=job.similarity_profile_id,
                 status="completed",
                 duration_ms=item.ai_tag.duration_ms,

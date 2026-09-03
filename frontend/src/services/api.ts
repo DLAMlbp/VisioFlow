@@ -179,6 +179,7 @@ export const api = {
         redaction_profile?: string;
         filter_enabled: boolean;
         beautify_enabled: boolean;
+        watermark_processing_enabled: boolean;
         similarity_enabled: boolean;
         unmatched_standard_policy: "reject";
         enhance_level: number;
@@ -551,7 +552,7 @@ function uploadWithProgress(uploadUrl: string, file: File, onProgress: (progress
       }
     };
 
-    request.onerror = () => reject(new Error("上传网络异常"));
+    request.onerror = () => reject(new Error("图片上传失败：对象存储地址不可访问或跨域配置不正确"));
     request.open("PUT", uploadUrl);
     request.setRequestHeader("Content-Type", file.type || "application/octet-stream");
     request.send(file);

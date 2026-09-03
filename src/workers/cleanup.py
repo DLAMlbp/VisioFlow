@@ -4,7 +4,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import selectinload
 
 from src.core.config import get_settings
@@ -19,14 +19,20 @@ from src.services.jobs.dispatch import (
     CompletionTaskPublisher,
     EmbeddingTaskPublisher,
     EnhancementTaskPublisher,
+    InpaintTaskPublisher,
     JobDispatchTaskPublisher,
     MatchTaskPublisher,
     MetadataTaskPublisher,
     RankingTaskPublisher,
+    RedactionDetectionTaskPublisher,
+    RenderTaskPublisher,
     RoutedProcessingTaskPublisher,
 )
 from src.services.storage.factory import get_storage_provider
-from src.services.storage.keys import build_redaction_base_object_key
+from src.services.storage.keys import (
+    build_enhancement_work_object_key,
+    build_redaction_base_object_key,
+)
 from src.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -67,6 +73,16 @@ async def _cleanup_expired_images() -> None:
                 item.thumbnail_object_key,
                 item.analysis_object_key,
                 build_redaction_base_object_key(item.job_id, item.id),
+                *[
+                    build_enhancement_work_object_key(item.job_id, item.id, stage, extension)
+                    for stage, extension in (
+                        ("normalized", "jpg"),
+                        ("watermark-mask", "png"),
+                        ("watermark", "jpg"),
+                        ("beautified", "jpg"),
+                        ("state", "json"),
+                    )
+                ],
             ]
             if item.result is not None:
                 keys.append(item.result.enhanced_object_key)
@@ -372,13 +388,34 @@ async def _recover_stalled_images_legacy() -> None:
                 )
             ).scalars()
         )
-        enhancing = await _reset_stage(
-            session,
-            status="enhancing",
-            timestamp=ImageItem.enhance_started_at,
-            cutoff=cutoff,
-            values={"status": "filtered", "enhance_started_at": None},
+        legacy_enhancing = list(
+            (
+                await session.execute(
+                    update(ImageItem)
+                    .where(
+                        ImageItem.status == "enhancing",
+                        ImageItem.enhancement_stage.is_(None),
+                        or_(
+                            ImageItem.enhance_started_at < cutoff,
+                            and_(
+                                ImageItem.enhance_started_at.is_(None),
+                                ImageItem.updated_at < cutoff,
+                            ),
+                        ),
+                    )
+                    .values(
+                        status="filtered",
+                        enhance_started_at=None,
+                        enhancement_stage_started_at=None,
+                    )
+                    .returning(ImageItem.id)
+                )
+            ).scalars()
         )
+        redaction = await _recover_enhancement_stage(session, "redaction", cutoff)
+        inpaint = await _recover_enhancement_stage(session, "inpaint", cutoff)
+        enhancement = await _recover_enhancement_stage(session, "enhance", cutoff)
+        render = await _recover_enhancement_stage(session, "render", cutoff)
         pending_analysis = list(
             (
                 await session.execute(
@@ -550,7 +587,10 @@ async def _recover_stalled_images_legacy() -> None:
             *pending_beautify_plans,
             *recovered_streaming_beautify,
         ],
-        enhancement=[*enhancing, *completed_beautify_plans],
+        redaction=[*legacy_enhancing, *completed_beautify_plans, *redaction],
+        inpaint=inpaint,
+        enhancement=enhancement,
+        render=render,
         analysis=[*analyzing, *pending_analysis, *recovered_analysis],
         embedding=[
             *embedding,
@@ -570,7 +610,10 @@ def _publish_pipeline_recovery(
     routed_processing: list[str],
     ranking: list[str],
     beautify_plan: list[str],
+    redaction: list[str],
+    inpaint: list[str],
     enhancement: list[str],
+    render: list[str],
     analysis: list[str],
     embedding: list[str],
     matching: list[str],
@@ -581,10 +624,43 @@ def _publish_pipeline_recovery(
     _publish_many(RoutedProcessingTaskPublisher(), list(dict.fromkeys(routed_processing)))
     _publish_many(RankingTaskPublisher(), list(dict.fromkeys(ranking)))
     _publish_many(BeautifyPlanTaskPublisher(), list(dict.fromkeys(beautify_plan)))
+    _publish_many(RedactionDetectionTaskPublisher(), list(dict.fromkeys(redaction)))
+    _publish_many(InpaintTaskPublisher(), list(dict.fromkeys(inpaint)))
     _publish_many(EnhancementTaskPublisher(), list(dict.fromkeys(enhancement)))
+    _publish_many(RenderTaskPublisher(), list(dict.fromkeys(render)))
     _publish_many(AnalysisTaskPublisher(), list(dict.fromkeys(analysis)))
     _publish_many(EmbeddingTaskPublisher(), list(dict.fromkeys(embedding)))
     _publish_many(MatchTaskPublisher(), list(dict.fromkeys(matching)))
+
+
+async def _recover_enhancement_stage(session, stage: str, cutoff) -> list[str]:
+    stalled = list(
+        (
+            await session.execute(
+                update(ImageItem)
+                .where(
+                    ImageItem.status == "enhancing",
+                    ImageItem.enhancement_stage == stage,
+                    ImageItem.enhancement_stage_started_at < cutoff,
+                )
+                .values(enhancement_stage_started_at=None)
+                .returning(ImageItem.id)
+            )
+        ).scalars()
+    )
+    pending = list(
+        (
+            await session.execute(
+                select(ImageItem.id).where(
+                    ImageItem.status == "enhancing",
+                    ImageItem.enhancement_stage == stage,
+                    ImageItem.enhancement_stage_started_at.is_(None),
+                    ImageItem.updated_at < cutoff,
+                )
+            )
+        ).scalars()
+    )
+    return list(dict.fromkeys([*stalled, *pending]))
 
 
 async def _reset_stage(session, *, status, timestamp, cutoff, values) -> list[str]:

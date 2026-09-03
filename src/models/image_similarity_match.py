@@ -27,6 +27,15 @@ class ImageSimilarityMatch(Base):
     similarity_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     feature_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     final_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    score_version: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="legacy_v2"
+    )
+    feature_reliability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    feature_coverage: Mapped[float | None] = mapped_column(Float, nullable=True)
+    candidate_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    field_scores: Mapped[dict[str, dict[str, object]]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
     decision: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
     message: Mapped[str] = mapped_column(String(200), nullable=False)
     candidate_json: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False, default=list)

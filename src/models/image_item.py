@@ -105,6 +105,10 @@ class ImageItem(Base):
     preprocess_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     enhance_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     enhance_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    enhancement_stage: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)
+    enhancement_stage_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     analysis_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     analysis_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     embedding_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -1,5 +1,7 @@
 from functools import lru_cache
+from ipaddress import ip_address
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -145,6 +147,25 @@ class Settings(BaseSettings):
             problems.append("AI_CONFIG_ENCRYPTION_KEY 必须至少 32 个字符")
         if self.s3_access_key == "minio" or self.s3_secret_key == "minio123":
             problems.append("生产环境禁止使用默认对象存储凭据")
+        public_endpoint = (self.s3_public_endpoint or "").strip()
+        parsed_public_endpoint = urlparse(public_endpoint)
+        public_hostname = (parsed_public_endpoint.hostname or "").lower()
+        public_host_is_local = public_hostname in {"localhost", "minio"}
+        if public_hostname:
+            try:
+                public_host_is_local = public_host_is_local or ip_address(
+                    public_hostname
+                ).is_loopback
+            except ValueError:
+                pass
+        if (
+            parsed_public_endpoint.scheme not in {"http", "https"}
+            or not public_hostname
+            or public_host_is_local
+        ):
+            problems.append(
+                "S3_PUBLIC_ENDPOINT 必须配置为浏览器可访问的 HTTP(S) 对象存储地址"
+            )
         trusted_hosts = {host.strip() for host in self.trusted_hosts.split(",") if host.strip()}
         if not trusted_hosts or "*" in trusted_hosts:
             problems.append("TRUSTED_HOSTS 必须显式配置，不能使用通配符")

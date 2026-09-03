@@ -193,9 +193,34 @@ class SimilarityProfile(BaseModel):
     similarity_candidate_limit: int = Field(ge=1, le=100)
     similarity_image_weight: float = Field(ge=0, le=1)
     similarity_feature_weight: float = Field(ge=0, le=1)
+    similarity_dynamic_weighting_enabled: bool = False
+    similarity_min_content_weight: float = Field(default=0.0, ge=0, le=1)
+    similarity_max_content_weight: float = Field(default=0.30, ge=0, le=1)
+    similarity_field_weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "scene": 0.15,
+            "space": 0.12,
+            "condition": 0.12,
+            "content_type": 0.10,
+            "view": 0.05,
+            "subjects": 0.12,
+            "objects": 0.12,
+            "ocr_text": 0.12,
+            "attributes": 0.05,
+            "features": 0.05,
+        }
+    )
     similarity_auto_threshold: float = Field(ge=0, le=1)
     similarity_review_threshold: float = Field(ge=0, le=1)
     similarity_min_margin: float = Field(ge=0, le=1)
+
+    def model_post_init(self, __context: object) -> None:
+        if self.similarity_min_content_weight > self.similarity_max_content_weight:
+            raise ValueError("内容特征最小权重不能超过最大权重")
+        if not self.similarity_field_weights or any(
+            weight < 0 or weight > 1 for weight in self.similarity_field_weights.values()
+        ):
+            raise ValueError("内容特征字段权重必须是 0 到 1 之间的非空映射")
 
 
 class ProfileLoader:

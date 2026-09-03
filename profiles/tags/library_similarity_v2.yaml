@@ -1,10 +1,24 @@
 id: library_similarity_v2
-version: 7
-description: 图片向量占 70%、大模型内容特征占 30%；图片分和综合分均达到 60% 时自动继承素材组标签，否则按候选可信度进入复核或未匹配。
+version: 9
+description: reliability_v4；原图向量保持稳定，内容权重按覆盖率和真实置信度在 0%-30% 内变化，综合分达到 60% 即自动继承素材组标签。
 
 similarity_candidate_limit: 20
 similarity_image_weight: 0.70
 similarity_feature_weight: 0.30
+similarity_dynamic_weighting_enabled: true
+similarity_min_content_weight: 0.00
+similarity_max_content_weight: 0.30
+similarity_field_weights:
+  scene: 0.15
+  space: 0.12
+  condition: 0.12
+  content_type: 0.10
+  view: 0.05
+  subjects: 0.12
+  objects: 0.12
+  ocr_text: 0.12
+  attributes: 0.05
+  features: 0.05
 similarity_auto_threshold: 0.60
-similarity_review_threshold: 0.60
+similarity_review_threshold: 0.45
 similarity_min_margin: 0.00

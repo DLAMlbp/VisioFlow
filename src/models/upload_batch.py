@@ -44,6 +44,9 @@ class UploadBatch(Base):
     routing_policy_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     filter_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     beautify_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    watermark_processing_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     similarity_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     similarity_profile_id: Mapped[str] = mapped_column(String(80), nullable=False)
     unmatched_standard_policy: Mapped[str] = mapped_column(

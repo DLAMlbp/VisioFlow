@@ -5,12 +5,85 @@ import numpy as np
 
 from src.services.images.watermark import (
     DangjiaWatermarkProcessor,
+    app_token_box_from_text_line,
     build_ocr_text_mask,
     build_text_candidate_mask,
+    detect_watermark_app_boxes,
     estimate_alpha_map,
     reverse_alpha_blend,
 )
 from src.services.profiles import WatermarkRemovalConfig
+from src.services.images.adapters.rapidocr import OcrTextLine
+
+
+def test_app_token_box_projects_only_app_inside_an_ocr_line() -> None:
+    polygon = np.asarray(
+        [[10, 20], [220, 20], [220, 60], [10, 60]], dtype=np.float32
+    )
+
+    box = app_token_box_from_text_line(polygon, "当家APP拍摄")
+
+    assert box is not None
+    assert 60 <= box[0] <= 75
+    assert 155 <= box[2] <= 170
+    assert box[1] < 20
+    assert box[3] > 60
+    assert app_token_box_from_text_line(polygon, "APPLICATION") is None
+
+
+def test_watermark_app_detection_is_limited_to_configured_roi(monkeypatch) -> None:
+    image = np.zeros((400, 300, 3), dtype=np.uint8)
+    received_shape = None
+
+    def fake_lines(roi):
+        nonlocal received_shape
+        received_shape = roi.shape
+        return [
+            OcrTextLine(
+                polygon=np.asarray(
+                    [[10, 20], [150, 20], [150, 50], [10, 50]], dtype=np.float32
+                ),
+                text="当家APP拍摄",
+                confidence=0.95,
+            )
+        ]
+
+    monkeypatch.setattr("src.services.images.watermark.detect_text_lines", fake_lines)
+
+    boxes, confidences, roi_box = detect_watermark_app_boxes(
+        image,
+        WatermarkRemovalConfig(
+            enabled=True,
+            roi=(0, 0.8, 0.55, 1),
+            detection_threshold=0.8,
+        ),
+    )
+
+    assert received_shape == (80, 165, 3)
+    assert roi_box == (0, 320, 165, 400)
+    assert confidences == [0.95]
+    assert len(boxes) == 1
+    assert boxes[0][1] >= 320
+
+
+def test_app_overlay_preparation_never_requests_inpainting(
+    tmp_path: Path, monkeypatch
+) -> None:
+    image = np.zeros((400, 300, 3), dtype=np.uint8)
+    monkeypatch.setattr(
+        "src.services.images.watermark.detect_watermark_app_boxes",
+        lambda *_args: ([(12, 340, 48, 365)], [0.97], (0, 320, 165, 400)),
+    )
+
+    preparation = DangjiaWatermarkProcessor(
+        tmp_path / "missing-profile"
+    ).prepare_app_overlay(image, WatermarkRemovalConfig(enabled=True))
+
+    assert preparation.requires_inpaint is False
+    assert np.count_nonzero(preparation.mask) == 0
+    assert preparation.audit["status"] == "detected"
+    assert preparation.audit["automatic_boxes"] == [[12, 340, 48, 365]]
+    assert np.array_equal(preparation.image_bgr, image)
 
 
 def _apply_overlay(
@@ -197,3 +270,55 @@ def test_dangjia_fallback_never_changes_pixels_outside_roi(tmp_path: Path) -> No
     assert result.audit["status"] == "applied"
     assert result.audit["outside_roi_changed_pixels"] == 0
     assert np.array_equal(result.image_bgr[:320], before[:320])
+
+
+def test_watermark_detection_does_not_load_or_run_lama(
+    tmp_path: Path, monkeypatch
+) -> None:
+    image = np.full((400, 300, 3), (80, 105, 135), dtype=np.uint8)
+    cv2.putText(
+        image,
+        "APP ADDRESS 2026",
+        (5, 380),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        (190, 190, 190),
+        2,
+        cv2.LINE_AA,
+    )
+    called = False
+
+    def fail_if_called(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("LaMa must not run during watermark detection")
+
+    def detected_mask(roi):
+        mask = np.zeros(roi.shape[:2], dtype=np.uint8)
+        mask[:, :10] = 255
+        return mask, 0.9
+
+    monkeypatch.setattr(
+        "src.services.images.watermark.erase_lama_opencv",
+        fail_if_called,
+    )
+    monkeypatch.setattr(
+        "src.services.images.watermark.build_text_candidate_mask",
+        detected_mask,
+    )
+    processor = DangjiaWatermarkProcessor(tmp_path / "missing-profile")
+
+    preparation = processor.prepare(
+        image,
+        WatermarkRemovalConfig(
+            enabled=True,
+            roi=(0, 0.8, 0.55, 1),
+            detection_threshold=0.38,
+            roi_ocr_enabled=False,
+        ),
+    )
+
+    assert preparation.requires_inpaint is True
+    assert preparation.audit["status"] == "detected"
+    assert np.count_nonzero(preparation.mask) > 0
+    assert called is False

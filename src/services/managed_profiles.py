@@ -490,14 +490,15 @@ def default_redaction_snapshot() -> dict[str, object]:
     config = {
         **_neutral_profile("redaction"),
         "id": "redaction_default_v1",
-        "version": 2,
+        "version": 3,
     }
     return {
         "id": "redaction_default_v1",
         "name": "当家水印与Logo标准",
-        "version": 2,
+        "version": 3,
         "instruction": (
-            "左下角水印允许通过并在通过后去除；保留当家文字，仅用小当图标遮挡APP；"
+            "左下角拍摄水印始终允许通过；任务开启水印处理时仅用透明小当图标遮挡英文APP，"
+            "其他水印文字和画面保持不变；保留当家文字，仅用小当图标遮挡APP；"
             "当家品牌地膜占比达到75%判定不合格。"
         ),
         "config": config,
@@ -521,7 +522,7 @@ def _neutral_profile(profile_type: ProfileType) -> dict[str, object]:
         return {
             "id": "preview",
             "version": 1,
-            "description": "左下角水印放行并去除，保留当家文字且仅遮挡APP，大面积品牌地膜不合格",
+            "description": "左下角拍摄水印放行并按任务开关仅遮挡APP，保留其他文字；保留当家文字且仅遮挡APP，大面积品牌地膜不合格",
             "watermark": {
                 "enabled": True,
                 "allow_during_filter": True,

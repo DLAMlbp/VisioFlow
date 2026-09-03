@@ -56,6 +56,17 @@ def build_redaction_base_object_key(job_id: str, image_id: str) -> str:
     return f"redaction-bases/{job_id}/{image_id}.jpg"
 
 
+def build_enhancement_work_object_key(
+    job_id: str,
+    image_id: str,
+    stage: str,
+    extension: str,
+) -> str:
+    """Return a deterministic private object used between enhancement workers."""
+
+    return f"enhancement-work/{job_id}/{image_id}/{stage}.{extension}"
+
+
 def build_analysis_object_key(job_id: str, image_id: str) -> str:
     return f"analysis/{job_id}/{image_id}.jpg"
 

@@ -117,6 +117,9 @@ async def create_integration_job(
             filter_profile=_optional_form_string(form, "filter_profile"),
             filter_enabled=_form_bool(form, "filter_enabled", True),
             beautify_enabled=_form_bool(form, "beautify_enabled", True),
+            watermark_processing_enabled=_form_bool(
+                form, "watermark_processing_enabled", False
+            ),
             similarity_enabled=_form_bool(form, "similarity_enabled", True),
             similarity_profile=_form_string(
                 form, "similarity_profile", "library_similarity_v2"
@@ -173,6 +176,7 @@ async def create_file_integration_job(
     filter_profile: Annotated[str | None, Form()] = None,
     filter_enabled: Annotated[bool, Form()] = True,
     beautify_enabled: Annotated[bool, Form()] = True,
+    watermark_processing_enabled: Annotated[bool, Form()] = False,
     similarity_enabled: Annotated[bool, Form()] = True,
     similarity_profile: Annotated[str, Form()] = "library_similarity_v2",
     unmatched_standard_policy: Annotated[str, Form(pattern="^reject$")] = "reject",
@@ -232,6 +236,7 @@ async def create_file_integration_job(
             redaction_profile=redaction_profile,
             filter_enabled=filter_enabled,
             beautify_enabled=beautify_enabled,
+            watermark_processing_enabled=watermark_processing_enabled,
             similarity_enabled=similarity_enabled,
             similarity_profile=similarity_profile,
             unmatched_standard_policy=unmatched_standard_policy,
@@ -285,6 +290,7 @@ async def _create_url_job(
                 payload.beautify_profile or settings.integration_beautify_profile
             ),
             redaction_profile=payload.redaction_profile,
+            watermark_processing_enabled=payload.watermark_processing_enabled,
             similarity_profile=payload.similarity_profile,
             enhance_level=payload.enhance_level,
             max_selected=payload.max_selected,

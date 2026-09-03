@@ -78,11 +78,29 @@ services:
     environment:
       WORKER_ROLE: beautify_plan
 
+  worker-redaction:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q redaction -l info --concurrency=1 --without-mingle --without-gossip
+    environment:
+      WORKER_ROLE: redaction
+
+  worker-inpaint:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q inpaint -l info --concurrency=1 --max-tasks-per-child=5 --without-mingle --without-gossip
+    environment:
+      WORKER_ROLE: inpaint
+
   worker-enhance:
     <<: *worker
     command: celery -A src.workers.celery_app worker -Q enhance -l info --concurrency=1 --without-mingle --without-gossip
     environment:
       WORKER_ROLE: enhance
+
+  worker-render:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q render -l info --concurrency=1 --without-mingle --without-gossip
+    environment:
+      WORKER_ROLE: render
 
   worker-analysis:
     <<: *worker
@@ -158,7 +176,7 @@ services:
     environment:
       MINIO_ROOT_USER: minio
       MINIO_ROOT_PASSWORD: minio123
-      MINIO_API_CORS_ALLOW_ORIGIN: http://127.0.0.1:5174,http://localhost:5174,http://127.0.0.1:5175,http://localhost:5175
+      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_API_CORS_ALLOW_ORIGIN:-http://127.0.0.1:4174,http://localhost:4174,http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:5174,http://localhost:5174,http://127.0.0.1:5175,http://localhost:5175}
     ports:
       - "19000:9000"
     volumes:
