@@ -95,3 +95,21 @@ def test_api_deploy_applies_pipeline_recovery_runtime_settings() -> None:
     assert 'set_env_value PIPELINE_INPAINT_TIMEOUT_SECONDS "180"' in script
     assert 'set_env_value PIPELINE_JOB_TIMEOUT_PER_IMAGE_SECONDS "30"' in script
     assert 'set_env_value PIPELINE_ENHANCEMENT_MAX_RECOVERY_ATTEMPTS "2"' in script
+
+
+def test_local_api_deploy_updates_gateway_and_rolls_back_compose() -> None:
+    script = (ROOT / "scripts" / "remote-deploy-pinned-api.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'set_env_value API_GATEWAY_IMAGE "$new_api"' in script
+    assert 'docker image inspect "$new_api"' in script
+    assert 'cp --preserve=mode,ownership docker-compose.prod.yml "$compose_snapshot"' in script
+    assert 'cp --preserve=mode,ownership "$compose_snapshot" docker-compose.prod.yml' in script
+    assert 'docker compose --env-file .env.production -f "$compose_temporary" config --quiet' in script
+    assert 'set_env_value PIPELINE_ENHANCEMENT_MAX_RECOVERY_ATTEMPTS "2"' in script
+    assert "trap restore_config_on_error EXIT" in script
+    assert "grep -vE '^(minio-init|migrate)$'" in script
+    backup = script.index('echo "== database backup =="')
+    replace_compose = script.index('mv "$compose_temporary" docker-compose.prod.yml')
+    assert backup < replace_compose
