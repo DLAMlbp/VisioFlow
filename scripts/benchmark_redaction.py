@@ -87,6 +87,11 @@ def main() -> int:
     parser.add_argument("output", type=Path)
     parser.add_argument("--watermark", action="store_true")
     parser.add_argument("--logo", action="store_true")
+    parser.add_argument(
+        "--logo-action",
+        choices=("mosaic", "overlay_asset"),
+        default="mosaic",
+    )
     parser.add_argument("--logo-box", action="append", type=_box, default=[])
     parser.add_argument("--watermark-threshold", type=float, default=0.38)
     parser.add_argument("--concurrency", type=int, choices=(1, 2), default=1)
@@ -119,7 +124,10 @@ def main() -> int:
             )
             logos = service.mosaic_logos(
                 watermark.image_bgr,
-                LogoMosaicConfig(enabled=args.logo or bool(args.logo_box)),
+                LogoMosaicConfig(
+                    enabled=args.logo or bool(args.logo_box),
+                    action=args.logo_action,
+                ),
             )
             output_path = args.output / f"{source.stem}-redacted.jpg"
             output_path.write_bytes(encode_jpeg(logos.image_bgr, quality=95))

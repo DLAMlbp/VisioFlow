@@ -9,7 +9,7 @@ interface Props {
   onConfigureAI: () => void;
 }
 
-type EditorType = "global" | "filter" | "beautify";
+type EditorType = "global" | "filter" | "beautify" | "redaction";
 
 function redactionFlags(config: Record<string, unknown>) {
   const watermark = config.watermark_removal as Record<string, unknown> | undefined;
@@ -69,7 +69,9 @@ export function ProfileWorkspace({ onMessage, onProfilesChanged, onConfigureAI }
         ? await api.getFilterProfiles()
         : nextType === "filter"
           ? await api.getProcessingStandards()
-          : await api.getBeautifyProfiles();
+          : nextType === "beautify"
+            ? await api.getBeautifyProfiles()
+            : await api.getRedactionProfiles();
       setProfiles(items);
       const nextId = preferredId === null ? null : preferredId ?? items[0]?.id ?? null;
       if (nextId) await openProfile(nextType, nextId);
@@ -222,17 +224,17 @@ export function ProfileWorkspace({ onMessage, onProfilesChanged, onConfigureAI }
 
   return <section className="profile-workspace" id="mainWorkspace" aria-label="标准管理">
     <header className="profile-heading"><div><span className="panel-kicker">PROCESSING RULES</span><h2>标准管理</h2><p>所有图片先执行全局过滤，再按唯一分类执行对应过滤规则，任务创建时锁定版本。</p></div>{type !== "global" && <button className="primary-button" type="button" onClick={() => startNew()}><Plus size={16} />新增标准</button>}</header>
-    <div className="profile-tabs" role="tablist"><button role="tab" aria-selected={type === "global"} className={type === "global" ? "active" : ""} onClick={() => setType("global")}>全局过滤</button><button role="tab" aria-selected={type === "filter"} className={type === "filter" ? "active" : ""} onClick={() => setType("filter")}>分类过滤</button><button role="tab" aria-selected={type === "beautify"} className={type === "beautify" ? "active" : ""} onClick={() => setType("beautify")}>美化标准</button></div>
+    <div className="profile-tabs" role="tablist"><button role="tab" aria-selected={type === "global"} className={type === "global" ? "active" : ""} onClick={() => setType("global")}>全局过滤</button><button role="tab" aria-selected={type === "filter"} className={type === "filter" ? "active" : ""} onClick={() => setType("filter")}>分类过滤</button><button role="tab" aria-selected={type === "beautify"} className={type === "beautify" ? "active" : ""} onClick={() => setType("beautify")}>美化标准</button><button role="tab" aria-selected={type === "redaction"} className={type === "redaction" ? "active" : ""} onClick={() => setType("redaction")}>水印与Logo</button></div>
     <div className="profile-layout">
       <aside className="profile-list">{loading ? <p className="profile-muted"><Loader2 className="spin" size={16} />正在读取</p> : profiles.length ? profiles.map((item) => <button key={item.id} type="button" className={selectedId === item.id ? "active" : ""} onClick={() => void openProfile(type, item.id)}><strong>{item.name}</strong><span>版本 {item.version ?? 1}</span><p>{item.description}</p></button>) : <p className="profile-empty">暂无标准，请先新建。</p>}</aside>
       <section className="profile-editor">
-        <div className="profile-editor-heading"><div><h3>{selectedId ? "编辑标准" : "新建标准"}</h3><p>{type === "global" ? "所有图片必须优先通过这一套规则，全局任一项失败即淘汰" : type === "filter" ? "模型先按分类标准选中本项，再执行这一项的专属过滤规则" : "过滤通过后执行独立美化标准"}</p></div>{selectedId && type !== "global" && <div className="profile-icon-actions"><button type="button" aria-label="复制标准" onClick={() => void copyCurrent()}><Copy size={16} /></button><button type="button" aria-label="停用标准" onClick={() => void remove()}><Trash2 size={16} /></button></div>}</div>
+        <div className="profile-editor-heading"><div><h3>{selectedId ? "编辑标准" : "新建标准"}</h3><p>{type === "global" ? "所有图片必须优先通过这一套规则，全局任一项失败即淘汰" : type === "filter" ? "模型先按分类标准选中本项，再执行这一项的专属过滤规则" : type === "beautify" ? "过滤通过后执行独立美化标准" : "定义水印放行、Logo遮挡素材及品牌地膜不合格阈值"}</p></div>{selectedId && type !== "global" && <div className="profile-icon-actions"><button type="button" aria-label="复制标准" onClick={() => void copyCurrent()}><Copy size={16} /></button><button type="button" aria-label="停用标准" onClick={() => void remove()}><Trash2 size={16} /></button></div>}</div>
         <label className="profile-field">标准名称<input value={name} maxLength={120} onChange={(event) => setName(event.target.value)} /></label>
         {type === "filter" && <>
           <label className="profile-field">分类标准<textarea value={classificationRule} rows={4} maxLength={2000} onChange={(event) => { setClassificationRule(event.target.value); setPreview(null); }} placeholder="例如：图片呈现无明显施工、硬装完整且可使用的完工室内空间" /></label>
           <label className="fallback-toggle"><input type="checkbox" checked={isFallback} onChange={(event) => { setIsFallback(event.target.checked); setPreview(null); }} /><span><strong>设为兜底分类</strong><small>没有任何明确分类命中时使用；启用中的标准只能有一条兜底分类。</small></span></label>
         </>}
-        <label className="profile-field">{type === "global" ? "全局过滤规则" : type === "filter" ? "对应分类专属过滤规则" : "美化要求"}<textarea value={instruction} rows={type === "global" ? 12 : 5} maxLength={2000} onChange={(event) => { setInstruction(event.target.value); setPreview(null); }} /></label>
+        <label className="profile-field">{type === "global" ? "全局过滤规则" : type === "filter" ? "对应分类专属过滤规则" : type === "beautify" ? "美化要求" : "水印与Logo处理要求"}<textarea value={instruction} rows={type === "global" || type === "redaction" ? 12 : 5} maxLength={2000} placeholder={type === "redaction" ? "例如：左下角水印允许通过并在通过后去除；当家APP Logo用小当图标遮挡；当家品牌地膜占比达到75%判定不合格。" : undefined} onChange={(event) => { setInstruction(event.target.value); setPreview(null); }} /></label>
         {type === "beautify" && <fieldset className="redaction-options">
           <legend>隐私保护与品牌遮挡</legend>
           <label>
@@ -259,8 +261,8 @@ export function ProfileWorkspace({ onMessage, onProfilesChanged, onConfigureAI }
           </label>
         </fieldset>}
         <button className="profile-generate" type="button" disabled={busy} onClick={() => void generatePreview()}>{busy ? <Loader2 className="spin" size={16} /> : <WandSparkles size={16} />}{busy ? "正在校验" : "校验规则"}</button>
-        {preview && <p className="profile-muted">{preview.description}</p>}
-        <div className="profile-save-row"><button className="primary-button" type="button" disabled={busy || !preview} onClick={() => void save()}><Save size={16} />保存标准</button></div>
+        {preview && <div className="profile-preview"><strong>执行方案</strong><p className="profile-muted">{preview.description}</p>{preview.unsupported.length > 0 && <ul className="inline-warning">{preview.unsupported.map((item) => <li key={item}>{item}</li>)}</ul>}{type === "redaction" && <dl className="redaction-config-summary"><div><dt>地膜不合格阈值</dt><dd>{Math.round(Number((preview.config.branded_ground_film as { reject_coverage_gte?: number } | undefined)?.reject_coverage_gte ?? 0) * 100)}%</dd></div><div><dt>Logo处理</dt><dd>{String((preview.config.logo as { action?: string } | undefined)?.action ?? "关闭") === "overlay_asset" ? "小当图标遮挡" : "马赛克"}</dd></div><div><dt>水印通过后</dt><dd>{String((preview.config.watermark as { post_action?: string } | undefined)?.post_action ?? "keep") === "remove" ? "自动去除" : "保留"}</dd></div></dl>}</div>}
+        <div className="profile-save-row"><button className="primary-button" type="button" disabled={busy || !preview || !preview.can_save} onClick={() => void save()}><Save size={16} />保存标准</button></div>
       </section>
     </div>
   </section>;

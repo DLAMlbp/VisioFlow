@@ -26,7 +26,7 @@ class ProfileOptionResponse(BaseModel):
 
 
 class ProfileDetailResponse(ProfileOptionResponse):
-    profile_type: Literal["filter", "beautify", "completion"]
+    profile_type: Literal["filter", "beautify", "redaction", "completion"]
     instruction: str
     config: dict[str, object]
 
@@ -83,6 +83,11 @@ async def list_filter_profiles(session: SessionDep, settings: SettingsDep):
 @router.get("/beautify-profiles", response_model=list[ProfileOptionResponse])
 async def list_beautify_profiles(session: SessionDep, settings: SettingsDep):
     return [_option(row) for row in await ManagedProfileService(session, settings).list("beautify")]
+
+
+@router.get("/redaction-profiles", response_model=list[ProfileOptionResponse])
+async def list_redaction_profiles(session: SessionDep, settings: SettingsDep):
+    return [_option(row) for row in await ManagedProfileService(session, settings).list("redaction")]
 
 
 @router.get("/completion-profiles", response_model=list[ProfileOptionResponse])
@@ -195,6 +200,11 @@ async def preview_beautify_profile(payload: ProfilePreviewRequest, session: Sess
     return await _preview("beautify", payload, session, settings)
 
 
+@router.post("/redaction-profiles/preview", response_model=ProfilePreviewResponse)
+async def preview_redaction_profile(payload: ProfilePreviewRequest, session: SessionDep, settings: SettingsDep):
+    return await _preview("redaction", payload, session, settings)
+
+
 @router.post("/completion-profiles/preview", response_model=ProfilePreviewResponse)
 async def preview_completion_profile(
     payload: ProfilePreviewRequest, session: SessionDep, settings: SettingsDep
@@ -210,6 +220,11 @@ async def create_filter_profile(payload: SaveProfileRequest, session: SessionDep
 @router.post("/beautify-profiles", response_model=ProfileDetailResponse, status_code=201)
 async def create_beautify_profile(payload: SaveProfileRequest, session: SessionDep, settings: SettingsDep):
     return await _create("beautify", payload, session, settings)
+
+
+@router.post("/redaction-profiles", response_model=ProfileDetailResponse, status_code=201)
+async def create_redaction_profile(payload: SaveProfileRequest, session: SessionDep, settings: SettingsDep):
+    return await _create("redaction", payload, session, settings)
 
 
 @router.post("/completion-profiles", response_model=ProfileDetailResponse, status_code=201)
@@ -229,6 +244,11 @@ async def get_beautify_profile(profile_id: str, session: SessionDep, settings: S
     return await _get("beautify", profile_id, session, settings)
 
 
+@router.get("/redaction-profiles/{profile_id}", response_model=ProfileDetailResponse)
+async def get_redaction_profile(profile_id: str, session: SessionDep, settings: SettingsDep):
+    return await _get("redaction", profile_id, session, settings)
+
+
 @router.get("/completion-profiles/{profile_id}", response_model=ProfileDetailResponse)
 async def get_completion_profile(
     profile_id: str, session: SessionDep, settings: SettingsDep
@@ -244,6 +264,11 @@ async def update_filter_profile(profile_id: str, payload: SaveProfileRequest, se
 @router.put("/beautify-profiles/{profile_id}", response_model=ProfileDetailResponse)
 async def update_beautify_profile(profile_id: str, payload: SaveProfileRequest, session: SessionDep, settings: SettingsDep):
     return await _update("beautify", profile_id, payload, session, settings)
+
+
+@router.put("/redaction-profiles/{profile_id}", response_model=ProfileDetailResponse)
+async def update_redaction_profile(profile_id: str, payload: SaveProfileRequest, session: SessionDep, settings: SettingsDep):
+    return await _update("redaction", profile_id, payload, session, settings)
 
 
 @router.put("/completion-profiles/{profile_id}", response_model=ProfileDetailResponse)
@@ -265,6 +290,12 @@ async def delete_filter_profile(profile_id: str, session: SessionDep, settings: 
 @router.delete("/beautify-profiles/{profile_id}", status_code=204)
 async def delete_beautify_profile(profile_id: str, session: SessionDep, settings: SettingsDep):
     await _archive("beautify", profile_id, session, settings)
+    return Response(status_code=204)
+
+
+@router.delete("/redaction-profiles/{profile_id}", status_code=204)
+async def delete_redaction_profile(profile_id: str, session: SessionDep, settings: SettingsDep):
+    await _archive("redaction", profile_id, session, settings)
     return Response(status_code=204)
 
 
@@ -308,7 +339,7 @@ async def _preview(profile_type: ProfileType, payload, session, settings):
         description=result.description,
         config=result.config,
         unsupported=result.unsupported,
-        can_save=True,
+        can_save=(not result.unsupported if profile_type == "redaction" else True),
     )
 
 

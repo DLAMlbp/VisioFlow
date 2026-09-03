@@ -25,6 +25,7 @@ RUN rm -rf /app/src /app/profiles /app/alembic /app/alembic.ini
 
 COPY --chown=app:app src /app/src
 COPY --chown=app:app profiles /app/profiles
+COPY --chown=app:app assets /app/assets
 COPY --chown=app:app alembic.ini /app/alembic.ini
 COPY --chown=app:app alembic /app/alembic
 COPY --chown=app:app THIRD_PARTY_NOTICES.md /app/THIRD_PARTY_NOTICES.md

@@ -26,6 +26,7 @@ from src.services.images.processing_vision import (
     precise_filter_reason,
 )
 from src.services.images.quality import QualityEngine
+from src.services.images.redaction_policy import evaluate_ground_film
 from src.services.images.vision_rate_limit import retry_countdown
 from src.services.jobs.dispatch import CompletionTaskPublisher
 from src.services.jobs.progression import advance_after_preprocess as _advance_after_preprocess
@@ -33,6 +34,7 @@ from src.services.managed_profiles import (
     beautify_from_snapshot,
     legacy_standard_from_snapshots,
     passthrough_standard,
+    redaction_from_snapshot,
     standard_with_global_filter,
     standards_from_snapshots,
 )
@@ -118,6 +120,10 @@ async def _preprocess_image_metadata(image_id: str) -> None:
             ]
         beautify_profile = beautify_from_snapshot(
             job.beautify_profile_snapshot, job.beautify_profile_id, settings
+        )
+        redaction_profile = redaction_from_snapshot(
+            getattr(job, "redaction_profile_snapshot", None),
+            legacy_beautify_snapshot=getattr(job, "beautify_profile_snapshot", None),
         )
         storage = get_storage_provider()
 
@@ -206,6 +212,7 @@ async def _preprocess_image_metadata(image_id: str) -> None:
                 "noise_score": quality_metrics.noise_score,
                 "quality_score": final_score,
             },
+            redaction_profile=redaction_profile,
         )
         await repository.save_ai_processing(
             item,
@@ -239,6 +246,20 @@ async def _preprocess_image_metadata(image_id: str) -> None:
             (standard for standard in standards if standard.id == selection.selected_standard_id),
             None,
         )
+        ground_film = evaluate_ground_film(
+            redaction_profile, ai_outcome.payload.redaction_analysis
+        )
+        if ground_film.rejected:
+            await repository.reject_item(
+                item,
+                [RejectCode.BRANDED_GROUND_FILM_COVERAGE],
+                reason=ground_film.reason,
+            )
+            await _advance_after_preprocess(repository, item)
+            return
+        if ground_film.review_required:
+            await repository.mark_review_required(item.id)
+            warnings.append(ground_film.reason)
         if (
             job.filter_enabled
             and ai_outcome.status == "completed"

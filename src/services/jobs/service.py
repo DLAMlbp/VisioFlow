@@ -37,6 +37,7 @@ from src.schemas.jobs import (
 )
 from src.services.ai_model_config import load_ai_model_settings
 from src.services.images.beautify_planning import beautify_plan_from_json
+from src.services.images.logo_overlay import apply_logo_overlays
 from src.services.images.metadata import encode_jpeg, make_thumbnail
 from src.services.images.mosaic import apply_pixel_mosaic
 from src.services.images.processing_vision import (
@@ -56,6 +57,7 @@ from src.services.jobs.ids import build_image_id, build_job_id
 from src.services.jobs.workflow_config import required_workflow_error
 from src.services.managed_profiles import (
     ManagedProfileService,
+    default_redaction_snapshot,
     neutral_beautify_snapshot,
     standards_from_snapshots,
 )
@@ -121,6 +123,8 @@ class ImageJobService:
         filter_snapshot = None
         global_filter_id = "global_filter_v1"
         beautify_snapshot = None if payload.beautify_enabled else neutral_beautify_snapshot()
+        redaction_profile_id = payload.redaction_profile or "redaction_default_v1"
+        redaction_snapshot = default_redaction_snapshot()
         standard_snapshots = None
         routing_mode = "streaming_v2"
         completion_profile_id = None
@@ -144,6 +148,11 @@ class ImageJobService:
                         )
                     else:
                         beautify_snapshot = neutral_beautify_snapshot()
+                    if payload.redaction_profile:
+                        redaction, redaction_snapshot = await manager.resolve_redaction(
+                            payload.redaction_profile
+                        )
+                        redaction_profile_id = redaction.id
                 else:
                     raise RuntimeError("托管处理标准需要数据库会话")
                 if payload.similarity_enabled:
@@ -158,8 +167,10 @@ class ImageJobService:
             beautify_profile_id=(
                 effective_beautify_profile if payload.beautify_enabled else "system_delivery"
             ),
+            redaction_profile_id=redaction_profile_id,
             filter_profile_snapshot=filter_snapshot,
             beautify_profile_snapshot=beautify_snapshot,
+            redaction_profile_snapshot=redaction_snapshot,
             processing_standard_snapshots=standard_snapshots,
             routing_mode=routing_mode,
             completion_profile_id=completion_profile_id,
@@ -509,23 +520,44 @@ class ImageJobService:
             if x1 > image_width or y1 > image_height:
                 raise InvalidJobRequest("Logo 框超出图片边界")
 
-        profile_snapshot = audit.get("profile_snapshot")
-        logo_profile = (
-            profile_snapshot.get("logo_mosaic", {})
-            if isinstance(profile_snapshot, dict)
+        redaction_snapshot = audit.get("redaction_profile_snapshot")
+        redaction_config = (
+            redaction_snapshot.get("config", {})
+            if isinstance(redaction_snapshot, dict)
             else {}
         )
+        logo_profile = (
+            redaction_config.get("logo", {})
+            if isinstance(redaction_config, dict)
+            else {}
+        )
+        profile_snapshot = audit.get("profile_snapshot")
+        if not logo_profile and isinstance(profile_snapshot, dict):
+            logo_profile = profile_snapshot.get("logo_mosaic", {})
         block_ratio = float(
-            logo_profile.get("mosaic_block_ratio", 0.08)
+            logo_profile.get("mosaic_block_ratio", 0.16)
             if isinstance(logo_profile, dict)
-            else 0.08
+            else 0.16
         )
-        rendered, applied_boxes = apply_pixel_mosaic(
-            base_image,
-            boxes,
-            expansion=0,
-            block_ratio=block_ratio,
-        )
+        action = str(logo_profile.get("action") or "mosaic")
+        if action == "overlay_asset":
+            rendered, rendered_boxes, asset_sha256 = apply_logo_overlays(
+                base_image,
+                boxes,
+                asset_id=str(logo_profile.get("overlay_asset_id") or "xiaodang_v1"),
+                expansion=0,
+                scale=float(logo_profile.get("overlay_scale") or 1.12),
+            )
+            applied_boxes = boxes if rendered_boxes else []
+        else:
+            rendered, applied_boxes = apply_pixel_mosaic(
+                base_image,
+                boxes,
+                expansion=0,
+                block_ratio=block_ratio,
+            )
+            rendered_boxes = applied_boxes
+            asset_sha256 = None
         jpeg_quality = int(
             profile_snapshot.get("jpeg_quality", 95)
             if isinstance(profile_snapshot, dict)
@@ -575,7 +607,10 @@ class ImageJobService:
                 "image_size": [image_width, image_height],
                 "detections": len(applied_boxes),
                 "boxes": [list(box) for box in applied_boxes],
+                "rendered_boxes": [list(box) for box in rendered_boxes],
                 "confidences": [1.0] * len(applied_boxes),
+                "action": action,
+                "overlay_asset_sha256": asset_sha256,
                 "manual_revision": int(logos.get("manual_revision") or 0) + 1,
             }
         )

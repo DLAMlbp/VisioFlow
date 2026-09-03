@@ -17,6 +17,7 @@ class CreateUploadBatchRequest(BaseModel):
     processing_standards: list[str] = Field(default_factory=list, max_length=20)
     filter_profile: str | None = Field(default=None, min_length=1, max_length=80)
     beautify_profile: str | None = Field(default=None, min_length=1, max_length=80)
+    redaction_profile: str | None = Field(default=None, min_length=1, max_length=80)
     filter_enabled: bool = True
     beautify_enabled: bool = True
     similarity_enabled: bool = True

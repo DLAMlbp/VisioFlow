@@ -35,7 +35,11 @@ from src.services.jobs.ids import (
     build_upload_batch_id,
     build_upload_batch_item_id,
 )
-from src.services.managed_profiles import ManagedProfileService, neutral_beautify_snapshot
+from src.services.managed_profiles import (
+    ManagedProfileService,
+    default_redaction_snapshot,
+    neutral_beautify_snapshot,
+)
 from src.services.profiles import ProfileLoader, ProfileNotFoundError
 from src.services.storage.factory import get_storage_provider
 from src.services.storage.keys import build_upload_object_key, validate_upload_request
@@ -76,6 +80,8 @@ class UploadBatchService:
             filter_snapshot = None
             global_filter_id = "global_filter_v1"
             beautify_snapshot = None
+            redaction_snapshot = default_redaction_snapshot()
+            redaction_profile_id = payload.redaction_profile or "redaction_default_v1"
             standard_snapshots = None
             routing_mode = "streaming_v2"
             completion_profile_id = None
@@ -95,6 +101,11 @@ class UploadBatchService:
                 )
             else:
                 beautify_snapshot = neutral_beautify_snapshot()
+            if payload.redaction_profile:
+                redaction, redaction_snapshot = await manager.resolve_redaction(
+                    payload.redaction_profile
+                )
+                redaction_profile_id = redaction.id
             if payload.similarity_enabled:
                 loader.get_similarity_profile(payload.similarity_profile)
         except ProfileNotFoundError as exc:
@@ -108,8 +119,10 @@ class UploadBatchService:
             beautify_profile_id=(
                 payload.beautify_profile or ("conditional_standard_v1" if payload.beautify_enabled else "system_delivery")
             ),
+            redaction_profile_id=redaction_profile_id,
             filter_profile_snapshot=filter_snapshot,
             beautify_profile_snapshot=beautify_snapshot,
+            redaction_profile_snapshot=redaction_snapshot,
             processing_standard_snapshots=standard_snapshots,
             routing_mode=routing_mode,
             completion_profile_id=completion_profile_id,
@@ -218,8 +231,10 @@ class UploadBatchService:
             status=JobStatus.QUEUED.value,
             filter_profile_id=batch.filter_profile_id,
             beautify_profile_id=batch.beautify_profile_id,
+            redaction_profile_id=batch.redaction_profile_id,
             filter_profile_snapshot=batch.filter_profile_snapshot,
             beautify_profile_snapshot=batch.beautify_profile_snapshot,
+            redaction_profile_snapshot=batch.redaction_profile_snapshot,
             processing_standard_snapshots=batch.processing_standard_snapshots,
             routing_mode=batch.routing_mode,
             completion_profile_id=batch.completion_profile_id,

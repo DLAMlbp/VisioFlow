@@ -41,8 +41,10 @@ class JobConfig:
     status: str
     filter_profile_id: str
     beautify_profile_id: str
+    redaction_profile_id: str | None
     filter_profile_snapshot: dict[str, object] | None
     beautify_profile_snapshot: dict[str, object] | None
+    redaction_profile_snapshot: dict[str, object] | None
     processing_standard_snapshots: list[dict[str, object]] | None
     routing_mode: str
     completion_profile_id: str | None
@@ -116,8 +118,10 @@ class ImageJobRepository:
                     ImageJob.status,
                     ImageJob.filter_profile_id,
                     ImageJob.beautify_profile_id,
+                    ImageJob.redaction_profile_id,
                     ImageJob.filter_profile_snapshot,
                     ImageJob.beautify_profile_snapshot,
+                    ImageJob.redaction_profile_snapshot,
                     ImageJob.processing_standard_snapshots,
                     ImageJob.routing_mode,
                     ImageJob.completion_profile_id,
@@ -158,6 +162,12 @@ class ImageJobRepository:
             update(ImageJob)
             .where(ImageJob.id == job_id, ImageJob.dispatch_cursor < cursor)
             .values(dispatch_cursor=cursor)
+        )
+        await self.session.commit()
+
+    async def mark_review_required(self, image_id: str) -> None:
+        await self.session.execute(
+            update(ImageItem).where(ImageItem.id == image_id).values(review_required=True)
         )
         await self.session.commit()
 

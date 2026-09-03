@@ -20,9 +20,10 @@ from src.services.profiles import (
     FilterProfile,
     ProcessingStandard,
     ProfileNotFoundError,
+    RedactionProfile,
 )
 
-ProfileType = Literal["filter", "beautify", "standard", "completion"]
+ProfileType = Literal["filter", "beautify", "redaction", "standard", "completion"]
 
 
 class ManagedProfileError(Exception):
@@ -84,6 +85,20 @@ class ManagedProfileService:
             raise ProfileNotFoundError(f"美化标准不存在或已停用: {profile_id}")
         profile = BeautifyProfile.model_validate(row.config_json)
         return profile, self._snapshot(row)
+
+    async def resolve_redaction(
+        self, profile_id: str | None = None
+    ) -> tuple[RedactionProfile, dict[str, object]]:
+        if profile_id:
+            row = await self.get("redaction", profile_id)
+            if row is None or row.status != "active":
+                raise ProfileNotFoundError(f"水印与Logo标准不存在或已停用: {profile_id}")
+        else:
+            rows = await self.list("redaction")
+            if len(rows) != 1:
+                raise ProfileNotFoundError("请选择一套水印与Logo标准")
+            row = rows[0]
+        return RedactionProfile.model_validate(row.config_json), self._snapshot(row)
 
     async def resolve_completion(
         self, profile_id: str
@@ -161,6 +176,7 @@ class ManagedProfileService:
         prefix = {
             "filter": "flt",
             "beautify": "bty",
+            "redaction": "rdc",
             "standard": "std",
             "completion": "cmp",
         }[profile_type]
@@ -248,6 +264,8 @@ class ManagedProfileService:
             return CompiledProfile(
                 description, profile.model_dump(mode="json"), []
             )
+        if profile_type == "redaction":
+            return _compile_redaction_instruction(instruction)
         settings = load_ai_model_settings(self.settings)
         if not settings.ai_tagging_enabled or not settings.ai_tagging_api_key:
             raise ManagedProfileError("请先在 AI 配置中启用模型并填写 API Key")
@@ -307,6 +325,8 @@ class ManagedProfileService:
                 return BeautifyProfile.model_validate(config)
             if profile_type == "completion":
                 return CompletionProfile.model_validate(config)
+            if profile_type == "redaction":
+                return RedactionProfile.model_validate(config)
             return ProcessingStandard.model_validate(config)
         except ValidationError as exc:
             raise ManagedProfileError("标准参数超出允许范围") from exc
@@ -344,6 +364,33 @@ def beautify_from_snapshot(snapshot: dict[str, object] | None, fallback_id: str,
     if snapshot and isinstance(snapshot.get("config"), dict):
         return BeautifyProfile.model_validate(snapshot["config"])
     raise ProfileNotFoundError(f"任务缺少美化标准快照: {fallback_id}")
+
+
+def redaction_from_snapshot(
+    snapshot: dict[str, object] | None,
+    *,
+    legacy_beautify_snapshot: dict[str, object] | None = None,
+) -> RedactionProfile:
+    if snapshot and isinstance(snapshot.get("config"), dict):
+        return RedactionProfile.model_validate(snapshot["config"])
+    legacy = (
+        legacy_beautify_snapshot.get("config")
+        if isinstance(legacy_beautify_snapshot, dict)
+        else None
+    )
+    if isinstance(legacy, dict):
+        return RedactionProfile(
+            id="legacy_beautify_redaction",
+            version=int(legacy.get("version") or 1),
+            description="兼容历史任务中的水印与Logo配置",
+            watermark=legacy.get("watermark_removal", {}),
+            logo=legacy.get("logo_mosaic", {}),
+        )
+    return RedactionProfile(
+        id="system_redaction_disabled",
+        version=1,
+        description="未配置水印与Logo处理",
+    )
 
 
 def standards_from_snapshots(
@@ -439,6 +486,24 @@ def neutral_beautify_snapshot() -> dict[str, object]:
     }
 
 
+def default_redaction_snapshot() -> dict[str, object]:
+    config = {
+        **_neutral_profile("redaction"),
+        "id": "redaction_default_v1",
+        "version": 1,
+    }
+    return {
+        "id": "redaction_default_v1",
+        "name": "当家水印与Logo标准",
+        "version": 1,
+        "instruction": (
+            "左下角水印允许通过并在通过后去除；当家APP或平台Logo使用小当图标遮挡；"
+            "当家品牌地膜占比达到75%判定不合格。"
+        ),
+        "config": config,
+    }
+
+
 def _neutral_profile(profile_type: ProfileType) -> dict[str, object]:
     if profile_type == "filter":
         return {
@@ -451,6 +516,28 @@ def _neutral_profile(profile_type: ProfileType) -> dict[str, object]:
             "id": "preview",
             "version": 1,
             "description": "逐图判断装修空间是否完工",
+        }
+    if profile_type == "redaction":
+        return {
+            "id": "preview",
+            "version": 1,
+            "description": "左下角水印放行并去除，目标Logo用小当图标遮挡，大面积品牌地膜不合格",
+            "watermark": {
+                "enabled": True,
+                "allow_during_filter": True,
+                "post_action": "remove",
+            },
+            "logo": {
+                "enabled": True,
+                "action": "overlay_asset",
+                "overlay_asset_id": "xiaodang_v1",
+            },
+            "branded_ground_film": {
+                "enabled": True,
+                "reject_coverage_gte": 0.75,
+                "review_margin": 0.05,
+                "min_confidence": 0.70,
+            },
         }
     return {
         "id": "preview",
@@ -484,6 +571,77 @@ def _deep_merge(base: dict[str, object], updates: dict[str, object]) -> dict[str
         else:
             result[key] = value
     return result
+
+
+def _compile_redaction_instruction(instruction: str) -> CompiledProfile:
+    """Compile supported Chinese policy language into deterministic settings."""
+    import re
+
+    text = instruction.strip()
+    base = _neutral_profile("redaction")
+    unsupported: list[str] = []
+    percentages = [float(value) for value in re.findall(r"(\d+(?:\.\d+)?)\s*%", text)]
+    if percentages:
+        threshold = percentages[-1] / 100.0
+        if 0.05 <= threshold <= 0.98:
+            base["branded_ground_film"]["reject_coverage_gte"] = threshold  # type: ignore[index]
+        else:
+            unsupported.append("地膜占比阈值必须在5%到98%之间")
+
+    watermark = base["watermark"]  # type: ignore[assignment]
+    if "水印" not in text:
+        watermark["enabled"] = False
+    else:
+        watermark["allow_during_filter"] = any(
+            marker in text for marker in ("允许通过", "允许筛选", "不作为不合格", "放行")
+        )
+        if any(marker in text for marker in ("保留水印", "不去除水印", "无需去除")):
+            watermark["post_action"] = "keep"
+        elif any(marker in text for marker in ("去除", "消除", "移除")):
+            watermark["post_action"] = "remove"
+
+    logo = base["logo"]  # type: ignore[assignment]
+    if "LOGO" not in text.upper() and "标志" not in text:
+        logo["enabled"] = False
+    elif "马赛克" in text and "小当" not in text:
+        logo["action"] = "mosaic"
+    elif any(marker in text for marker in ("小当", "图标遮挡", "图标覆盖")):
+        logo["action"] = "overlay_asset"
+
+    ground = base["branded_ground_film"]  # type: ignore[assignment]
+    if not any(marker in text for marker in ("地膜", "保护膜")):
+        ground["enabled"] = False
+    if any(marker in text for marker in ("任意品牌", "所有品牌", "第三方品牌")):
+        unsupported.append("任意第三方品牌Logo识别尚未配置训练模型")
+
+    description = "；".join([
+        (
+            "左下角拍摄水印允许通过筛选"
+            if watermark.get("allow_during_filter")
+            else "按普通规则审核水印"
+        ),
+        (
+            "通过后去除左下角水印"
+            if watermark.get("enabled") and watermark.get("post_action") == "remove"
+            else "不执行水印去除"
+        ),
+        (
+            "目标Logo使用小当图标遮挡"
+            if logo.get("enabled") and logo.get("action") == "overlay_asset"
+            else "目标Logo使用马赛克遮挡" if logo.get("enabled") else "不处理Logo"
+        ),
+        (
+            f"当家品牌地膜占比达到{ground.get('reject_coverage_gte', 0.75):.0%}判定不合格"
+            if ground.get("enabled")
+            else "不执行品牌地膜占比筛选"
+        ),
+    ])
+    validated = RedactionProfile.model_validate({**base, "description": description})
+    return CompiledProfile(
+        description=description,
+        config=validated.model_dump(mode="json"),
+        unsupported=unsupported,
+    )
 
 
 def _compile_request(settings: Settings, profile_type: ProfileType, instruction: str, base: dict[str, object]) -> dict[str, object]:

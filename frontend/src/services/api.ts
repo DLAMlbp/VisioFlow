@@ -175,6 +175,7 @@ export const api = {
         filter_route?: CreateJobRequest["filter_route"];
         processing_standards?: string[];
         beautify_profile?: string;
+        redaction_profile?: string;
         filter_enabled: boolean;
         beautify_enabled: boolean;
         similarity_enabled: boolean;
@@ -301,6 +302,9 @@ export const api = {
       },
       getBeautifyProfiles(): Promise<ProfileOption[]> {
         return request<ProfileOption[]>("/api/v1/beautify-profiles");
+      },
+      getRedactionProfiles(): Promise<ProfileOption[]> {
+        return request<ProfileOption[]>("/api/v1/redaction-profiles");
       },
       getCompletionProfiles(): Promise<ProfileOption[]> {
         return request<ProfileOption[]>("/api/v1/completion-profiles");

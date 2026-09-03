@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 from src.services.images.logo_detector import LogoDetector, UnavailableLogoDetector
+from src.services.images.logo_overlay import apply_logo_overlays
 from src.services.images.mosaic import Box, apply_pixel_mosaic
 from src.services.profiles import LogoMosaicConfig, WatermarkRemovalConfig
 
@@ -103,6 +104,16 @@ class ImageRedactionService:
                 image_bgr=image_bgr.copy(),
                 audit={"enabled": False, "status": "disabled"},
             )
+        if config.post_action == "keep":
+            return ImageStageResult(
+                image_bgr=image_bgr.copy(),
+                audit={
+                    "enabled": True,
+                    "status": "kept_by_policy",
+                    "allow_during_filter": config.allow_during_filter,
+                },
+                reasons=("左下角拍摄水印按标准允许通过并保留",),
+            )
         started = perf_counter()
         image_height, image_width = image_bgr.shape[:2]
         try:
@@ -150,12 +161,25 @@ class ImageRedactionService:
                 and detection.confidence >= config.confidence
                 and (config.include_product_logos or not detection.product_logo)
             ]
-            result, applied_boxes = apply_pixel_mosaic(
-                image_bgr,
-                [detection.box for detection in detections],
-                expansion=config.box_expansion,
-                block_ratio=config.mosaic_block_ratio,
-            )
+            detection_boxes = [detection.box for detection in detections]
+            asset_sha256: str | None = None
+            if config.action == "overlay_asset":
+                result, rendered_boxes, asset_sha256 = apply_logo_overlays(
+                    image_bgr,
+                    detection_boxes,
+                    asset_id=config.overlay_asset_id,
+                    expansion=config.box_expansion,
+                    scale=config.overlay_scale,
+                )
+                applied_boxes = detection_boxes if rendered_boxes else []
+            else:
+                result, rendered_boxes = apply_pixel_mosaic(
+                    image_bgr,
+                    detection_boxes,
+                    expansion=config.box_expansion,
+                    block_ratio=config.mosaic_block_ratio,
+                )
+                applied_boxes = rendered_boxes
             return ImageStageResult(
                 image_bgr=result,
                 audit={
@@ -165,16 +189,28 @@ class ImageRedactionService:
                     "model_version": self.logo_detector.model_version,
                     "detections": len(applied_boxes),
                     "boxes": [list(box) for box in applied_boxes],
+                    "rendered_boxes": [list(box) for box in rendered_boxes],
                     "confidences": [round(item.confidence, 4) for item in detections],
+                    "action": config.action,
+                    "overlay_asset_id": (
+                        config.overlay_asset_id if config.action == "overlay_asset" else None
+                    ),
+                    "overlay_asset_sha256": asset_sha256,
                     "modified_area_ratio": round(
-                        boxes_area_ratio(image_bgr.shape, applied_boxes), 6
+                        boxes_area_ratio(image_bgr.shape, rendered_boxes), 6
                     ),
                     "outside_boxes_changed_pixels": changed_pixels_outside_boxes(
-                        image_bgr, result, applied_boxes
+                        image_bgr, result, rendered_boxes
                     ),
                     "duration_ms": round((perf_counter() - started) * 1000),
                 },
-                reasons=("已自动识别并遮挡画面中的当家 APP Logo",)
+                reasons=(
+                    (
+                        "已自动识别并使用小当图标遮挡画面中的当家 APP Logo"
+                        if config.action == "overlay_asset"
+                        else "已自动识别并使用马赛克遮挡画面中的当家 APP Logo"
+                    ),
+                )
                 if applied_boxes
                 else (),
             )

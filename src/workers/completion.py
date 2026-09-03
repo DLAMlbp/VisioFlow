@@ -26,10 +26,12 @@ from src.services.images.processing_vision import (
     precise_filter_reason,
 )
 from src.services.images.quality import QualityEngine
+from src.services.images.redaction_policy import evaluate_ground_film
 from src.services.images.vision_rate_limit import retry_countdown
 from src.services.jobs.dispatch import RoutedProcessingTaskPublisher
 from src.services.jobs.progression import advance_after_preprocess as _advance_after_preprocess
 from src.services.managed_profiles import (
+    redaction_from_snapshot,
     standard_with_global_filter,
     standards_from_snapshots,
 )
@@ -165,6 +167,10 @@ async def _classify_completion(image_id: str) -> None:
 
 
 async def _classify_filter_standard(repository, item, job, settings, image_bytes: bytes) -> None:
+    redaction_profile = redaction_from_snapshot(
+        getattr(job, "redaction_profile_snapshot", None),
+        legacy_beautify_snapshot=getattr(job, "beautify_profile_snapshot", None),
+    )
     standards = standards_from_snapshots(job.processing_standard_snapshots)
     if not standards:
         await repository.fail_item(item, "任务缺少完整的分类过滤标准快照")
@@ -195,6 +201,7 @@ async def _classify_filter_standard(repository, item, job, settings, image_bytes
         standards=[global_standard],
         unmatched_standard_policy="reject",
         image_context=_image_context(item),
+        redaction_profile=redaction_profile,
     )
     emit_metric(
         logger,
@@ -226,6 +233,28 @@ async def _classify_filter_standard(repository, item, job, settings, image_bytes
         return
 
     global_payload = global_outcome.payload.model_dump(mode="json")
+    ground_film = evaluate_ground_film(
+        redaction_profile, global_outcome.payload.redaction_analysis
+    )
+    if ground_film.rejected:
+        await repository.save_completion_and_route(
+            item,
+            status="completed",
+            model_name=settings.ai_tagging_model,
+            prompt_version=PROCESSING_PROMPT_VERSION,
+            duration_ms=global_outcome.duration_ms,
+            payload={"global_filter": global_payload},
+            error_message=None,
+        )
+        await repository.reject_item(
+            item,
+            [RejectCode.BRANDED_GROUND_FILM_COVERAGE],
+            reason=ground_film.reason,
+        )
+        await _advance_after_preprocess(repository, item)
+        return
+    if ground_film.review_required:
+        await repository.mark_review_required(item.id)
     if global_outcome.payload.filter.rejected:
         await repository.save_completion_and_route(
             item,
@@ -337,12 +366,18 @@ async def _classify_and_filter_standard(
     settings,
     image_bytes: bytes,
     standards,
+    redaction_profile=None,
 ) -> None:
+    redaction_profile = redaction_profile or redaction_from_snapshot(
+        getattr(job, "redaction_profile_snapshot", None),
+        legacy_beautify_snapshot=getattr(job, "beautify_profile_snapshot", None),
+    )
     outcome = await ProcessingVisionService(settings).analyze(
         image_bytes,
         standards=standards,
         unmatched_standard_policy="reject",
         image_context=_image_context(item),
+        redaction_profile=redaction_profile,
     )
     selection = outcome.payload.standard_selection if outcome.payload is not None else None
     emit_metric(
@@ -402,10 +437,15 @@ async def _classify_and_filter_standard(
         await _advance_after_preprocess(repository, item)
         return
 
-    passed = not outcome.payload.filter.rejected
+    ground_film = evaluate_ground_film(
+        redaction_profile, outcome.payload.redaction_analysis
+    )
+    passed = not outcome.payload.filter.rejected and not ground_film.rejected
     standard_name = selected_standard.name or selected_standard.description
     filter_reason = (
-        outcome.payload.filter.reason
+        ground_film.reason
+        if ground_film.rejected
+        else outcome.payload.filter.reason
         if passed
         else precise_filter_reason(outcome.payload.filter, standard_name=standard_name)
     )
@@ -443,11 +483,18 @@ async def _classify_and_filter_standard(
         confidence=selected_evaluation.confidence,
         review_required=(
             selected_evaluation.confidence < settings.completion_review_confidence
+            or ground_film.review_required
         ),
         passed=passed,
         final_score=_quality_score(item),
         reasons=reasons,
-        reject_codes=[] if passed else [RejectCode.AI_FILTER_REJECTED],
+        reject_codes=(
+            []
+            if passed
+            else [RejectCode.BRANDED_GROUND_FILM_COVERAGE]
+            if ground_film.rejected
+            else [RejectCode.AI_FILTER_REJECTED]
+        ),
     )
     if saved:
         await _advance_after_preprocess(repository, item)

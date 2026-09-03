@@ -2285,6 +2285,7 @@ body {
   gap: 4px;
   padding: 12px 28px 0;
   border-bottom: 1px solid var(--line);
+  overflow-x: auto;
 }
 
 .profile-tabs button {
@@ -2295,6 +2296,7 @@ body {
   color: var(--muted);
   padding: 8px 18px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .profile-tabs button.active {
@@ -2362,6 +2364,47 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.profile-preview {
+  margin-top: 16px;
+  border: 1px solid var(--line);
+  background: #fafbfc;
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.profile-preview > strong {
+  font-size: 13px;
+}
+
+.profile-preview .inline-warning {
+  margin: 10px 0 0;
+  padding-left: 20px;
+}
+
+.redaction-config-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-top: 1px solid var(--line);
+  margin: 12px 0 0;
+  padding-top: 12px;
+  gap: 10px;
+}
+
+.redaction-config-summary div {
+  min-width: 0;
+}
+
+.redaction-config-summary dt {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.redaction-config-summary dd {
+  margin: 4px 0 0;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .profile-icon-actions {
@@ -4216,6 +4259,10 @@ body {
 
   .profile-tabs {
     padding-inline: 16px;
+  }
+
+  .redaction-config-summary {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .profile-list {

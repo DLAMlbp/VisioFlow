@@ -19,8 +19,10 @@ class UploadBatch(Base):
     status: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
     filter_profile_id: Mapped[str] = mapped_column(String(80), nullable=False)
     beautify_profile_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    redaction_profile_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     filter_profile_snapshot: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     beautify_profile_snapshot: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    redaction_profile_snapshot: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     processing_standard_snapshots: Mapped[list[dict[str, object]] | None] = mapped_column(
         JSON, nullable=True
     )

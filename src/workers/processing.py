@@ -18,9 +18,10 @@ from src.services.images.processing_vision import (
     precise_filter_reason,
 )
 from src.services.images.quality import QualityEngine
+from src.services.images.redaction_policy import evaluate_ground_film
 from src.services.images.vision_rate_limit import retry_countdown
 from src.services.jobs.progression import advance_after_preprocess as _advance_after_preprocess
-from src.services.managed_profiles import standards_from_snapshots
+from src.services.managed_profiles import redaction_from_snapshot, standards_from_snapshots
 from src.services.storage.factory import get_storage_provider
 from src.workers.celery_app import celery_app
 
@@ -79,6 +80,10 @@ async def _apply_routed_processing(image_id: str) -> None:
             await _advance_after_preprocess(repository, item)
             return
         settings = load_ai_model_settings(get_settings())
+        redaction_profile = redaction_from_snapshot(
+            getattr(job, "redaction_profile_snapshot", None),
+            legacy_beautify_snapshot=getattr(job, "beautify_profile_snapshot", None),
+        )
         image_bytes = await get_storage_provider().download(item.object_key)
         emit_metric(
             logger,
@@ -100,6 +105,7 @@ async def _apply_routed_processing(image_id: str) -> None:
                 item.completion_label
                 or compatibility_route_label(standards[0].id)
             ),
+            redaction_profile=redaction_profile,
         )
         if outcome.status != "completed" or outcome.payload is None:
             if outcome.retryable:
@@ -131,6 +137,19 @@ async def _apply_routed_processing(image_id: str) -> None:
             diagnostic_json=outcome.diagnostic_json,
             error_message=None,
         )
+        ground_film = evaluate_ground_film(
+            redaction_profile, outcome.payload.redaction_analysis
+        )
+        if ground_film.rejected:
+            await repository.reject_item(
+                item,
+                [RejectCode.BRANDED_GROUND_FILM_COVERAGE],
+                reason=ground_film.reason,
+            )
+            await _advance_after_preprocess(repository, item)
+            return
+        if ground_film.review_required:
+            await repository.mark_review_required(item.id)
         if outcome.payload.filter.rejected:
             standard_name = standards[0].name or standards[0].description
             await repository.reject_item(

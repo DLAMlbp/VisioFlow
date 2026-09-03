@@ -87,7 +87,11 @@ def test_routed_filter_strict_schema_requires_complete_contract() -> None:
     assert response_format["type"] == "json_schema"
     assert json_schema["strict"] is True
     assert schema["additionalProperties"] is False
-    assert set(schema["required"]) == {"standard_selection", "filter"}
+    assert set(schema["required"]) == {
+        "standard_selection",
+        "filter",
+        "redaction_analysis",
+    }
     for definition in schema["$defs"].values():
         if "properties" in definition:
             assert definition["additionalProperties"] is False

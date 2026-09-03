@@ -19,15 +19,15 @@ from src.schemas.jobs import (
     ImageJobResultItemResponse,
 )
 from src.schemas.uploads import PresignedUploadRequest
-from src.services.integration_urls import (
-    IntegrationUrlDownloadError,
-    delete_staged_integration_images,
-    stage_integration_urls,
-)
 from src.services.integration_admission import (
     IntegrationAdmissionRejected,
     IntegrationAdmissionUnavailable,
     enforce_integration_admission,
+)
+from src.services.integration_urls import (
+    IntegrationUrlDownloadError,
+    delete_staged_integration_images,
+    stage_integration_urls,
 )
 from src.services.jobs.service import InvalidJobRequest, JobNotFound
 from src.services.storage.keys import build_upload_object_key, validate_upload_request
@@ -101,6 +101,7 @@ async def create_integration_job(
             storage=storage,
             callback_url=callback_url,
             beautify_profile=_optional_form_string(form, "beautify_profile"),
+            redaction_profile=_optional_form_string(form, "redaction_profile"),
             processing_standards=_optional_form_string(form, "processing_standards"),
             completion_profile=_optional_form_string(form, "completion_profile"),
             completed_filter_profile=_optional_form_string(form, "completed_filter_profile"),
@@ -156,6 +157,7 @@ async def create_file_integration_job(
     storage: StorageDep,
     callback_url: Annotated[str, Form(min_length=1)],
     beautify_profile: Annotated[str | None, Form(min_length=1)] = None,
+    redaction_profile: Annotated[str | None, Form(min_length=1)] = None,
     processing_standards: Annotated[
         str | None, Form(description="兼容字段；新任务自动使用全部启用标准")
     ] = None,
@@ -227,6 +229,7 @@ async def create_file_integration_job(
             processing_standards=standard_ids,
             filter_profile=filter_profile,
             beautify_profile=beautify_profile,
+            redaction_profile=redaction_profile,
             filter_enabled=filter_enabled,
             beautify_enabled=beautify_enabled,
             similarity_enabled=similarity_enabled,
@@ -281,6 +284,7 @@ async def _create_url_job(
             beautify_profile=(
                 payload.beautify_profile or settings.integration_beautify_profile
             ),
+            redaction_profile=payload.redaction_profile,
             similarity_profile=payload.similarity_profile,
             enhance_level=payload.enhance_level,
             max_selected=payload.max_selected,

@@ -18,6 +18,7 @@ import {
   Loader2,
   RefreshCw,
   ScanSearch,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Tag,
@@ -76,6 +77,8 @@ function App() {
   const [globalFilterProfiles, setGlobalFilterProfiles] = useState<ProfileOption[]>([]);
   const [beautifyProfiles, setBeautifyProfiles] = useState<ProfileOption[]>([]);
   const [beautifyProfile, setBeautifyProfile] = useState("");
+  const [redactionProfiles, setRedactionProfiles] = useState<ProfileOption[]>([]);
+  const [redactionProfile, setRedactionProfile] = useState("");
   const filterEnabled = true;
   const beautifyEnabled = true;
   const similarityEnabled = true;
@@ -108,8 +111,10 @@ function App() {
     && hasGlobalFilter
     && hasFallbackStandard
     && (!beautifyEnabled || Boolean(beautifyProfile))
+    && Boolean(redactionProfile)
     && !busy;
   const selectedBeautifyProfile = beautifyProfiles.find((profile) => profile.id === beautifyProfile);
+  const selectedRedactionProfile = redactionProfiles.find((profile) => profile.id === redactionProfile);
   const estimatedMinutes = Math.max(1, Math.ceil(Math.max(items.length, 1) / 25));
   const averageScore = useMemo(() => {
     const selected = results?.images.filter((image) => image.decision === "selected") ?? [];
@@ -145,16 +150,21 @@ function App() {
   }
 
   async function reloadProcessingProfiles() {
-    const [globalFilters, standards, beautify] = await Promise.all([
+    const [globalFilters, standards, beautify, redaction] = await Promise.all([
       api.getFilterProfiles(),
       api.getProcessingStandards(),
-      api.getBeautifyProfiles()
+      api.getBeautifyProfiles(),
+      api.getRedactionProfiles()
     ]);
     setGlobalFilterProfiles(globalFilters);
     setProcessingStandards(standards);
     setBeautifyProfiles(beautify);
+    setRedactionProfiles(redaction);
     setBeautifyProfile((current) => (
       beautify.some((item) => item.id === current) ? current : (beautify[0]?.id ?? "")
+    ));
+    setRedactionProfile((current) => (
+      redaction.some((item) => item.id === current) ? current : (redaction[0]?.id ?? "")
     ));
   }
 
@@ -506,6 +516,7 @@ function App() {
       uploadable.forEach((item) => updateItem(item.id, { status: "presigning", error: undefined }, operationVersion));
       const batch = await api.createUploadBatch({
         beautify_profile: beautifyEnabled ? beautifyProfile : undefined,
+        redaction_profile: redactionProfile,
         filter_enabled: filterEnabled,
         beautify_enabled: beautifyEnabled,
         similarity_enabled: similarityEnabled,
@@ -744,7 +755,18 @@ function App() {
                   <small>{selectedBeautifyProfile?.description ?? "请选择本次任务的美化方案。"}</small>
                 </label>
               </section>
-              <section className="pipeline-note"><Sparkles size={20} aria-hidden="true" /><div><strong>逐图连续流水线</strong><p>唯一分类 → 对应过滤 → 立即美化 → 内容特征与图片向量并行 → 素材库匹配 → 继承人工标签。图片之间互不等待。</p></div></section>
+              <section className="plan-section">
+                <div className="section-title"><div><span>03</span><div><h3>水印与Logo</h3><p>水印放行、Logo遮挡和品牌地膜阈值</p></div></div></div>
+                <label className="select-field" htmlFor="redactionProfile">水印与Logo标准
+                  <select id="redactionProfile" value={redactionProfile} onChange={(event) => setRedactionProfile(event.target.value)}>
+                    <option value="" disabled>请选择水印与Logo标准</option>
+                    {redactionProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+                  </select>
+                  <small>{selectedRedactionProfile?.description ?? "请先在标准管理中创建水印与Logo标准。"}</small>
+                </label>
+                {!redactionProfiles.length && <p className="inline-warning">没有启用中的水印与Logo标准，请先在“标准管理”中配置。</p>}
+              </section>
+              <section className="pipeline-note"><Sparkles size={20} aria-hidden="true" /><div><strong>逐图连续流水线</strong><p>唯一分类 → 地膜阈值筛选 → 对应过滤 → 去水印与美化 → 小当图标遮挡Logo → 内容与向量 → 素材匹配。图片之间互不等待。</p></div></section>
             </>}
 
             {workflowStep === 3 && <>
@@ -758,6 +780,7 @@ function App() {
                 <PreflightRow icon={<Images size={20} />} title="图片清单" detail={`${items.length} 张图片已就绪`} valid={items.length > 0} action="返回修改" onAction={() => setWorkflowStep(1)} />
                 <PreflightRow icon={<Check size={20} />} title="全局与分类过滤" detail={`${globalFilterProfiles[0]?.name ?? "未配置全局标准"} · ${processingStandards.length} 条分类标准`} valid={hasGlobalFilter && processingStandards.length > 0 && hasFallbackStandard} action="查看" onAction={() => setWorkflowStep(2)} />
                 <PreflightRow icon={<Sparkles size={20} />} title="AI 与美化方案" detail={`AI 识别已启用 · ${selectedBeautifyProfile?.name ?? "尚未选择"}`} valid={Boolean(beautifyProfile)} action="修改" onAction={() => setWorkflowStep(2)} />
+                <PreflightRow icon={<ShieldCheck size={20} />} title="水印与Logo标准" detail={selectedRedactionProfile?.name ?? "尚未选择"} valid={Boolean(redactionProfile)} action="修改" onAction={() => setWorkflowStep(2)} />
                 <PreflightRow icon={<Database size={20} />} title="素材库匹配" detail="独立美化后自动匹配，未匹配项进入人工复核" valid action="查看素材库" onAction={() => setActiveWorkspace("library")} />
               </div>
               <div className="preflight-notice"><AlertCircle size={18} aria-hidden="true" /><div><strong>开始后配置将被锁定</strong><p>如需修改图片或处理方案，请在开始处理前返回对应步骤。</p></div></div>
@@ -776,7 +799,7 @@ function App() {
                 <p>{job ? `${job.processed}/${job.total} 已处理` : `${uploadedCount}/${items.length} 已上传`}</p>
               </div>
               <div className="processing-stages">
-                {["上传校验", "标准分类", "规则过滤", "逐图美化", "内容与向量", "素材匹配", "汇总结果"].map((label, index) => {
+                {["上传校验", "标准分类", "规则过滤", "美化与净化", "内容与向量", "素材匹配", "汇总结果"].map((label, index) => {
                   const state = job
                     ? workflowStageState(job, index)
                     : { done: false, active: busy && index === 0 };
@@ -790,7 +813,7 @@ function App() {
 
             {workflowStep === 5 && <>
               <header className="sop-stage-heading result-heading-row"><div><span>步骤 5 / 6</span><h2>人工复核</h2><p>检查处理结果、修正待复核项，并按需要重试失败图片。</p></div>{results && <button className="primary-inline" type="button" onClick={() => setWorkflowStep(6)}>进入交付<ChevronRight size={16} /></button>}</header>
-              {results ? <ResultsPanel results={results} averageScore={averageScore} resultFilter={resultFilter} visibleResults={visibleResults} selectedImage={selectedImage} page={resultPage} onFilterChange={(filter) => void changeResultPage(0, filter)} onPageChange={(page) => void changeResultPage(page)} onSelectImage={setSelectedImage} onReviewResolved={applyReviewResult} onRetry={(imageId) => void retryImage(imageId)} onRedactionSaved={async () => { await loadResultPage(results.job_id, operationVersionRef.current, resultPage, resultFilter); setMessage("Logo 马赛克框已人工复核并重新生成图片"); }} /> : <div className="queue-empty">结果正在汇总，完成后会自动进入复核。</div>}
+              {results ? <ResultsPanel results={results} averageScore={averageScore} resultFilter={resultFilter} visibleResults={visibleResults} selectedImage={selectedImage} page={resultPage} onFilterChange={(filter) => void changeResultPage(0, filter)} onPageChange={(page) => void changeResultPage(page)} onSelectImage={setSelectedImage} onReviewResolved={applyReviewResult} onRetry={(imageId) => void retryImage(imageId)} onRedactionSaved={async () => { await loadResultPage(results.job_id, operationVersionRef.current, resultPage, resultFilter); setMessage("Logo遮挡框已人工复核并重新生成图片"); }} /> : <div className="queue-empty">结果正在汇总，完成后会自动进入复核。</div>}
             </>}
 
             {workflowStep === 6 && <>
@@ -821,10 +844,11 @@ function App() {
               <div><dt>图片数量</dt><dd><strong>{items.length}</strong> 张{items.length > 0 && <small className="summary-file-status"><em>{items.length - failedCount} 张已校验</em>{failedCount > 0 && <b>{failedCount} 张需处理</b>}</small>}</dd></div>
               <div><dt>分类与过滤</dt><dd>{workflowStep === 1 ? "自动配置" : `全局审核 + ${processingStandards.length} 条分类`}</dd></div>
               <div><dt>美化方案</dt><dd>{workflowStep === 1 ? "待选择" : selectedBeautifyProfile?.name ?? "待选择"}</dd></div>
+              <div><dt>水印与Logo</dt><dd>{workflowStep === 1 ? "待选择" : selectedRedactionProfile?.name ?? "待选择"}</dd></div>
               <div><dt>预计处理</dt><dd><Clock3 size={15} aria-hidden="true" />约 {estimatedMinutes}–{estimatedMinutes + 2} 分钟</dd></div>
             </dl>
             {workflowStep === 1 && <button className="summary-primary" type="button" disabled={!items.length} onClick={() => setWorkflowStep(2)}>继续选择方案<ChevronRight size={17} /></button>}
-            {workflowStep === 2 && <button className="summary-primary" type="button" disabled={!hasGlobalFilter || !processingStandards.length || !hasFallbackStandard || !beautifyProfile} onClick={() => setWorkflowStep(3)}>进入执行检查<ChevronRight size={17} /></button>}
+            {workflowStep === 2 && <button className="summary-primary" type="button" disabled={!hasGlobalFilter || !processingStandards.length || !hasFallbackStandard || !beautifyProfile || !redactionProfile} onClick={() => setWorkflowStep(3)}>进入执行检查<ChevronRight size={17} /></button>}
             {workflowStep === 3 && <button className="summary-primary" type="button" disabled={!canCreateJob} onClick={() => void startJob()}>{busy ? <Loader2 className="spin" size={17} /> : <Sparkles size={17} />}确认并开始处理</button>}
           </aside>}
         </div>
@@ -1096,6 +1120,10 @@ function ImageDetail({ image, jobId, onBack, onReviewResolved, onRetry, onRedact
       || image.beautify?.redaction?.logos?.boxes
   );
   const logoAudit = image.beautify?.redaction?.logos;
+  const groundFilmAudit = image.beautify?.redaction?.screening?.branded_ground_film;
+  const groundFilmCoverage = typeof groundFilmAudit?.coverage_ratio === "number"
+    ? groundFilmAudit.coverage_ratio
+    : null;
   const logoReviewAvailable = logoAudit?.manual_review_available === true && Boolean(image.enhanced_url);
   const logoStatus = typeof logoAudit?.status === "string" ? logoAudit.status : "";
   const logoWarning = logoStatus === "failed_safe"
@@ -1187,6 +1215,7 @@ function ImageDetail({ image, jobId, onBack, onReviewResolved, onRetry, onRedact
           {openUrl ? <a href={openUrl} target="_blank" rel="noreferrer"><ArrowDownToLine size={16} aria-hidden="true" />打开文件</a> : <span />}
         </footer>
         {logoWarning && <p className="redaction-status-warning"><AlertTriangle size={15} aria-hidden="true" />{logoWarning}</p>}
+        {groundFilmAudit?.detected && <p className="redaction-status-warning"><AlertTriangle size={15} aria-hidden="true" />品牌地膜画面占比 {groundFilmCoverage === null ? "待确认" : `${Math.round(groundFilmCoverage * 100)}%`} · {groundFilmAudit.reason ?? "请核对识别结果"}</p>}
         {logoEditError && <p className="redaction-status-warning"><CircleX size={15} aria-hidden="true" />{logoEditError}</p>}
       </section>
 
@@ -1440,7 +1469,7 @@ export function LogoBoxEditor({ redaction, saving, onSave, onCancel }: {
         className={`redaction-preview-overlay redaction-box-editor ${drawing ? "drawing" : ""}`}
         viewBox={`0 0 ${width} ${height}`}
         preserveAspectRatio="xMidYMid meet"
-        aria-label="Logo 马赛克框编辑器"
+        aria-label="Logo遮挡框编辑器"
         onPointerDown={beginDraw}
         onPointerMove={movePointer}
         onPointerUp={endPointer}

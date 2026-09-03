@@ -39,6 +39,7 @@ from src.services.images.watermark import load_watermark_processor
 from src.services.jobs.dispatch import AnalysisTaskPublisher, EmbeddingTaskPublisher
 from src.services.managed_profiles import (
     beautify_from_snapshot,
+    redaction_from_snapshot,
 )
 from src.services.storage.factory import get_storage_provider
 from src.services.storage.keys import (
@@ -99,6 +100,10 @@ async def _enhance_image(image_id: str) -> None:
         profile = beautify_from_snapshot(
             job.beautify_profile_snapshot, job.beautify_profile_id, settings
         )
+        redaction_profile = redaction_from_snapshot(
+            getattr(job, "redaction_profile_snapshot", None),
+            legacy_beautify_snapshot=getattr(job, "beautify_profile_snapshot", None),
+        )
         storage = get_storage_provider()
         beautify_service = NaturalBeautifyService()
         original_bytes = await storage.download(item.object_key)
@@ -110,7 +115,7 @@ async def _enhance_image(image_id: str) -> None:
         )
         watermark_result = redaction_service.remove_watermark(
             decode_image(orientation_result.image_bytes),
-            profile.watermark_removal,
+            redaction_profile.watermark,
         )
         watermark_status = str(watermark_result.audit.get("status") or "")
         beautify_input_bytes = (
@@ -207,7 +212,7 @@ async def _enhance_image(image_id: str) -> None:
             )
             reasons = [f"美化安全回退：{fallback_reason}"]
 
-        if profile.logo_mosaic.enabled:
+        if redaction_profile.logo.enabled:
             # Keep a private, deterministic pre-logo base. Manual review always
             # re-renders from this image, so deleting an automatic box genuinely
             # restores the underlying pixels instead of editing an irreversible
@@ -220,9 +225,9 @@ async def _enhance_image(image_id: str) -> None:
 
         logo_result = redaction_service.mosaic_logos(
             decode_image(enhanced_bytes),
-            profile.logo_mosaic,
+            redaction_profile.logo,
         )
-        logo_result.audit["manual_review_available"] = profile.logo_mosaic.enabled
+        logo_result.audit["manual_review_available"] = redaction_profile.logo.enabled
         if logo_result.audit.get("status") == "applied":
             enhanced_bytes = encode_redaction_jpeg(
                 logo_result.image_bgr,
@@ -262,6 +267,7 @@ async def _enhance_image(image_id: str) -> None:
         }
         enhancement_audit = {
             "profile_snapshot": job.beautify_profile_snapshot,
+            "redaction_profile_snapshot": getattr(job, "redaction_profile_snapshot", None),
             "planned_parameters": planned_parameters,
             "effective_parameters": effective_parameters,
             "corrections": list(dict.fromkeys(policy_corrections)),
@@ -278,6 +284,17 @@ async def _enhance_image(image_id: str) -> None:
                 "fallback_reason": fallback_reason,
             },
             "redaction": {
+                "standard": {
+                    "id": redaction_profile.id,
+                    "version": redaction_profile.version,
+                    "description": redaction_profile.description,
+                    "ground_film_threshold": redaction_profile.branded_ground_film.reject_coverage_gte,
+                },
+                "screening": (
+                    item.ai_processing_json.get("redaction_analysis")
+                    if isinstance(item.ai_processing_json, dict)
+                    else None
+                ),
                 "watermark": watermark_result.audit,
                 "logos": logo_result.audit,
             },

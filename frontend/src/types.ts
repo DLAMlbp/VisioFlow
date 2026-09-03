@@ -58,6 +58,7 @@ export interface CreateJobRequest {
   filter_route?: CompletionFilterRoute;
   processing_standards?: string[];
   beautify_profile?: string;
+  redaction_profile?: string;
   filter_enabled: boolean;
   beautify_enabled: boolean;
   similarity_enabled: boolean;
@@ -171,6 +172,18 @@ export interface BeautifyAudit {
     fallback_reason?: string | null;
   } | null;
   redaction?: {
+    standard?: Record<string, unknown>;
+    screening?: {
+      left_bottom_watermark_detected?: boolean;
+      target_logo_detected?: boolean;
+      branded_ground_film?: {
+        detected?: boolean;
+        brand_detected?: boolean;
+        coverage_ratio?: number;
+        confidence?: number;
+        reason?: string;
+      };
+    } | null;
     watermark: Record<string, unknown>;
     logos: Record<string, unknown>;
   } | null;
@@ -319,7 +332,7 @@ export interface ProfileOption {
   is_fallback?: boolean | null;
 }
 
-export type ProcessingProfileType = "filter" | "beautify" | "completion";
+export type ProcessingProfileType = "filter" | "beautify" | "redaction" | "completion";
 
 export interface ProcessingProfile extends ProfileOption {
   profile_type: ProcessingProfileType;

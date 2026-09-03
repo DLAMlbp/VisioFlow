@@ -72,6 +72,8 @@ class WatermarkRemovalConfig(BaseModel):
     detection_threshold: float = Field(default=0.38, ge=0, le=1)
     inpaint_radius: int = Field(default=3, ge=1, le=12)
     roi_ocr_enabled: bool = True
+    allow_during_filter: bool = True
+    post_action: Literal["remove", "keep"] = "remove"
 
     @model_validator(mode="after")
     def validate_roi(self):
@@ -84,7 +86,7 @@ class WatermarkRemovalConfig(BaseModel):
 
 
 class LogoMosaicConfig(BaseModel):
-    """Single-brand logo detection and irreversible pixelation settings."""
+    """Single-brand logo detection and configured delivery-time cover action."""
 
     enabled: bool = False
     targets: list[Literal["dangjia_logo"]] = Field(
@@ -95,6 +97,33 @@ class LogoMosaicConfig(BaseModel):
     box_expansion: float = Field(default=0.08, ge=0, le=0.5)
     mosaic_block_ratio: float = Field(default=0.16, ge=0.02, le=0.5)
     include_product_logos: bool = False
+    action: Literal["mosaic", "overlay_asset"] = "mosaic"
+    overlay_asset_id: Literal["xiaodang_v1"] = "xiaodang_v1"
+    overlay_scale: float = Field(default=1.12, ge=1.0, le=2.0)
+
+
+class BrandedGroundFilmConfig(BaseModel):
+    """Reject images dominated by visible Dangjia-branded floor protection film."""
+
+    enabled: bool = False
+    brand: Literal["dangjia_app"] = "dangjia_app"
+    reject_coverage_gte: float = Field(default=0.75, ge=0.05, le=0.98)
+    review_margin: float = Field(default=0.05, ge=0.0, le=0.25)
+    min_confidence: float = Field(default=0.70, ge=0.0, le=1.0)
+    uncertain_action: Literal["manual_review", "pass"] = "manual_review"
+
+
+class RedactionProfile(BaseModel):
+    """Versioned watermark, logo-cover and branded-ground-film policy."""
+
+    id: str
+    version: int = Field(ge=1)
+    description: str
+    watermark: WatermarkRemovalConfig = Field(default_factory=WatermarkRemovalConfig)
+    logo: LogoMosaicConfig = Field(default_factory=LogoMosaicConfig)
+    branded_ground_film: BrandedGroundFilmConfig = Field(
+        default_factory=BrandedGroundFilmConfig
+    )
 
 
 class BeautifyProfile(BaseModel):
