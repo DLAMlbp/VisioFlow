@@ -99,6 +99,32 @@ def test_logo_mosaic_filters_confidence_and_product_logos() -> None:
     assert result.audit["modified_area_ratio"] > 0
 
 
+def test_app_overlay_preserves_pixels_left_of_the_app_token() -> None:
+    image = np.full((100, 140, 3), 127, dtype=np.uint8)
+
+    class _WideWordmarkDetector:
+        model_version = "test-wide-wordmark-v1"
+
+        def detect(self, image_bgr, config):
+            del image_bgr, config
+            return [LogoDetection((20, 30, 120, 60), 0.99)]
+
+    result = ImageRedactionService(
+        logo_detector=_WideWordmarkDetector()
+    ).mosaic_logos(
+        image,
+        LogoMosaicConfig(
+            enabled=True,
+            action="overlay_asset",
+            target_component="app_text",
+        ),
+    )
+
+    assert result.audit["target_component"] == "app_text"
+    assert result.audit["boxes"] == [[75, 30, 120, 60]]
+    assert np.array_equal(result.image_bgr[:, :75], image[:, :75])
+
+
 def test_logo_change_audit_detects_pixels_outside_boxes() -> None:
     before = np.zeros((20, 30, 3), dtype=np.uint8)
     after = before.copy()

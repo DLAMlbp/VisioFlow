@@ -766,7 +766,7 @@ function App() {
                 </label>
                 {!redactionProfiles.length && <p className="inline-warning">没有启用中的水印与Logo标准，请先在“标准管理”中配置。</p>}
               </section>
-              <section className="pipeline-note"><Sparkles size={20} aria-hidden="true" /><div><strong>逐图连续流水线</strong><p>唯一分类 → 地膜阈值筛选 → 对应过滤 → 去水印与美化 → 小当图标遮挡Logo → 内容与向量 → 素材匹配。图片之间互不等待。</p></div></section>
+              <section className="pipeline-note"><Sparkles size={20} aria-hidden="true" /><div><strong>逐图连续流水线</strong><p>唯一分类 → 地膜阈值筛选 → 对应过滤 → 去水印与美化 → 保留当家并遮挡APP → 内容与向量 → 素材匹配。图片之间互不等待。</p></div></section>
             </>}
 
             {workflowStep === 3 && <>

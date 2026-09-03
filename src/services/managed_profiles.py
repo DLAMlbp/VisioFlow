@@ -490,14 +490,14 @@ def default_redaction_snapshot() -> dict[str, object]:
     config = {
         **_neutral_profile("redaction"),
         "id": "redaction_default_v1",
-        "version": 1,
+        "version": 2,
     }
     return {
         "id": "redaction_default_v1",
         "name": "当家水印与Logo标准",
-        "version": 1,
+        "version": 2,
         "instruction": (
-            "左下角水印允许通过并在通过后去除；当家APP或平台Logo使用小当图标遮挡；"
+            "左下角水印允许通过并在通过后去除；保留当家文字，仅用小当图标遮挡APP；"
             "当家品牌地膜占比达到75%判定不合格。"
         ),
         "config": config,
@@ -521,7 +521,7 @@ def _neutral_profile(profile_type: ProfileType) -> dict[str, object]:
         return {
             "id": "preview",
             "version": 1,
-            "description": "左下角水印放行并去除，目标Logo用小当图标遮挡，大面积品牌地膜不合格",
+            "description": "左下角水印放行并去除，保留当家文字且仅遮挡APP，大面积品牌地膜不合格",
             "watermark": {
                 "enabled": True,
                 "allow_during_filter": True,
@@ -530,6 +530,7 @@ def _neutral_profile(profile_type: ProfileType) -> dict[str, object]:
             "logo": {
                 "enabled": True,
                 "action": "overlay_asset",
+                "target_component": "app_text",
                 "overlay_asset_id": "xiaodang_cutout_v1",
             },
             "branded_ground_film": {
@@ -626,7 +627,7 @@ def _compile_redaction_instruction(instruction: str) -> CompiledProfile:
             else "不执行水印去除"
         ),
         (
-            "目标Logo使用小当图标遮挡"
+            "保留“当家”，仅使用小当图标遮挡APP字样"
             if logo.get("enabled") and logo.get("action") == "overlay_asset"
             else "目标Logo使用马赛克遮挡" if logo.get("enabled") else "不处理Logo"
         ),

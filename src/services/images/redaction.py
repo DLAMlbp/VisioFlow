@@ -164,11 +164,20 @@ class ImageRedactionService:
             detection_boxes = [detection.box for detection in detections]
             asset_sha256: str | None = None
             if config.action == "overlay_asset":
+                # Detectors return the whole brand lockup. Preserve the left
+                # icon and the Chinese word "当家"; cover only the right-hand
+                # APP token with the transparent Xiaodang artwork.
+                if config.target_component == "app_text":
+                    detection_boxes = [_app_token_box(box) for box in detection_boxes]
                 result, rendered_boxes, asset_sha256 = apply_logo_overlays(
                     image_bgr,
                     detection_boxes,
                     asset_id=config.overlay_asset_id,
-                    expansion=config.box_expansion,
+                    expansion=(
+                        0.0
+                        if config.target_component == "app_text"
+                        else config.box_expansion
+                    ),
                     scale=config.overlay_scale,
                 )
                 applied_boxes = detection_boxes if rendered_boxes else []
@@ -192,6 +201,7 @@ class ImageRedactionService:
                     "rendered_boxes": [list(box) for box in rendered_boxes],
                     "confidences": [round(item.confidence, 4) for item in detections],
                     "action": config.action,
+                    "target_component": config.target_component,
                     "overlay_asset_id": (
                         config.overlay_asset_id if config.action == "overlay_asset" else None
                     ),
@@ -206,7 +216,7 @@ class ImageRedactionService:
                 },
                 reasons=(
                     (
-                        "已自动识别并使用小当图标遮挡画面中的当家 APP Logo"
+                        "已保留当家品牌名称并使用小当图标遮挡 APP 字样"
                         if config.action == "overlay_asset"
                         else "已自动识别并使用马赛克遮挡画面中的当家 APP Logo"
                     ),
@@ -228,6 +238,15 @@ class ImageRedactionService:
                 },
                 reasons=("Logo 自动遮挡不可用，已安全保留当前画面",),
             )
+
+
+def _app_token_box(box: Box) -> Box:
+    x0, y0, x1, y1 = box
+    width = x1 - x0
+    height = y1 - y0
+    if width <= 0 or height <= 0 or width < height * 1.25:
+        return box
+    return (x0 + round(width * 0.55), y0, x1, y1)
 
 
 def decode_image(image_bytes: bytes) -> np.ndarray:

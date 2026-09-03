@@ -98,6 +98,7 @@ class LogoMosaicConfig(BaseModel):
     mosaic_block_ratio: float = Field(default=0.16, ge=0.02, le=0.5)
     include_product_logos: bool = False
     action: Literal["mosaic", "overlay_asset"] = "mosaic"
+    target_component: Literal["full_logo", "app_text"] = "app_text"
     overlay_asset_id: Literal["xiaodang_v1", "xiaodang_cutout_v1"] = (
         "xiaodang_cutout_v1"
     )

@@ -54,7 +54,21 @@ class RapidOcrDangjiaLogoDetector:
         detections: list[LogoDetection] = []
         for line in detect_text_lines(image_bgr):
             compact = "".join(line.text.upper().split())
-            if not any(token in compact for token in ("当家APP", "当家AP", "当家")):
+            # Rotated shirt prints commonly make the final "PP" look like
+            # "P" or "F" to OCR. Accept those variants only when they follow
+            # the Dangjia brand name, avoiding generic APP-text false positives.
+            app_wordmark = any(
+                token in compact for token in ("当家APP", "当家AP", "当家AF")
+            )
+            if not app_wordmark and "当家" not in compact:
+                continue
+            # Transparent mascot overlays target only the APP token. A plain
+            # "当家" occurrence is intentionally left untouched.
+            if (
+                config.action == "overlay_asset"
+                and config.target_component == "app_text"
+                and not app_wordmark
+            ):
                 continue
             if line.confidence < config.confidence:
                 continue

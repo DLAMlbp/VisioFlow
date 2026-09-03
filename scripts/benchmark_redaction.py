@@ -92,6 +92,11 @@ def main() -> int:
         choices=("mosaic", "overlay_asset"),
         default="mosaic",
     )
+    parser.add_argument(
+        "--logo-target-component",
+        choices=("full_logo", "app_text"),
+        default="app_text",
+    )
     parser.add_argument("--logo-box", action="append", type=_box, default=[])
     parser.add_argument("--watermark-threshold", type=float, default=0.38)
     parser.add_argument("--concurrency", type=int, choices=(1, 2), default=1)
@@ -127,6 +132,7 @@ def main() -> int:
                 LogoMosaicConfig(
                     enabled=args.logo or bool(args.logo_box),
                     action=args.logo_action,
+                    target_component=args.logo_target_component,
                 ),
             )
             output_path = args.output / f"{source.stem}-redacted.jpg"

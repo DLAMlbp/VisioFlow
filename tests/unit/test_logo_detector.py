@@ -122,6 +122,48 @@ def test_rapidocr_logo_detector_matches_brand_and_covers_left_icon(monkeypatch) 
     assert detections[0].box[3] > 55
 
 
+def test_transparent_overlay_ignores_dangjia_without_app(monkeypatch) -> None:
+    dangjia_only = OcrTextLine(
+        polygon=np.asarray([[40, 30], [120, 30], [120, 55], [40, 55]], dtype=np.float32),
+        text="当家",
+        confidence=0.99,
+    )
+    monkeypatch.setattr(
+        "src.services.images.adapters.rapidocr.detect_text_lines",
+        lambda image: [dangjia_only],
+    )
+
+    detections = RapidOcrDangjiaLogoDetector().detect(
+        np.zeros((100, 160, 3), dtype=np.uint8),
+        LogoMosaicConfig(
+            enabled=True, action="overlay_asset", target_component="app_text"
+        ),
+    )
+
+    assert detections == []
+
+
+def test_transparent_overlay_accepts_rotated_app_ocr_variant(monkeypatch) -> None:
+    rotated_app = OcrTextLine(
+        polygon=np.asarray([[40, 30], [140, 20], [145, 55], [45, 65]], dtype=np.float32),
+        text="当家AF",
+        confidence=0.93,
+    )
+    monkeypatch.setattr(
+        "src.services.images.adapters.rapidocr.detect_text_lines",
+        lambda image: [rotated_app],
+    )
+
+    detections = RapidOcrDangjiaLogoDetector().detect(
+        np.zeros((100, 180, 3), dtype=np.uint8),
+        LogoMosaicConfig(
+            enabled=True, action="overlay_asset", target_component="app_text"
+        ),
+    )
+
+    assert len(detections) == 1
+
+
 def test_rapidocr_rotated_shirt_logo_uses_oriented_text_height(monkeypatch) -> None:
     shirt_brand = OcrTextLine(
         polygon=np.asarray(

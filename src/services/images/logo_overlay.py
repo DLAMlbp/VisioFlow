@@ -51,7 +51,7 @@ def apply_logo_overlays(
     asset_id: str,
     expansion: float,
     scale: float,
-    horizontal_bias_ratio: float = 0.12,
+    asset_anchor_x_ratio: float = 0.34,
 ) -> tuple[np.ndarray, list[Box], str]:
     if image_bgr is None or image_bgr.size == 0:
         raise ValueError("image must not be empty")
@@ -79,7 +79,7 @@ def apply_logo_overlays(
         render_height = max(
             1,
             round(target_height * scale),
-            round(target_width * 0.48 * asset_height / asset_width),
+            round(target_width * 1.05 * asset_height / asset_width),
         )
         render_width = max(1, round(asset_width * render_height / asset_height))
         rendered = cv2.resize(
@@ -89,13 +89,13 @@ def apply_logo_overlays(
                 cv2.INTER_AREA if render_height < asset_height else cv2.INTER_CUBIC
             ),
         )
-        horizontal_wordmark = target_width >= target_height * 1.4
-        word_bias = (
-            round(target_width * horizontal_bias_ratio) if horizontal_wordmark else 0
-        )
-        center_x = (x0 + x1) // 2 + word_bias
+        center_x = (x0 + x1) // 2
         center_y = (y0 + y1) // 2
-        left, top = center_x - render_width // 2, center_y - render_height // 2
+        # The mascot occupies the left side of the transparent artwork and the
+        # caption sits on its right. Anchor the mascot (not the full canvas) on
+        # the APP token, matching the approved reference composition.
+        left = max(x0, center_x - round(render_width * asset_anchor_x_ratio))
+        top = center_y - render_height // 2
         right, bottom = left + render_width, top + render_height
         clip_x0, clip_y0 = max(0, left), max(0, top)
         clip_x1, clip_y1 = min(image_width, right), min(image_height, bottom)

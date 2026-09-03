@@ -7,12 +7,13 @@ from src.services.images.processing_vision import (
     BrandedGroundFilmAssessment,
     RedactionAssessment,
 )
+from src.services.images.redaction import _app_token_box
 from src.services.images.redaction_policy import evaluate_ground_film
 from src.services.managed_profiles import _compile_redaction_instruction
-from src.services.profiles import RedactionProfile
+from src.services.profiles import LogoMosaicConfig, RedactionProfile
 
 INSTRUCTION = """图片左下角水印允许通过筛选，通过后自动去除。
-所有图片中的当家APP、平台Logo使用小当图标遮挡。
+保留当家文字，仅使用小当图标遮挡APP。
 当家APP品牌地膜占整张图片大于等于75%时判定不合格。"""
 
 
@@ -43,8 +44,13 @@ def test_compiles_confirmed_redaction_requirement() -> None:
     assert profile.watermark.allow_during_filter is True
     assert profile.watermark.post_action == "remove"
     assert profile.logo.action == "overlay_asset"
+    assert profile.logo.target_component == "app_text"
     assert profile.logo.overlay_asset_id == "xiaodang_cutout_v1"
     assert profile.branded_ground_film.reject_coverage_gte == 0.75
+
+
+def test_legacy_overlay_profiles_default_to_app_only() -> None:
+    assert LogoMosaicConfig(action="overlay_asset").target_component == "app_text"
 
 
 def test_ground_film_threshold_is_inclusive_and_review_band_is_safe() -> None:
@@ -71,7 +77,7 @@ def test_xiaodang_overlay_is_transparent_and_covers_target() -> None:
         image,
         [(100, 100, 180, 130)],
         asset_id="xiaodang_cutout_v1",
-        expansion=0.1,
+        expansion=0,
         scale=1.12,
     )
 
@@ -83,3 +89,8 @@ def test_xiaodang_overlay_is_transparent_and_covers_target() -> None:
     assert np.any(result != image)
     x0, y0, _, _ = boxes[0]
     assert np.array_equal(result[y0, x0], image[y0, x0])
+    assert np.array_equal(result[:, :100], image[:, :100])
+
+
+def test_app_token_box_keeps_dangjia_side_outside_the_cover_target() -> None:
+    assert _app_token_box((100, 40, 300, 100)) == (210, 40, 300, 100)

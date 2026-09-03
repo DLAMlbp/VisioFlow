@@ -549,7 +549,6 @@ class ImageJobService:
                 ),
                 expansion=0,
                 scale=float(logo_profile.get("overlay_scale") or 1.12),
-                horizontal_bias_ratio=0,
             )
             applied_boxes = boxes if rendered_boxes else []
         else:
