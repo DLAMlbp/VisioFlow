@@ -146,19 +146,19 @@ async def test_create_job_persists_job_and_image_items() -> None:
     assert repository.item_count == 2
     assert repository.jobs[response.job_id].ai_tagging_model == "vision-model-test"
     assert repository.jobs[response.job_id].similarity_profile_id == "library_similarity_v2"
-    assert repository.jobs[response.job_id].watermark_processing_enabled is False
+    assert repository.jobs[response.job_id].watermark_processing_enabled is True
 
 
 @pytest.mark.asyncio
-async def test_create_job_freezes_enabled_watermark_processing() -> None:
+async def test_create_job_freezes_disabled_watermark_processing() -> None:
     repository = FakeJobRepository()
     service = ImageJobService(repository=repository, settings=Settings())
     payload = make_payload(1)
-    payload.watermark_processing_enabled = True
+    payload.watermark_processing_enabled = False
 
     response = await service.create_job(payload)
 
-    assert repository.jobs[response.job_id].watermark_processing_enabled is True
+    assert repository.jobs[response.job_id].watermark_processing_enabled is False
 
 
 @pytest.mark.asyncio

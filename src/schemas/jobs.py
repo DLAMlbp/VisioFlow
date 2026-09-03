@@ -81,7 +81,7 @@ class CreateImageJobRequest(BaseModel):
     redaction_profile: str | None = Field(default=None, min_length=1, max_length=80)
     filter_enabled: bool = True
     beautify_enabled: bool = True
-    watermark_processing_enabled: bool = False
+    watermark_processing_enabled: bool = True
     similarity_enabled: bool = True
     similarity_profile: str = Field(default="library_similarity_v2", min_length=1, max_length=80)
     unmatched_standard_policy: Literal["reject"] = "reject"

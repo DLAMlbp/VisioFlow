@@ -64,7 +64,7 @@ def test_upload_batch_does_not_require_manual_standard_selection() -> None:
     )
 
     assert payload.processing_standards == []
-    assert payload.watermark_processing_enabled is False
+    assert payload.watermark_processing_enabled is True
 
 
 @pytest.mark.asyncio

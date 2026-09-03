@@ -6,6 +6,7 @@ new_api="${2:?immutable API image is required}"
 web_port="${3:-8088}"
 image_source="${4:-pull}"
 compose_candidate="${5:-}"
+new_web="${6:-}"
 
 if [[ "$remote_dir" != /* ]] || [[ "$new_api" == *:latest ]] || [[ "$new_api" != *:* ]]; then
   echo "ERROR: absolute remote directory and a non-latest versioned API image are required" >&2
@@ -67,6 +68,10 @@ if [[ -n "$compose_candidate" ]]; then
     exit 2
   fi
 fi
+if [[ -n "$new_web" ]] && ([[ "$new_web" == *:latest ]] || [[ "$new_web" != *:* ]]); then
+  echo "ERROR: web image must be a non-latest versioned image" >&2
+  exit 2
+fi
 
 echo "== database backup =="
 dc exec -T postgres sh -c 'exec pg_dump -Fc -U "$POSTGRES_USER" "$POSTGRES_DB"' \
@@ -110,9 +115,12 @@ set_env_value PIPELINE_AI_TIMEOUT_SECONDS "300"
 set_env_value PIPELINE_INPAINT_TIMEOUT_SECONDS "180"
 set_env_value PIPELINE_JOB_TIMEOUT_PER_IMAGE_SECONDS "30"
 set_env_value PIPELINE_ENHANCEMENT_MAX_RECOVERY_ATTEMPTS "2"
+if [[ -n "$new_web" ]]; then
+  set_env_value WEB_IMAGE "$new_web"
+fi
 if [[ "$image_source" == "pull" ]]; then
   echo "== pull versioned API image =="
-  if ! docker pull "$new_api"; then
+  if ! docker pull "$new_api" || { [[ -n "$new_web" ]] && ! docker pull "$new_web"; }; then
     cp --preserve=mode,ownership "$snapshot" .env.production
     cp --preserve=mode,ownership "$compose_snapshot" docker-compose.prod.yml
     echo "PULL_FAILED configuration restored" >&2
@@ -124,6 +132,10 @@ else
     cp --preserve=mode,ownership "$snapshot" .env.production
     cp --preserve=mode,ownership "$compose_snapshot" docker-compose.prod.yml
     echo "LOCAL_IMAGE_MISSING configuration restored" >&2
+    exit 20
+  fi
+  if [[ -n "$new_web" ]] && ! docker image inspect "$new_web" >/dev/null; then
+    echo "LOCAL_WEB_IMAGE_MISSING configuration restored" >&2
     exit 20
   fi
 fi
@@ -185,5 +197,6 @@ echo "SNAPSHOT=$snapshot"
 echo "COMPOSE_SNAPSHOT=$compose_snapshot"
 echo "DATABASE_BACKUP=$backup"
 echo "API_IMAGE=$new_api"
+if [[ -n "$new_web" ]]; then echo "WEB_IMAGE=$new_web"; fi
 release_committed=1
 trap - EXIT

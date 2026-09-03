@@ -118,7 +118,7 @@ async def create_integration_job(
             filter_enabled=_form_bool(form, "filter_enabled", True),
             beautify_enabled=_form_bool(form, "beautify_enabled", True),
             watermark_processing_enabled=_form_bool(
-                form, "watermark_processing_enabled", False
+                form, "watermark_processing_enabled", True
             ),
             similarity_enabled=_form_bool(form, "similarity_enabled", True),
             similarity_profile=_form_string(
@@ -176,7 +176,7 @@ async def create_file_integration_job(
     filter_profile: Annotated[str | None, Form()] = None,
     filter_enabled: Annotated[bool, Form()] = True,
     beautify_enabled: Annotated[bool, Form()] = True,
-    watermark_processing_enabled: Annotated[bool, Form()] = False,
+    watermark_processing_enabled: Annotated[bool, Form()] = True,
     similarity_enabled: Annotated[bool, Form()] = True,
     similarity_profile: Annotated[str, Form()] = "library_similarity_v2",
     unmatched_standard_policy: Annotated[str, Form(pattern="^reject$")] = "reject",

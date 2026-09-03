@@ -79,7 +79,7 @@ function App() {
   const [beautifyProfile, setBeautifyProfile] = useState("");
   const [redactionProfiles, setRedactionProfiles] = useState<ProfileOption[]>([]);
   const [redactionProfile, setRedactionProfile] = useState("");
-  const [watermarkProcessingEnabled, setWatermarkProcessingEnabled] = useState(false);
+  const [watermarkProcessingEnabled, setWatermarkProcessingEnabled] = useState(true);
   const filterEnabled = true;
   const beautifyEnabled = true;
   const similarityEnabled = true;

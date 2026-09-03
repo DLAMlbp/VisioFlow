@@ -26,7 +26,7 @@ class IntegrationUrlJobRequest(BaseModel):
     non_completed_filter_profile: str | None = Field(default=None, min_length=1, max_length=80)
     beautify_profile: str | None = Field(default=None, min_length=1, max_length=80)
     redaction_profile: str | None = Field(default=None, min_length=1, max_length=80)
-    watermark_processing_enabled: bool = False
+    watermark_processing_enabled: bool = True
     similarity_profile: str = Field(default="library_similarity_v2", min_length=1, max_length=80)
     enhance_level: int = Field(default=1, ge=0, le=2)
     max_selected: int = Field(default=10, ge=1)
