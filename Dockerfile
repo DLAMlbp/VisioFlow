@@ -29,6 +29,7 @@ COPY --chown=app:app alembic.ini /app/alembic.ini
 COPY --chown=app:app alembic /app/alembic
 COPY --chown=app:app THIRD_PARTY_NOTICES.md /app/THIRD_PARTY_NOTICES.md
 COPY --chown=app:app requirements-redaction.txt /app/requirements-redaction.txt
+COPY --chown=app:app scripts/dedupe_celery_queue.py /app/scripts/dedupe_celery_queue.py
 
 ENV HF_HUB_OFFLINE=1
 

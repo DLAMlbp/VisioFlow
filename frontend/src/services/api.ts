@@ -95,7 +95,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new Error("服务响应超时，请稍后重试");
     }
-    throw new Error("无法连接服务，请确认正式后端已启动");
+    throw new Error("暂时无法连接服务，正在自动重试");
   } finally {
     window.clearTimeout(timeout);
   }
@@ -132,7 +132,7 @@ async function requestBlob(path: string, init?: RequestInit): Promise<Blob> {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new Error("压缩包准备超时，请稍后重试");
     }
-    throw new Error("无法连接服务，请确认正式后端已启动");
+    throw new Error("暂时无法连接服务，请稍后重试");
   } finally {
     window.clearTimeout(timeout);
   }

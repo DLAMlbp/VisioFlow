@@ -85,6 +85,15 @@ services:
     mem_limit: 384m
     cpus: 0.5
 
+  worker-callback:
+    <<: *worker
+    image: ${API_GATEWAY_IMAGE:?API_GATEWAY_IMAGE must be a versioned image reference}
+    command: celery -A src.workers.celery_app worker -Q callback -l info --concurrency=2 --without-mingle --without-gossip
+    environment:
+      WORKER_ROLE: callback
+    mem_limit: 384m
+    cpus: 0.5
+
   worker-preprocess:
     <<: *worker
     command: celery -A src.workers.celery_app worker -Q preprocess -l info --concurrency=2 --without-mingle --without-gossip
@@ -95,11 +104,11 @@ services:
 
   worker-classification:
     <<: *worker
-    command: celery -A src.workers.celery_app worker -Q classification,filtering -l info --concurrency=2 --without-mingle --without-gossip
+    command: celery -A src.workers.celery_app worker -Q classification,filtering -l info --concurrency=4 --without-mingle --without-gossip
     environment:
       WORKER_ROLE: classification
-    mem_limit: 768m
-    cpus: 1.0
+    mem_limit: 1280m
+    cpus: 2.0
 
   worker-beautify-plan:
     <<: *worker

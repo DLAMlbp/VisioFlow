@@ -24,6 +24,11 @@ from src.services.integration_urls import (
     delete_staged_integration_images,
     stage_integration_urls,
 )
+from src.services.integration_admission import (
+    IntegrationAdmissionRejected,
+    IntegrationAdmissionUnavailable,
+    enforce_integration_admission,
+)
 from src.services.jobs.service import InvalidJobRequest, JobNotFound
 from src.services.storage.keys import build_upload_object_key, validate_upload_request
 
@@ -178,6 +183,7 @@ async def create_file_integration_job(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"集成接口单次最多支持 {settings.integration_max_files} 张图片",
         )
+    _enforce_integration_admission(settings, len(files))
     route_values = (
         completion_profile,
         completed_filter_profile,
@@ -253,6 +259,7 @@ async def _create_url_job(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"集成接口单次最多支持 {settings.integration_max_files} 张图片",
         )
+    _enforce_integration_admission(settings, len(payload.images))
     staged = []
     try:
         staged = await stage_integration_urls(payload.images, storage=storage, settings=settings)
@@ -301,6 +308,26 @@ async def _create_url_job(
         status=created.status.value,
         total=created.total,
     )
+
+
+def _enforce_integration_admission(settings, image_count: int) -> None:
+    try:
+        enforce_integration_admission(settings, image_count)
+    except IntegrationAdmissionRejected as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc),
+            headers={
+                "Retry-After": str(exc.retry_after_seconds),
+                "X-Pipeline-Queue-Depth": str(exc.queue_depth),
+            },
+        ) from exc
+    except IntegrationAdmissionUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="任务容量检查暂时不可用，请稍后重试",
+            headers={"Retry-After": "30"},
+        ) from exc
 
 
 def _required_form_string(form: FormData, name: str) -> str:

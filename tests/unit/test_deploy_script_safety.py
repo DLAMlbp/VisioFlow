@@ -13,6 +13,7 @@ def test_production_compose_uses_the_consolidated_worker_topology() -> None:
     assert "worker-library:" not in compose
     assert "worker-filter:" not in compose
     assert "worker-vision:" not in compose
+    assert "-Q classification,filtering -l info --concurrency=4" in compose
 
 
 def test_worker_healthcheck_does_not_use_celery_pidbox_or_reload_models() -> None:
@@ -21,7 +22,7 @@ def test_worker_healthcheck_does_not_use_celery_pidbox_or_reload_models() -> Non
     assert "inspect ping" not in compose
     assert "redis.Redis.from_url" in compose
     assert "os.environ['REDIS_URL']" in compose
-    assert compose.count("--without-mingle --without-gossip") == 9
+    assert compose.count("--without-mingle --without-gossip") == 10
 
 
 def test_deploy_script_versions_and_rolls_back_the_compose_file() -> None:

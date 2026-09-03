@@ -49,6 +49,7 @@ import type {
 import { decisionLabel, isTerminalStatus, processingReasons, rejectCodeLabel, statusLabel } from "./utils/decision";
 import { downloadResultArchive, getDownloadableResultCount } from "./utils/download";
 import { createClientId } from "./utils/id";
+import { workflowStageState } from "./utils/workflowProgress";
 
 const MAX_IMAGES = 500;
 const MAX_IMAGE_SIZE_MB = 25;
@@ -158,10 +159,35 @@ function App() {
   }
 
   useEffect(() => {
-    const reportStartupError = (error: unknown) => {
-      setMessage(error instanceof Error ? error.message : "正式后端初始化失败");
+    let cancelled = false;
+    let retryTimer: number | undefined;
+    let retryAttempt = 0;
+    let startupError: string | null = null;
+
+    const loadStartupData = async () => {
+      try {
+        await reloadProcessingProfiles();
+        if (cancelled) return;
+        if (startupError) {
+          setMessage((current) => current === startupError ? null : current);
+        }
+        startupError = null;
+        retryAttempt = 0;
+      } catch (error) {
+        if (cancelled) return;
+        startupError = error instanceof Error ? error.message : "正式后端初始化失败";
+        setMessage(startupError);
+        const retryDelay = Math.min(30_000, 1_000 * (2 ** retryAttempt));
+        retryAttempt += 1;
+        retryTimer = window.setTimeout(() => void loadStartupData(), retryDelay);
+      }
     };
-    void reloadProcessingProfiles().catch(reportStartupError);
+
+    void loadStartupData();
+    return () => {
+      cancelled = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
   }, []);
 
   useEffect(() => {
@@ -751,10 +777,10 @@ function App() {
               </div>
               <div className="processing-stages">
                 {["上传校验", "标准分类", "规则过滤", "逐图美化", "内容与向量", "素材匹配", "汇总结果"].map((label, index) => {
-                  const progress = job?.progress ?? (busy ? 8 : 0);
-                  const threshold = [5, 18, 34, 54, 72, 88, 96][index];
-                  const done = progress >= threshold;
-                  const active = !done && (index === 0 || progress >= [0, 5, 18, 34, 54, 72, 88][index]);
+                  const state = job
+                    ? workflowStageState(job, index)
+                    : { done: false, active: busy && index === 0 };
+                  const { done, active } = state;
                   return <div key={label} className={`${done ? "done" : ""} ${active ? "active" : ""}`}><span>{done ? <Check size={15} /> : index + 1}</span><strong>{label}</strong></div>;
                 })}
               </div>
