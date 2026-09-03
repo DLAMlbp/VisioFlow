@@ -29,6 +29,28 @@ async def readiness(response: Response) -> dict[str, object]:
             await session.execute(text("SELECT 1"))
             rows = await session.execute(text("SELECT version_num FROM alembic_version"))
             database_heads = set(rows.scalars())
+            redaction_columns = await session.execute(
+                text(
+                    """
+                    SELECT table_name, column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name IN ('image_jobs', 'upload_batches')
+                      AND column_name IN (
+                          'redaction_profile_id',
+                          'redaction_profile_snapshot'
+                      )
+                    """
+                )
+            )
+            actual_redaction_columns = {tuple(row) for row in redaction_columns}
+            expected_redaction_columns = {
+                (table, column)
+                for table in ("image_jobs", "upload_batches")
+                for column in ("redaction_profile_id", "redaction_profile_snapshot")
+            }
+            if actual_redaction_columns != expected_redaction_columns:
+                raise RuntimeError("database redaction columns are incomplete")
         code_heads = set(ScriptDirectory.from_config(Config("alembic.ini")).get_heads())
         if database_heads != code_heads:
             raise RuntimeError("数据库迁移版本与应用代码不一致")
