@@ -120,9 +120,12 @@ class Settings(BaseSettings):
     cleanup_interval_seconds: int = 3600
     pipeline_recovery_interval_seconds: int = Field(default=30, ge=5, le=60)
     pipeline_stale_seconds: int = Field(default=60, ge=30, le=60)
-    pipeline_ai_timeout_seconds: int = Field(default=90, ge=30, le=90)
+    pipeline_ai_timeout_seconds: int = Field(default=300, ge=90, le=600)
     pipeline_task_timeout_seconds: int = Field(default=60, ge=10, le=60)
+    pipeline_inpaint_timeout_seconds: int = Field(default=180, ge=60, le=600)
     pipeline_job_timeout_seconds: int = Field(default=1800, ge=60, le=1800)
+    pipeline_job_timeout_per_image_seconds: int = Field(default=30, ge=0, le=300)
+    pipeline_enhancement_max_recovery_attempts: int = Field(default=2, ge=0, le=5)
     pipeline_recovery_lease_seconds: int = Field(default=86400, ge=3600, le=604800)
 
     @model_validator(mode="after")

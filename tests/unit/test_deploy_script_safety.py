@@ -86,3 +86,12 @@ def test_prebuilt_api_release_requires_exact_repository_digest_and_skips_build()
     normal_build_branch = script.index("else {", prebuilt_branch)
     docker_build = script.index("& docker build --pull --tag $apiImage .")
     assert prebuilt_branch < normal_build_branch < docker_build
+
+
+def test_api_deploy_applies_pipeline_recovery_runtime_settings() -> None:
+    script = (ROOT / "scripts" / "deploy-production.ps1").read_text(encoding="utf-8")
+
+    assert 'set_env_value PIPELINE_AI_TIMEOUT_SECONDS "300"' in script
+    assert 'set_env_value PIPELINE_INPAINT_TIMEOUT_SECONDS "180"' in script
+    assert 'set_env_value PIPELINE_JOB_TIMEOUT_PER_IMAGE_SECONDS "30"' in script
+    assert 'set_env_value PIPELINE_ENHANCEMENT_MAX_RECOVERY_ATTEMPTS "2"' in script

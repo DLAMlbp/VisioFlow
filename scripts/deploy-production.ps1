@@ -404,6 +404,10 @@ restore_previous_release() {
 if [[ "$api_image" != "-" ]]; then
   set_env_value API_IMAGE "$api_image"
   set_env_value API_GATEWAY_IMAGE "$api_image"
+  set_env_value PIPELINE_AI_TIMEOUT_SECONDS "300"
+  set_env_value PIPELINE_INPAINT_TIMEOUT_SECONDS "180"
+  set_env_value PIPELINE_JOB_TIMEOUT_PER_IMAGE_SECONDS "30"
+  set_env_value PIPELINE_ENHANCEMENT_MAX_RECOVERY_ATTEMPTS "2"
 fi
 if [[ "$web_image" != "-" ]]; then set_env_value WEB_IMAGE "$web_image"; fi
 

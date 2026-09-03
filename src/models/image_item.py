@@ -109,6 +109,9 @@ class ImageItem(Base):
     enhancement_stage_started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    enhancement_recovery_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     analysis_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     analysis_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     embedding_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

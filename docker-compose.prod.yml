@@ -144,10 +144,10 @@ services:
 
   worker-render:
     <<: *worker
-    command: celery -A src.workers.celery_app worker -Q render -l info --concurrency=1 --without-mingle --without-gossip
+    command: celery -A src.workers.celery_app worker -Q render -l info --concurrency=1 --max-tasks-per-child=5 --without-mingle --without-gossip
     environment:
       WORKER_ROLE: render
-    mem_limit: 1536m
+    mem_limit: 3072m
     cpus: 1.0
 
   worker-analysis:

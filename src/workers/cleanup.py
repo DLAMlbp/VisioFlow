@@ -8,6 +8,7 @@ from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import selectinload
 
 from src.core.config import get_settings
+from src.core.metrics import emit_metric
 from src.db.session import AsyncSessionLocal
 from src.models.image_item import ImageItem
 from src.models.image_job import ImageJob
@@ -27,6 +28,7 @@ from src.services.jobs.dispatch import (
     RedactionDetectionTaskPublisher,
     RenderTaskPublisher,
     RoutedProcessingTaskPublisher,
+    release_recovery_lease,
 )
 from src.services.storage.factory import get_storage_provider
 from src.services.storage.keys import (
@@ -126,7 +128,7 @@ def recover_stalled_images() -> None:
 
 
 async def _recover_stalled_images() -> None:
-    """Turn stale work into one terminal failure instead of republishing it."""
+    """Recover bounded idempotent stages and fail terminally stalled work."""
     settings = get_settings()
     now = datetime.now(UTC)
     active_statuses = ("queued", "processing", "ranking", "analyzing", "enhancing", "tagging")
@@ -152,7 +154,7 @@ async def _recover_stalled_images() -> None:
                     job.id,
                     node="job_deadline",
                     code="JOB_TIMEOUT",
-                    reason="整任务执行超过 30 分钟，已停止后续处理",
+                    reason="整任务执行超过允许时限，已停止后续处理",
                     duration_ms=int((now - job.created_at).total_seconds() * 1000),
                 )
                 continue
@@ -171,10 +173,58 @@ async def _recover_stalled_images() -> None:
             if stalled is None:
                 continue
             node, started_at, timeout_seconds = stalled
+            if item is not None and item.status == "enhancing":
+                stage = str(item.enhancement_stage or "")
+                publisher = _enhancement_recovery_publisher(stage)
+                if publisher is not None:
+                    attempt = await repository.recover_enhancement_stage(
+                        item.id,
+                        expected_stage=stage,
+                        started_at=started_at,
+                        max_attempts=settings.pipeline_enhancement_max_recovery_attempts,
+                    )
+                    if attempt is not None:
+                        publisher_name = type(publisher).__name__
+                        release_recovery_lease(publisher_name, item.id)
+                        try:
+                            publisher.publish(item.id)
+                        except Exception:
+                            await repository.restore_enhancement_recovery_after_publish_failure(
+                                item.id,
+                                expected_stage=stage,
+                                started_at=started_at,
+                                recovery_attempt=attempt,
+                            )
+                            raise
+                        emit_metric(
+                            logger,
+                            "enhancement_stage_recovery_total",
+                            labels={
+                                "job_id": job.id,
+                                "image_id": item.id,
+                                "stage": stage,
+                                "attempt": attempt,
+                            },
+                        )
+                        continue
+                    exhausted = await repository.claim_exhausted_enhancement_failure(
+                        item.id,
+                        expected_stage=stage,
+                        started_at=started_at,
+                        max_attempts=settings.pipeline_enhancement_max_recovery_attempts,
+                    )
+                    if not exhausted:
+                        # The worker advanced or completed this stage after it
+                        # was selected by cleanup; leave the current state intact.
+                        continue
             await repository.fail_job(
                 job.id,
                 node=node,
-                code="NODE_TIMEOUT",
+                code=(
+                    "ENHANCEMENT_RECOVERY_EXHAUSTED"
+                    if item is not None and item.status == "enhancing"
+                    else "NODE_TIMEOUT"
+                ),
                 reason=f"节点 {node} 超过 {timeout_seconds} 秒未完成，任务已停止",
                 image_id=item.id if item is not None else None,
                 duration_ms=int((now - started_at).total_seconds() * 1000),
@@ -193,35 +243,50 @@ def _stalled_node(item, job, now, settings):
     if job.status == "ranking":
         return expired("ranking", job.updated_at, normal)
     if item.status == "queued":
-        return expired(
-            "dispatch" if item.preprocess_dispatched_at is None else "preprocess_queue",
-            item.preprocess_dispatched_at or item.created_at,
-            normal,
-        )
+        return None
     if item.status == "analyzing":
-        if item.completion_status in {"pending", "processing"}:
+        if item.completion_status == "processing":
             return expired(
                 "classification", item.completion_started_at or item.updated_at, ai
             )
-        if item.ai_processing_status in {"pending", "processing"}:
+        if item.ai_processing_status == "processing":
             return expired("filtering", item.ai_processing_started_at or item.updated_at, ai)
+        if item.completion_status == "pending" or item.ai_processing_status == "pending":
+            return None
         return expired("preprocess", item.preprocess_started_at or item.updated_at, normal)
-    if item.status == "beautify_planning" or item.beautify_plan_status in {
-        "pending",
-        "processing",
-    }:
+    if item.status == "beautify_planning" or item.beautify_plan_status == "processing":
         return expired(
             "beautify_planning", item.beautify_plan_started_at or item.updated_at, ai
         )
+    if item.beautify_plan_status == "pending":
+        return None
     if item.status == "enhancing":
-        return expired("beautifying", item.enhance_started_at or item.updated_at, normal)
-    if item.analysis_status in {"pending", "processing"}:
+        stage = str(item.enhancement_stage or "enhance")
+        timeout = settings.pipeline_inpaint_timeout_seconds if stage == "inpaint" else normal
+        return expired(stage, item.enhancement_stage_started_at, timeout)
+    if item.analysis_status == "processing":
         return expired("content_analysis", item.analysis_started_at or item.updated_at, ai)
-    if item.embedding_status in {"pending", "processing"}:
+    if item.analysis_status == "pending":
+        return None
+    if item.embedding_status == "processing":
         return expired("embedding", item.embedding_started_at or item.updated_at, normal)
-    if item.match_status in {"pending", "queued", "processing"}:
+    if item.embedding_status == "pending":
+        return None
+    if item.match_status == "processing":
         return expired("matching", item.match_started_at or item.updated_at, normal)
+    if item.match_status in {"pending", "queued"}:
+        return None
     return expired("pipeline", item.updated_at, normal)
+
+
+def _enhancement_recovery_publisher(stage: str):
+    publisher_type = {
+        "redaction": RedactionDetectionTaskPublisher,
+        "inpaint": InpaintTaskPublisher,
+        "enhance": EnhancementTaskPublisher,
+        "render": RenderTaskPublisher,
+    }.get(stage)
+    return publisher_type() if publisher_type is not None else None
 
 
 async def _recover_stalled_images_legacy() -> None:

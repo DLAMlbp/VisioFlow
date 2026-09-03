@@ -89,25 +89,25 @@ celery_app.conf.update(
         },
         "image.classify_completion": {
             "max_retries": 0,
-            "soft_time_limit": 90,
-            "time_limit": 95,
+            "soft_time_limit": settings.pipeline_ai_timeout_seconds,
+            "time_limit": settings.pipeline_ai_timeout_seconds + 5,
         },
         "image.apply_routed_processing": {
             "max_retries": 0,
-            "soft_time_limit": 90,
-            "time_limit": 95,
+            "soft_time_limit": settings.pipeline_ai_timeout_seconds,
+            "time_limit": settings.pipeline_ai_timeout_seconds + 5,
         },
         "image.rank_job": {"max_retries": 0, "soft_time_limit": 60, "time_limit": 65},
         "image.plan_beautify": {
             "max_retries": 0,
-            "soft_time_limit": 90,
-            "time_limit": 95,
+            "soft_time_limit": settings.pipeline_ai_timeout_seconds,
+            "time_limit": settings.pipeline_ai_timeout_seconds + 5,
         },
         "image.enhance": {"max_retries": 0, "soft_time_limit": 60, "time_limit": 65},
         "image.analyze_content": {
             "max_retries": 0,
-            "soft_time_limit": 90,
-            "time_limit": 95,
+            "soft_time_limit": settings.pipeline_ai_timeout_seconds,
+            "time_limit": settings.pipeline_ai_timeout_seconds + 5,
         },
         "image.generate_embedding": {
             "max_retries": 0,
@@ -117,8 +117,8 @@ celery_app.conf.update(
         "image.match_library": {"max_retries": 0, "soft_time_limit": 60, "time_limit": 65},
         "image.generate_tags": {
             "max_retries": 0,
-            "soft_time_limit": 90,
-            "time_limit": 95,
+            "soft_time_limit": settings.pipeline_ai_timeout_seconds,
+            "time_limit": settings.pipeline_ai_timeout_seconds + 5,
         },
     },
 )

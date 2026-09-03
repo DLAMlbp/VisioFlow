@@ -273,6 +273,7 @@ class ImageJobRepository:
                 enhance_started_at=func.now(),
                 enhancement_stage="redaction",
                 enhancement_stage_started_at=func.now(),
+                enhancement_recovery_attempts=0,
             )
             .returning(ImageItem.id)
         )
@@ -319,6 +320,92 @@ class ImageJobRepository:
         await self.session.commit()
         return result.rowcount == 1
 
+    async def recover_enhancement_stage(
+        self,
+        image_id: str,
+        *,
+        expected_stage: str,
+        started_at,
+        max_attempts: int,
+    ) -> int | None:
+        """Release one stale enhancement claim and increment its bounded recovery count."""
+
+        result = await self.session.execute(
+            update(ImageItem)
+            .where(
+                ImageItem.id == image_id,
+                ImageItem.status == "enhancing",
+                ImageItem.enhancement_stage == expected_stage,
+                ImageItem.enhancement_stage_started_at == started_at,
+                ImageItem.enhancement_recovery_attempts < max_attempts,
+            )
+            .values(
+                enhancement_stage_started_at=None,
+                enhancement_recovery_attempts=ImageItem.enhancement_recovery_attempts + 1,
+            )
+            .returning(ImageItem.enhancement_recovery_attempts)
+        )
+        attempt = result.scalar_one_or_none()
+        if attempt is None:
+            await self.session.rollback()
+            return None
+        await self.session.commit()
+        return int(attempt)
+
+    async def restore_enhancement_recovery_after_publish_failure(
+        self,
+        image_id: str,
+        *,
+        expected_stage: str,
+        started_at,
+        recovery_attempt: int,
+    ) -> None:
+        """Make a failed broker publish eligible for the next recovery scan."""
+
+        await self.session.execute(
+            update(ImageItem)
+            .where(
+                ImageItem.id == image_id,
+                ImageItem.status == "enhancing",
+                ImageItem.enhancement_stage == expected_stage,
+                ImageItem.enhancement_stage_started_at.is_(None),
+                ImageItem.enhancement_recovery_attempts == recovery_attempt,
+            )
+            .values(
+                enhancement_stage_started_at=started_at,
+                enhancement_recovery_attempts=max(0, recovery_attempt - 1),
+            )
+        )
+        await self.session.commit()
+
+    async def claim_exhausted_enhancement_failure(
+        self,
+        image_id: str,
+        *,
+        expected_stage: str,
+        started_at,
+        max_attempts: int,
+    ) -> bool:
+        """Atomically stop the same stale stage only after its recovery budget is spent."""
+
+        result = await self.session.execute(
+            update(ImageItem)
+            .where(
+                ImageItem.id == image_id,
+                ImageItem.status == "enhancing",
+                ImageItem.enhancement_stage == expected_stage,
+                ImageItem.enhancement_stage_started_at == started_at,
+                ImageItem.enhancement_recovery_attempts >= max_attempts,
+            )
+            .values(status="failed")
+        )
+        if result.rowcount != 1:
+            await self.session.rollback()
+            return False
+        # Keep this claim in the transaction so fail_job either commits the
+        # guarded item and job together or rolls both changes back.
+        return True
+
     async def advance_enhancement_stage(
         self,
         image_id: str,
@@ -336,6 +423,7 @@ class ImageJobRepository:
             .values(
                 enhancement_stage=next_stage,
                 enhancement_stage_started_at=None,
+                enhancement_recovery_attempts=0,
             )
         )
         await self.session.commit()
@@ -1315,6 +1403,7 @@ class ImageJobRepository:
                 enhance_completed_at=func.now(),
                 enhancement_stage="completed",
                 enhancement_stage_started_at=None,
+                enhancement_recovery_attempts=0,
             )
         )
         if transitioned.rowcount != 1:
@@ -1836,6 +1925,7 @@ class ImageJobRepository:
                 enhance_completed_at=None,
                 enhancement_stage=None,
                 enhancement_stage_started_at=None,
+                enhancement_recovery_attempts=0,
                 analysis_started_at=None,
                 analysis_completed_at=None,
                 embedding_started_at=None,

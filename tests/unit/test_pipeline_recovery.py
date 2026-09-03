@@ -40,6 +40,22 @@ def test_recovery_republishes_lost_messages_for_each_pipeline_stage(monkeypatch)
     assert published["MatchTaskPublisher"] == ["img_match"]
 
 
+def test_enhancement_recovery_uses_the_matching_stage_publisher() -> None:
+    assert type(cleanup._enhancement_recovery_publisher("redaction")).__name__ == (
+        "RedactionDetectionTaskPublisher"
+    )
+    assert type(cleanup._enhancement_recovery_publisher("inpaint")).__name__ == (
+        "InpaintTaskPublisher"
+    )
+    assert type(cleanup._enhancement_recovery_publisher("enhance")).__name__ == (
+        "EnhancementTaskPublisher"
+    )
+    assert type(cleanup._enhancement_recovery_publisher("render")).__name__ == (
+        "RenderTaskPublisher"
+    )
+    assert cleanup._enhancement_recovery_publisher("completed") is None
+
+
 @pytest.mark.asyncio
 async def test_stalled_enhancement_recovery_keeps_the_current_stage() -> None:
     class Result:

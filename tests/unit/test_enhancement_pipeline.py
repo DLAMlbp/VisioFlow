@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from datetime import UTC, datetime
 
 from src.repositories.jobs import ImageJobRepository
 from src.services.images.enhancement_pipeline import (
@@ -174,3 +175,73 @@ async def test_enhancement_stage_can_advance_only_once() -> None:
     assert session.commits == 2
     assert "inpaint" in session.statements[0].compile().params.values()
     assert "enhance" in session.statements[0].compile().params.values()
+
+
+@pytest.mark.asyncio
+async def test_stale_enhancement_claim_has_a_bounded_recovery_counter() -> None:
+    started_at = datetime(2026, 9, 3, tzinfo=UTC)
+
+    class Session:
+        def __init__(self) -> None:
+            self.statement = None
+            self.commits = 0
+
+        async def execute(self, statement):
+            self.statement = statement
+            return _RepositoryResult(scalar=1)
+
+        async def commit(self) -> None:
+            self.commits += 1
+
+    session = Session()
+    repository = ImageJobRepository(session)  # type: ignore[arg-type]
+
+    attempt = await repository.recover_enhancement_stage(
+        "img_render",
+        expected_stage="render",
+        started_at=started_at,
+        max_attempts=2,
+    )
+
+    assert attempt == 1
+    assert session.commits == 1
+    statement = str(session.statement)
+    assert "enhancement_recovery_attempts <" in statement
+    assert "enhancement_stage_started_at" in statement
+    assert "render" in session.statement.compile().params.values()
+    assert 2 in session.statement.compile().params.values()
+
+
+@pytest.mark.asyncio
+async def test_exhausted_enhancement_failure_is_claimed_atomically() -> None:
+    started_at = datetime(2026, 9, 3, tzinfo=UTC)
+
+    class Session:
+        def __init__(self) -> None:
+            self.statement = None
+            self.commits = 0
+
+        async def execute(self, statement):
+            self.statement = statement
+            return _RepositoryResult(rowcount=1)
+
+        async def rollback(self) -> None:
+            raise AssertionError("a matching exhausted stage must not roll back")
+
+    session = Session()
+    repository = ImageJobRepository(session)  # type: ignore[arg-type]
+
+    claimed = await repository.claim_exhausted_enhancement_failure(
+        "img_render",
+        expected_stage="render",
+        started_at=started_at,
+        max_attempts=2,
+    )
+
+    assert claimed is True
+    assert session.commits == 0
+    statement = str(session.statement)
+    assert "enhancement_recovery_attempts >=" in statement
+    assert "enhancement_stage_started_at" in statement
+    assert "render" in session.statement.compile().params.values()
+    assert "failed" in session.statement.compile().params.values()

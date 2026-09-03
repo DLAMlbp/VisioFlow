@@ -29,6 +29,7 @@ from src.services.jobs.callback_security import (
     validate_callback_destination,
 )
 from src.services.jobs.dispatch import JobDispatchTaskPublisher
+from src.services.jobs.deadlines import job_deadline
 from src.services.jobs.ids import (
     build_image_id,
     build_job_id,
@@ -263,8 +264,7 @@ class UploadBatchService:
             not_selected_count=0,
             dispatch_cursor=0,
             callback_url=batch.callback_url,
-            deadline_at=datetime.now(UTC)
-            + timedelta(seconds=self.settings.pipeline_job_timeout_seconds),
+            deadline_at=job_deadline(self.settings, len(items)),
         )
         self.session.add(job)
         self.session.add_all(

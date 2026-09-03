@@ -1,6 +1,5 @@
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import PurePosixPath
 from typing import Annotated
@@ -55,6 +54,7 @@ from src.services.jobs.callback_security import (
     validate_callback_destination,
 )
 from src.services.jobs.dispatch import JobDispatchTaskPublisher, TaskPublisher
+from src.services.jobs.deadlines import job_deadline
 from src.services.jobs.ids import build_image_id, build_job_id
 from src.services.jobs.workflow_config import required_workflow_error
 from src.services.managed_profiles import (
@@ -215,8 +215,7 @@ class ImageJobService:
             dispatch_cursor=0,
             callback_url=str(payload.callback_url) if payload.callback_url else None,
             callback_contract=payload.callback_contract,
-            deadline_at=datetime.now(UTC)
-            + timedelta(seconds=self.settings.pipeline_job_timeout_seconds),
+            deadline_at=job_deadline(self.settings, len(payload.images)),
         )
         items = [
             ImageItem(
