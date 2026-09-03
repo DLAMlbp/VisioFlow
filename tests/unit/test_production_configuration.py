@@ -29,6 +29,8 @@ def test_production_configuration_accepts_explicit_secrets() -> None:
     settings = _production_settings()
 
     assert settings.app_env == "production"
+    assert settings.integration_rate_limit_burst_images == 20
+    assert settings.pipeline_enhancement_max_recovery_attempts == 0
 
 
 @pytest.mark.parametrize(
@@ -65,4 +67,4 @@ def test_production_enhancement_workers_have_isolated_resource_budgets() -> None
     assert "--concurrency=2" in services["worker-enhance"]["command"]
     assert services["worker-render"]["mem_limit"] == "3072m"
     assert "--concurrency=1" in services["worker-render"]["command"]
-    assert "--max-tasks-per-child=5" in services["worker-render"]["command"]
+    assert "--max-tasks-per-child=3" in services["worker-render"]["command"]

@@ -5,26 +5,48 @@ import pytest
 from celery.exceptions import SoftTimeLimitExceeded
 from pydantic import ValidationError
 
-from src.core.config import Settings
+from src.core.config import Settings, get_settings
 from src.models.image_item import ImageItem
 from src.models.image_job import ImageJob
 from src.workers import cleanup
 from src.workers.celery_app import celery_app
 from src.workers.failures import _failure_code
+from src.workers.inpaint import inpaint_watermark
+from src.workers.redaction import detect_redaction
+from src.workers.render import render_image
 
 
 def test_pipeline_tasks_are_single_attempt_with_bounded_time() -> None:
     annotations = celery_app.conf.task_annotations
+    runtime_settings = get_settings()
     assert annotations["image.classify_completion"] == {
         "max_retries": 0,
-        "soft_time_limit": 300,
-        "time_limit": 305,
+        "soft_time_limit": runtime_settings.pipeline_ai_timeout_seconds,
+        "time_limit": runtime_settings.pipeline_ai_timeout_seconds + 5,
     }
     assert annotations["image.preprocess_metadata"] == {
         "max_retries": 0,
         "soft_time_limit": 60,
         "time_limit": 65,
     }
+    assert annotations["image.detect_redaction"] == {
+        "max_retries": 0,
+        "soft_time_limit": 60,
+        "time_limit": 65,
+    }
+    assert annotations["image.inpaint_watermark"] == {
+        "max_retries": 0,
+        "soft_time_limit": 180,
+        "time_limit": 185,
+    }
+    assert annotations["image.render_image"] == {
+        "max_retries": 0,
+        "soft_time_limit": 60,
+        "time_limit": 65,
+    }
+    assert detect_redaction.max_retries == 0
+    assert inpaint_watermark.max_retries == 0
+    assert render_image.max_retries == 0
     assert celery_app.conf.task_reject_on_worker_lost is False
 
 

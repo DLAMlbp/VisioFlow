@@ -39,18 +39,13 @@ class RedactionDetectionTask(EnhancementStageTask):
 
 
 @celery_app.task(
-    bind=True,
     base=RedactionDetectionTask,
     name="image.detect_redaction",
     queue="redaction",
-    max_retries=3,
-    default_retry_delay=10,
+    max_retries=0,
 )
-def detect_redaction(task, image_id: str) -> None:
-    try:
-        asyncio.run(_detect_redaction(image_id))
-    except Exception as exc:
-        raise task.retry(exc=exc, countdown=10) from exc
+def detect_redaction(image_id: str) -> None:
+    asyncio.run(_detect_redaction(image_id))
 
 
 async def _detect_redaction(image_id: str) -> None:
@@ -212,7 +207,7 @@ def _prepare_watermark(
             False,
             preparation.reasons,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("Watermark detection failed safely", exc_info=True)
         return WatermarkPreparation(
             image_bgr=image_bgr.copy(),

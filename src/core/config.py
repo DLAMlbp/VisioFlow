@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     integration_url_download_concurrency: int = 4
     integration_admission_enabled: bool = False
     integration_rate_limit_images_per_minute: int = Field(default=3, ge=1, le=10000)
-    integration_rate_limit_burst_images: int = Field(default=50, ge=1, le=10000)
+    integration_rate_limit_burst_images: int = Field(default=20, ge=1, le=10000)
     integration_max_pipeline_queue_depth: int = Field(default=100, ge=1, le=100000)
     integration_completion_profile: str = "completion_renovation_v1"
     integration_completed_filter_profile: str = "standard_completed_v1"
@@ -125,7 +125,7 @@ class Settings(BaseSettings):
     pipeline_inpaint_timeout_seconds: int = Field(default=180, ge=60, le=600)
     pipeline_job_timeout_seconds: int = Field(default=1800, ge=60, le=1800)
     pipeline_job_timeout_per_image_seconds: int = Field(default=30, ge=0, le=300)
-    pipeline_enhancement_max_recovery_attempts: int = Field(default=2, ge=0, le=5)
+    pipeline_enhancement_max_recovery_attempts: int = Field(default=0, ge=0, le=5)
     pipeline_recovery_lease_seconds: int = Field(default=86400, ge=3600, le=604800)
 
     @model_validator(mode="after")

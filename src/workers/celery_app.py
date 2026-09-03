@@ -103,7 +103,22 @@ celery_app.conf.update(
             "soft_time_limit": settings.pipeline_ai_timeout_seconds,
             "time_limit": settings.pipeline_ai_timeout_seconds + 5,
         },
+        "image.detect_redaction": {
+            "max_retries": 0,
+            "soft_time_limit": settings.pipeline_task_timeout_seconds,
+            "time_limit": settings.pipeline_task_timeout_seconds + 5,
+        },
+        "image.inpaint_watermark": {
+            "max_retries": 0,
+            "soft_time_limit": settings.pipeline_inpaint_timeout_seconds,
+            "time_limit": settings.pipeline_inpaint_timeout_seconds + 5,
+        },
         "image.enhance": {"max_retries": 0, "soft_time_limit": 60, "time_limit": 65},
+        "image.render_image": {
+            "max_retries": 0,
+            "soft_time_limit": settings.pipeline_task_timeout_seconds,
+            "time_limit": settings.pipeline_task_timeout_seconds + 5,
+        },
         "image.analyze_content": {
             "max_retries": 0,
             "soft_time_limit": settings.pipeline_ai_timeout_seconds,

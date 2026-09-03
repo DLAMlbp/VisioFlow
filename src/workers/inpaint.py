@@ -32,20 +32,15 @@ class InpaintStageTask(EnhancementStageTask):
 
 
 @celery_app.task(
-    bind=True,
     base=InpaintStageTask,
     name="image.inpaint_watermark",
     queue="inpaint",
-    max_retries=2,
-    default_retry_delay=15,
+    max_retries=0,
     soft_time_limit=180,
-    time_limit=240,
+    time_limit=185,
 )
-def inpaint_watermark(task, image_id: str) -> None:
-    try:
-        asyncio.run(_inpaint_watermark(image_id))
-    except Exception as exc:
-        raise task.retry(exc=exc, countdown=15) from exc
+def inpaint_watermark(image_id: str) -> None:
+    asyncio.run(_inpaint_watermark(image_id))
 
 
 async def _inpaint_watermark(image_id: str) -> None:
@@ -111,7 +106,7 @@ async def _inpaint_watermark(image_id: str) -> None:
             audit["inpaint_duration_ms"] = round((perf_counter() - started) * 1000)
             reasons = list(result.reasons)
             output_bgr = result.image_bgr
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("Watermark inpaint failed safely", exc_info=True)
             audit = dict(preparation.audit)
             audit.update(

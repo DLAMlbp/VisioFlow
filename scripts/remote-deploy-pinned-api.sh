@@ -114,7 +114,8 @@ set_env_value API_GATEWAY_IMAGE "$new_api"
 set_env_value PIPELINE_AI_TIMEOUT_SECONDS "300"
 set_env_value PIPELINE_INPAINT_TIMEOUT_SECONDS "180"
 set_env_value PIPELINE_JOB_TIMEOUT_PER_IMAGE_SECONDS "30"
-set_env_value PIPELINE_ENHANCEMENT_MAX_RECOVERY_ATTEMPTS "2"
+set_env_value PIPELINE_ENHANCEMENT_MAX_RECOVERY_ATTEMPTS "0"
+set_env_value INTEGRATION_RATE_LIMIT_BURST_IMAGES "20"
 if [[ -n "$new_web" ]]; then
   set_env_value WEB_IMAGE "$new_web"
 fi

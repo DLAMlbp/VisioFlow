@@ -46,18 +46,13 @@ class RenderStageTask(EnhancementStageTask):
 
 
 @celery_app.task(
-    bind=True,
     base=RenderStageTask,
     name="image.render_image",
     queue="render",
-    max_retries=3,
-    default_retry_delay=10,
+    max_retries=0,
 )
-def render_image(task, image_id: str) -> None:
-    try:
-        asyncio.run(_render_image(image_id))
-    except Exception as exc:
-        raise task.retry(exc=exc, countdown=10) from exc
+def render_image(image_id: str) -> None:
+    asyncio.run(_render_image(image_id))
 
 
 async def _render_image(image_id: str) -> None:
@@ -127,7 +122,7 @@ async def _render_image(image_id: str) -> None:
                     watermark_audit.get("detection_duration_ms") or 0
                 ) + int(watermark_audit.get("render_duration_ms") or 0)
                 render_input = watermark_image
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("Watermark APP overlay failed safely", exc_info=True)
                 watermark_audit.update(
                     {
