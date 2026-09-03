@@ -1,0 +1,24 @@
+ARG APP_RUNTIME_BASE
+FROM ${APP_RUNTIME_BASE}
+
+# Reuse a previously verified application image when external dependency
+# registries are unavailable, while replacing every application-owned layer.
+USER root
+RUN rm -rf /app/src /app/profiles /app/assets /app/alembic /app/alembic.ini
+
+COPY --chown=app:app src /app/src
+COPY --chown=app:app profiles /app/profiles
+COPY --chown=app:app assets /app/assets
+COPY --chown=app:app alembic.ini /app/alembic.ini
+COPY --chown=app:app alembic /app/alembic
+COPY --chown=app:app THIRD_PARTY_NOTICES.md /app/THIRD_PARTY_NOTICES.md
+COPY --chown=app:app requirements-redaction.txt /app/requirements-redaction.txt
+COPY --chown=app:app scripts/dedupe_celery_queue.py /app/scripts/dedupe_celery_queue.py
+
+ENV HF_HUB_OFFLINE=1
+
+USER app
+
+EXPOSE 8000
+
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
