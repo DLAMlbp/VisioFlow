@@ -530,7 +530,7 @@ def _neutral_profile(profile_type: ProfileType) -> dict[str, object]:
             "logo": {
                 "enabled": True,
                 "action": "overlay_asset",
-                "overlay_asset_id": "xiaodang_v1",
+                "overlay_asset_id": "xiaodang_cutout_v1",
             },
             "branded_ground_film": {
                 "enabled": True,

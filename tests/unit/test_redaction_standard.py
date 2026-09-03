@@ -43,7 +43,7 @@ def test_compiles_confirmed_redaction_requirement() -> None:
     assert profile.watermark.allow_during_filter is True
     assert profile.watermark.post_action == "remove"
     assert profile.logo.action == "overlay_asset"
-    assert profile.logo.overlay_asset_id == "xiaodang_v1"
+    assert profile.logo.overlay_asset_id == "xiaodang_cutout_v1"
     assert profile.branded_ground_film.reject_coverage_gte == 0.75
 
 
@@ -65,12 +65,12 @@ def test_low_confidence_ground_film_requires_review_instead_of_rejection() -> No
 
 
 def test_xiaodang_overlay_is_transparent_and_covers_target() -> None:
-    asset, digest = load_overlay_asset("xiaodang_v1")
+    asset, digest = load_overlay_asset("xiaodang_cutout_v1")
     image = np.full((240, 320, 3), (90, 120, 150), dtype=np.uint8)
     result, boxes, returned_digest = apply_logo_overlays(
         image,
         [(100, 100, 180, 130)],
-        asset_id="xiaodang_v1",
+        asset_id="xiaodang_cutout_v1",
         expansion=0.1,
         scale=1.12,
     )
@@ -81,3 +81,5 @@ def test_xiaodang_overlay_is_transparent_and_covers_target() -> None:
     assert returned_digest == digest
     assert boxes
     assert np.any(result != image)
+    x0, y0, _, _ = boxes[0]
+    assert np.array_equal(result[y0, x0], image[y0, x0])

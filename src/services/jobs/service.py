@@ -544,9 +544,12 @@ class ImageJobService:
             rendered, rendered_boxes, asset_sha256 = apply_logo_overlays(
                 base_image,
                 boxes,
-                asset_id=str(logo_profile.get("overlay_asset_id") or "xiaodang_v1"),
+                asset_id=str(
+                    logo_profile.get("overlay_asset_id") or "xiaodang_cutout_v1"
+                ),
                 expansion=0,
                 scale=float(logo_profile.get("overlay_scale") or 1.12),
+                horizontal_bias_ratio=0,
             )
             applied_boxes = boxes if rendered_boxes else []
         else:
