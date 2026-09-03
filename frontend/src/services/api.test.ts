@@ -100,7 +100,7 @@ describe("real API client", () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("connection refused")));
 
     await expect(api.getProcessingStandards()).rejects.toThrow(
-      "无法连接服务，请确认正式后端已启动"
+      "暂时无法连接服务，正在自动重试"
     );
   });
 });

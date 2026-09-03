@@ -159,10 +159,35 @@ function App() {
   }
 
   useEffect(() => {
-    const reportStartupError = (error: unknown) => {
-      setMessage(error instanceof Error ? error.message : "正式后端初始化失败");
+    let cancelled = false;
+    let retryTimer: number | undefined;
+    let retryAttempt = 0;
+    let startupError: string | null = null;
+
+    const loadStartupData = async () => {
+      try {
+        await reloadProcessingProfiles();
+        if (cancelled) return;
+        if (startupError) {
+          setMessage((current) => current === startupError ? null : current);
+        }
+        startupError = null;
+        retryAttempt = 0;
+      } catch (error) {
+        if (cancelled) return;
+        startupError = error instanceof Error ? error.message : "正式后端初始化失败";
+        setMessage(startupError);
+        const retryDelay = Math.min(30_000, 1_000 * (2 ** retryAttempt));
+        retryAttempt += 1;
+        retryTimer = window.setTimeout(() => void loadStartupData(), retryDelay);
+      }
     };
-    void reloadProcessingProfiles().catch(reportStartupError);
+
+    void loadStartupData();
+    return () => {
+      cancelled = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
   }, []);
 
   useEffect(() => {
