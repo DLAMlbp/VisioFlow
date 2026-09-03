@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.core.config import Settings
 from src.repositories.jobs import CallbackJob, ImageJobRepository
-from src.schemas.jobs import ImageJobResultItemResponse
+from src.schemas.jobs import ImageJobResultItemResponse, PipelineFailureResponse
 from src.services.jobs.callback_security import (
     CallbackConfigurationError,
     validate_callback_destination,
@@ -43,6 +43,7 @@ class ImageJobCallbackPayload(BaseModel):
     download_expires_in: int = Field(ge=1)
     images: list[CallbackImageResult]
     error_message: str | None = None
+    failure: PipelineFailureResponse | None = None
 
 
 class CustomerCallbackResult(BaseModel):
@@ -56,6 +57,20 @@ class CustomerCallbackResult(BaseModel):
     ai_tags: list[str] = Field(default_factory=list, serialization_alias="aiTags")
 
 
+class CustomerCallbackFailure(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
+    node: str
+    code: str
+    message: str
+    image_id: str | None = Field(default=None, serialization_alias="imageId")
+    duration_ms: int | None = Field(default=None, serialization_alias="durationMs")
+    upstream_status_code: int | None = Field(
+        default=None, serialization_alias="upstreamStatusCode"
+    )
+    failed_at: datetime | None = Field(default=None, serialization_alias="failedAt")
+
+
 class CustomerCallbackPayload(BaseModel):
     model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
 
@@ -63,6 +78,9 @@ class CustomerCallbackPayload(BaseModel):
     event: str = Field(default="image.job.finished", exclude=True)
     results: list[CustomerCallbackResult]
     error_message: str = Field(default="", serialization_alias="errorMessage")
+    failure: CustomerCallbackFailure | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 JobCallbackPayload = ImageJobCallbackPayload | CustomerCallbackPayload
@@ -99,6 +117,7 @@ async def build_job_callback_payload(
         )
 
     if callback_job.callback_contract == "customer_v1":
+        failure = _customer_failure(callback_job)
         return CustomerCallbackPayload(
             event_id=f"{callback_job.id}:{callback_job.completed_at.isoformat()}",
             results=[
@@ -111,9 +130,11 @@ async def build_job_callback_payload(
                 )
                 for image in images
             ],
-            error_message=_job_error_message(callback_job.status) or "",
+            error_message=_job_error_message(callback_job) or "",
+            failure=failure,
         )
 
+    failure = _native_failure(callback_job)
     return ImageJobCallbackPayload(
         event_id=f"{callback_job.id}:{callback_job.completed_at.isoformat()}",
         job_id=callback_job.id,
@@ -126,7 +147,8 @@ async def build_job_callback_payload(
         result_total=result.result_total,
         download_expires_in=settings.s3_presign_expires_seconds,
         images=images,
-        error_message=_job_error_message(callback_job.status),
+        error_message=_job_error_message(callback_job),
+        failure=failure,
     )
 
 
@@ -223,11 +245,33 @@ async def _safe_presign(
         return None
 
 
-def _job_error_message(status: str) -> str | None:
+def _job_error_message(callback_job: CallbackJob | str) -> str | None:
+    status = callback_job.status if isinstance(callback_job, CallbackJob) else callback_job
     if status == "failed":
+        if isinstance(callback_job, CallbackJob) and callback_job.failure_message:
+            return callback_job.failure_message
         return "任务处理失败"
     if status == "partial_failed":
         return "部分图片处理失败，成功结果仍可使用"
     if status == "cancelled":
         return "任务已取消"
     return None
+
+
+def _native_failure(callback_job: CallbackJob) -> PipelineFailureResponse | None:
+    if not callback_job.failed_node:
+        return None
+    return PipelineFailureResponse(
+        node=callback_job.failed_node,
+        code=callback_job.failure_code or "NODE_FAILED",
+        message=callback_job.failure_message or "节点执行失败",
+        image_id=callback_job.failed_image_id,
+        duration_ms=callback_job.failure_duration_ms,
+        upstream_status_code=callback_job.upstream_status_code,
+        failed_at=callback_job.failed_at,
+    )
+
+
+def _customer_failure(callback_job: CallbackJob) -> CustomerCallbackFailure | None:
+    native = _native_failure(callback_job)
+    return CustomerCallbackFailure(**native.model_dump()) if native is not None else None

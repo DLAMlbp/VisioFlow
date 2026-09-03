@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from celery import Task
-
 from src.core.config import get_settings
 from src.core.metrics import emit_metric
 from src.db.session import AsyncSessionLocal
@@ -16,7 +14,6 @@ from src.services.images.beautify_planning import (
     build_stored_plan,
 )
 from src.services.images.quality import QualityEngine
-from src.services.images.vision_rate_limit import retry_countdown
 from src.services.jobs.dispatch import EnhancementTaskPublisher
 from src.services.managed_profiles import beautify_from_snapshot
 from src.services.storage.factory import get_storage_provider
@@ -25,35 +22,13 @@ from src.workers.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 
-class BeautifyPlanningTask(Task):
-    def on_failure(self, exc, task_id, args, kwargs, einfo) -> None:
-        image_id = args[0] if args else kwargs.get("image_id")
-        if image_id:
-            try:
-                asyncio.run(_mark_beautify_plan_failed(image_id))
-            except Exception:
-                logger.exception("Unable to mark beautify planning as failed")
-
-
 @celery_app.task(
-    bind=True,
-    base=BeautifyPlanningTask,
     name="image.plan_beautify",
     queue="beautify_plan",
-    max_retries=3,
-    default_retry_delay=10,
+    max_retries=0,
 )
-def plan_beautify(task, image_id: str) -> None:
-    try:
-        asyncio.run(_plan_beautify(image_id))
-    except Exception as exc:
-        countdown = retry_countdown(get_settings(), task.request.retries)
-        emit_metric(
-            logger,
-            "vision_task_retry_total",
-            labels={"operation": "beautify_planning", "image_id": image_id, "delay": countdown},
-        )
-        raise task.retry(exc=exc, countdown=countdown) from exc
+def plan_beautify(image_id: str) -> None:
+    asyncio.run(_plan_beautify(image_id))
 
 
 async def _plan_beautify(image_id: str) -> None:
@@ -101,9 +76,6 @@ async def _plan_beautify(image_id: str) -> None:
                     "beautify_profile_id": job.beautify_profile_id,
                 },
             )
-            if outcome.retryable:
-                await repository.reset_beautify_plan_for_retry(item.id)
-                raise RuntimeError(outcome.error_message or "美化规划调用失败")
             await repository.save_beautify_plan(
                 item.id,
                 status="failed",
@@ -114,7 +86,11 @@ async def _plan_beautify(image_id: str) -> None:
                 error_message=outcome.error_message,
             )
             await repository.fail_item(
-                item, f"美化规划失败：{outcome.error_message or '模型响应无效'}"
+                item,
+                f"美化规划失败：{outcome.error_message or '模型响应无效'}",
+                node="beautify_planning",
+                code="UPSTREAM_UNAVAILABLE" if outcome.retryable else "INVALID_AI_RESPONSE",
+                duration_ms=outcome.duration_ms,
             )
             return
 
@@ -144,15 +120,6 @@ async def _plan_beautify(image_id: str) -> None:
         )
         if saved:
             EnhancementTaskPublisher().publish(item.id)
-
-
-async def _mark_beautify_plan_failed(image_id: str) -> None:
-    emit_metric(logger, "beautify_plan_failures_total", labels={"image_id": image_id})
-    async with AsyncSessionLocal() as session:
-        repository = ImageJobRepository(session)
-        item = await repository.get_item(image_id)
-        if item is not None and item.status in {"filtered", "beautify_planning"}:
-            await repository.fail_item(item, "美化规划任务多次重试后仍失败")
 
 
 def _image_context(item) -> dict[str, int | float]:

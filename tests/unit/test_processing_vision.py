@@ -308,37 +308,23 @@ def test_selection_rebuilds_incomplete_evaluations_from_valid_selected_id() -> N
 
 
 @pytest.mark.asyncio
-async def test_filter_schema_failure_is_repaired_once(
+async def test_filter_schema_failure_is_not_retried(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ProcessingVisionService(
         Settings(
             ai_tagging_enabled=True,
             ai_tagging_api_key="test-key",
-            ai_processing_schema_max_retries=1,
+            ai_processing_schema_max_retries=0,
         )
     )
-    responses = iter(
-        [
-            {"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}]},
-            {
-                "choices": [
-                    {
-                        "message": {
-                            "content": json.dumps(_filter_payload(), ensure_ascii=False)
-                        },
-                        "finish_reason": "stop",
-                    }
-                ]
-            },
-        ]
-    )
+    response = {"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}]}
     repair_contexts: list[dict[str, str] | None] = []
     schema_retry_calls = 0
 
     def fake_request(*args):
         repair_contexts.append(args[-1])
-        return next(responses)
+        return response
 
     async def before_schema_retry() -> None:
         nonlocal schema_retry_calls
@@ -352,14 +338,13 @@ async def test_filter_schema_failure_is_repaired_once(
         before_schema_retry=before_schema_retry,
     )
 
-    assert outcome.status == "completed"
-    assert outcome.payload is not None
-    assert outcome.payload.filter.decision == "pass"
-    assert schema_retry_calls == 1
+    assert outcome.status == "failed"
+    assert outcome.payload is None
+    assert schema_retry_calls == 0
     assert repair_contexts[0] is None
-    assert "filter" in repair_contexts[1]["error_message"]
-    assert outcome.diagnostic_json["attempts"] == 2
-    assert outcome.diagnostic_json["recovered"] is True
+    assert len(repair_contexts) == 1
+    assert outcome.diagnostic_json["attempts"] == 1
+    assert outcome.diagnostic_json["recovered"] is False
 
 
 @pytest.mark.asyncio
@@ -370,7 +355,7 @@ async def test_filter_schema_failure_stores_redacted_diagnostic(
         Settings(
             ai_tagging_enabled=True,
             ai_tagging_api_key="test-key",
-            ai_processing_schema_max_retries=1,
+            ai_processing_schema_max_retries=0,
         )
     )
     invalid_content = json.dumps(
@@ -389,8 +374,8 @@ async def test_filter_schema_failure_stores_redacted_diagnostic(
     outcome = await service.analyze(b"image", filter_instruction="保留有效图片")
 
     assert outcome.status == "failed"
-    assert "已自动纠错重试1次" in outcome.error_message
-    assert outcome.diagnostic_json["attempts"] == 2
+    assert "自动纠错" not in outcome.error_message
+    assert outcome.diagnostic_json["attempts"] == 1
     assert outcome.diagnostic_json["recovered"] is False
     diagnostics = json.dumps(outcome.diagnostic_json, ensure_ascii=False)
     assert "secret-token" not in diagnostics
@@ -398,7 +383,7 @@ async def test_filter_schema_failure_stores_redacted_diagnostic(
     assert "[redacted-image-data]" in diagnostics
 
 
-def test_strict_schema_unsupported_falls_back_to_json_object(
+def test_strict_schema_unsupported_does_not_issue_fallback_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ProcessingVisionService(
@@ -406,23 +391,11 @@ def test_strict_schema_unsupported_falls_back_to_json_object(
     )
     request_formats: list[str] = []
 
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return json.dumps({"choices": []}).encode()
-
     def fake_urlopen(request, *, timeout):
         del timeout
         body = json.loads(request.data.decode())
         request_formats.append(body["response_format"]["type"])
-        if len(request_formats) == 1:
-            raise HTTPError(request.full_url, 400, "unsupported", None, None)
-        return FakeResponse()
+        raise HTTPError(request.full_url, 400, "unsupported", None, None)
 
     monkeypatch.setattr(processing_vision_module, "_resize_for_tagging", lambda *_args: b"jpeg")
     monkeypatch.setattr(processing_vision_module, "urlopen", fake_urlopen)
@@ -434,10 +407,10 @@ def test_strict_schema_unsupported_falls_back_to_json_object(
         filter_rule="保留有效图片",
     )
 
-    response = service._request(b"image", [standard], "reject", {}, None)
+    with pytest.raises(HTTPError):
+        service._request(b"image", [standard], "reject", {}, None)
 
-    assert response == {"choices": []}
-    assert request_formats == ["json_schema", "json_object"]
+    assert request_formats == ["json_schema"]
 
 
 @pytest.mark.asyncio

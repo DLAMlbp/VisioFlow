@@ -86,6 +86,16 @@ export interface CreateJobResponse {
   total: number;
 }
 
+export interface PipelineFailure {
+  node: string;
+  code: string;
+  message: string;
+  image_id?: string | null;
+  duration_ms?: number | null;
+  upstream_status_code?: number | null;
+  failed_at?: string | null;
+}
+
 export interface JobProgress {
   job_id: string;
   status: JobStatus;
@@ -97,6 +107,7 @@ export interface JobProgress {
   not_selected: number;
   tagging: number;
   stage_counts: Record<string, number>;
+  failure?: PipelineFailure | null;
 }
 
 export interface JobHistoryItem {
@@ -110,6 +121,7 @@ export interface JobHistoryItem {
   ai_tagging_model?: string | null;
   created_at: string;
   completed_at?: string | null;
+  failure?: PipelineFailure | null;
 }
 
 export interface JobHistoryResponse {
@@ -306,6 +318,7 @@ export interface JobResults {
   limit: number;
   offset: number;
   images: ResultImage[];
+  failure?: PipelineFailure | null;
 }
 
 export interface UploadBatchRegistration {

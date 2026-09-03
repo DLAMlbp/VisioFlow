@@ -40,7 +40,7 @@ _POST_FILTER_ACTIVE_STATUSES = (
 )
 
 
-@celery_app.task(name="maintenance.cleanup_expired_images", queue="cleanup", max_retries=2)
+@celery_app.task(name="maintenance.cleanup_expired_images", queue="cleanup", max_retries=0)
 def cleanup_expired_images() -> None:
     asyncio.run(_cleanup_expired_images())
 
@@ -104,12 +104,111 @@ async def _cleanup_expired_images() -> None:
         await session.commit()
 
 
-@celery_app.task(name="maintenance.recover_stalled_images", queue="cleanup", max_retries=2)
+@celery_app.task(name="maintenance.recover_stalled_images", queue="cleanup", max_retries=0)
 def recover_stalled_images() -> None:
     asyncio.run(_recover_stalled_images())
 
 
 async def _recover_stalled_images() -> None:
+    """Turn stale work into one terminal failure instead of republishing it."""
+    settings = get_settings()
+    now = datetime.now(UTC)
+    active_statuses = ("queued", "processing", "ranking", "analyzing", "enhancing", "tagging")
+    terminal_items = ("selected", "rejected", "failed", "not_selected", "cancelled")
+    async with AsyncSessionLocal() as session:
+        repository = ImageJobRepository(session)
+        jobs = list(
+            (
+                await session.execute(
+                    select(ImageJob)
+                    .where(
+                        ImageJob.status.in_(active_statuses),
+                        ImageJob.cancel_requested_at.is_(None),
+                    )
+                    .order_by(ImageJob.created_at)
+                    .limit(100)
+                )
+            ).scalars()
+        )
+        for job in jobs:
+            if job.deadline_at is not None and job.deadline_at <= now:
+                await repository.fail_job(
+                    job.id,
+                    node="job_deadline",
+                    code="JOB_TIMEOUT",
+                    reason="整任务执行超过 30 分钟，已停止后续处理",
+                    duration_ms=int((now - job.created_at).total_seconds() * 1000),
+                )
+                continue
+            item = (
+                await session.execute(
+                    select(ImageItem)
+                    .where(
+                        ImageItem.job_id == job.id,
+                        ImageItem.status.not_in(terminal_items),
+                    )
+                    .order_by(ImageItem.updated_at)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            stalled = _stalled_node(item, job, now, settings) if item is not None else None
+            if stalled is None:
+                continue
+            node, started_at, timeout_seconds = stalled
+            await repository.fail_job(
+                job.id,
+                node=node,
+                code="NODE_TIMEOUT",
+                reason=f"节点 {node} 超过 {timeout_seconds} 秒未完成，任务已停止",
+                image_id=item.id if item is not None else None,
+                duration_ms=int((now - started_at).total_seconds() * 1000),
+            )
+
+
+def _stalled_node(item, job, now, settings):
+    normal = settings.pipeline_task_timeout_seconds
+    ai = settings.pipeline_ai_timeout_seconds
+
+    def expired(node: str, started_at, seconds: int):
+        if started_at is not None and (now - started_at).total_seconds() >= seconds:
+            return node, started_at, seconds
+        return None
+
+    if job.status == "ranking":
+        return expired("ranking", job.updated_at, normal)
+    if item.status == "queued":
+        return expired(
+            "dispatch" if item.preprocess_dispatched_at is None else "preprocess_queue",
+            item.preprocess_dispatched_at or item.created_at,
+            normal,
+        )
+    if item.status == "analyzing":
+        if item.completion_status in {"pending", "processing"}:
+            return expired(
+                "classification", item.completion_started_at or item.updated_at, ai
+            )
+        if item.ai_processing_status in {"pending", "processing"}:
+            return expired("filtering", item.ai_processing_started_at or item.updated_at, ai)
+        return expired("preprocess", item.preprocess_started_at or item.updated_at, normal)
+    if item.status == "beautify_planning" or item.beautify_plan_status in {
+        "pending",
+        "processing",
+    }:
+        return expired(
+            "beautify_planning", item.beautify_plan_started_at or item.updated_at, ai
+        )
+    if item.status == "enhancing":
+        return expired("beautifying", item.enhance_started_at or item.updated_at, normal)
+    if item.analysis_status in {"pending", "processing"}:
+        return expired("content_analysis", item.analysis_started_at or item.updated_at, ai)
+    if item.embedding_status in {"pending", "processing"}:
+        return expired("embedding", item.embedding_started_at or item.updated_at, normal)
+    if item.match_status in {"pending", "queued", "processing"}:
+        return expired("matching", item.match_started_at or item.updated_at, normal)
+    return expired("pipeline", item.updated_at, normal)
+
+
+async def _recover_stalled_images_legacy() -> None:
     settings = get_settings()
     cutoff = datetime.now(UTC) - timedelta(seconds=settings.pipeline_stale_seconds)
     async with AsyncSessionLocal() as session:

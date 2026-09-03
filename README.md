@@ -57,7 +57,7 @@ curl -X POST http://127.0.0.1:18000/api/v1/integration/jobs \
 
 图片会计算清晰度、曝光、对比度和噪声评分，全部归一化为 0-100。一次视觉 AI 请求会根据任务冻结的全部标准唯一命中一条标准，并只执行该标准的对应过滤规则；零条明确标准命中时进入唯一兜底分类。分类评估和过滤决定分别保存并在同一事务内落库，避免半完成状态。单张图片过滤通过后立即并行启动美化规划、内容分析和 OpenCLIP 向量，不等待同批其他图片。AI 调用或协议失败时只将当前图片标记失败并可重试，不会阻塞批次或回退到内置业务标准。输出 JPEG 存储在 `enhanced/` 前缀下。
 
-分类与过滤合并请求优先使用严格 JSON Schema：模型必须返回全部候选标准评估、唯一命中的 `standard_selection`，以及仅针对命中标准的 `filter`。兼容接口若以 HTTP 400/422 拒绝严格 Schema，系统会自动退回 `json_object`；返回 JSON 缺字段或字段类型不合法时，默认携带错误字段和脱敏后的上次输出纠错一次。最终仍不合法时图片明确失败，诊断写入 `image_items.ai_processing_diagnostic_json`，业务结果字段不会混入异常响应正文。纠错会产生一次额外 AI 调用，可通过 `AI_PROCESSING_SCHEMA_MAX_RETRIES` 调整；`AI_PROCESSING_MAX_COMPLETION_TOKENS` 控制响应上限，`AI_PROCESSING_STRICT_JSON_SCHEMA_ENABLED` 控制是否优先使用严格 Schema。
+分类与过滤合并请求使用单次严格 JSON Schema：模型必须返回全部候选标准评估、唯一命中的 `standard_selection`，以及仅针对命中标准的 `filter`。兼容接口拒绝严格 Schema、返回 JSON 缺字段或字段类型不合法时，任务立即在当前节点失败，不再自动回退或纠错重试；脱敏诊断写入 `image_items.ai_processing_diagnostic_json`，失败节点同步返回进度、结果和客户回调。`AI_PROCESSING_MAX_COMPLETION_TOKENS` 控制响应上限，`AI_PROCESSING_STRICT_JSON_SCHEMA_ENABLED` 控制是否使用严格 Schema。
 
 需要相似匹配时，系统会从预处理阶段生成的方向归一化 JPEG 并行生成预向量和大模型结构化内容特征，与美化分支同时执行。预向量只用于提前加载模型和验证图片可编码，不能触发最终素材匹配；美化完成后必须从最终交付图刷新权威 OpenCLIP 向量，再通过 pgvector 召回已启用素材组中的候选参考图，并按 70% 图片向量和 30% 内容特征计算综合分。图片分和综合分均达到 60% 时继承命中素材组的整套人工标签；内容特征缺失或候选不够明确时进入复核，低可信候选返回未匹配。大模型只描述场景、空间、状态、主体、对象、属性、OCR 和视角，不直接生成正式业务标签；只有增强和基于交付图的匹配都完成后图片才会进入交付终态。
 

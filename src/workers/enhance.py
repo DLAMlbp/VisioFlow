@@ -4,7 +4,6 @@ import asyncio
 import logging
 from io import BytesIO
 
-from celery import Task
 from PIL import Image
 
 from src.core.config import get_settings
@@ -52,29 +51,13 @@ from src.workers.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 
-class ImageEnhancementTask(Task):
-    def on_failure(self, exc, task_id, args, kwargs, einfo) -> None:
-        image_id = args[0] if args else kwargs.get("image_id")
-        if image_id:
-            try:
-                asyncio.run(_mark_enhancement_failed(image_id))
-            except Exception:
-                logger.exception("Unable to mark the failed enhancement")
-
-
 @celery_app.task(
-    bind=True,
-    base=ImageEnhancementTask,
     name="image.enhance",
     queue="enhance",
-    max_retries=3,
-    default_retry_delay=10,
+    max_retries=0,
 )
-def enhance_image(task, image_id: str) -> None:
-    try:
-        asyncio.run(_enhance_image(image_id))
-    except Exception as exc:
-        raise task.retry(exc=exc, countdown=10) from exc
+def enhance_image(image_id: str) -> None:
+    asyncio.run(_enhance_image(image_id))
 
 
 async def _enhance_image(image_id: str) -> None:
@@ -372,19 +355,3 @@ async def _enhance_image(image_id: str) -> None:
         ):
             AnalysisTaskPublisher().publish(item.id)
             EmbeddingTaskPublisher().publish(item.id)
-
-
-async def _mark_enhancement_failed(image_id: str) -> None:
-    async with AsyncSessionLocal() as session:
-        repository = ImageJobRepository(session)
-        item = await repository.get_item(image_id)
-        emit_metric(
-            logger,
-            "enhancement_failures_total",
-            labels={
-                "image_id": image_id,
-                "job_id": item.job_id if item is not None else None,
-            },
-        )
-        if item is not None and item.status in {"filtered", "enhancing", "enhanced"}:
-            await repository.fail_item(item, "图片美化任务多次重试后仍失败")

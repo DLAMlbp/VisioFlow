@@ -16,7 +16,6 @@ from src.services.images.similarity import (
     combined_similarity_score,
     decide_similarity,
     feature_similarity,
-    unmatched_decision,
 )
 from src.services.jobs.dispatch import EmbeddingTaskPublisher, MatchTaskPublisher
 from src.services.profiles import ProfileLoader
@@ -30,7 +29,7 @@ logger = logging.getLogger(__name__)
     name="image.generate_embedding",
     queue="openclip",
     priority=9,
-    max_retries=1,
+    max_retries=0,
 )
 def generate_image_embedding(image_id: str) -> None:
     asyncio.run(_generate_image_embedding(image_id))
@@ -82,6 +81,13 @@ async def _generate_image_embedding(image_id: str) -> None:
                     "embedding_version": settings.image_embedding_version,
                 },
             )
+            await repository.fail_item(
+                item,
+                "图片向量生成失败",
+                node="embedding",
+                code="EMBEDDING_FAILED",
+            )
+            return
         await repository.complete_embedding_stage(
             item.id,
             embedding=embedding,
@@ -112,7 +118,7 @@ async def _generate_image_embedding(image_id: str) -> None:
             MatchTaskPublisher().publish(item.id)
 
 
-@celery_app.task(name="image.match_library", queue="matching", max_retries=1)
+@celery_app.task(name="image.match_library", queue="matching", max_retries=0)
 def match_image_library(image_id: str) -> None:
     asyncio.run(_match_image_library(image_id))
 
@@ -143,7 +149,13 @@ async def _match_image_library(image_id: str) -> None:
         )
         scored: list[ScoredCandidate] = []
         if item.embedding_status != "completed" or item.embedding is None:
-            decision = unmatched_decision("本地图片向量暂不可用")
+            await repository.fail_item(
+                item,
+                "素材匹配缺少有效图片向量",
+                node="matching",
+                code="EMBEDDING_MISSING",
+            )
+            return
         else:
             try:
                 similar_assets = await library_repository.find_similar_assets(
@@ -176,9 +188,15 @@ async def _match_image_library(image_id: str) -> None:
                     decide_similarity(candidates=scored, settings=similarity_profile),
                     enabled=settings.library_match_shadow_mode,
                 )
-            except Exception:
+            except Exception as exc:
                 logger.exception("Unable to match image against material library")
-                decision = unmatched_decision("素材库匹配暂不可用")
+                await repository.fail_item(
+                    item,
+                    f"素材库匹配失败：{exc}",
+                    node="matching",
+                    code="MATCHING_FAILED",
+                )
+                return
 
         matched_candidate = next(
             (candidate for candidate in scored if candidate.asset.id == decision.matched_asset_id),

@@ -31,6 +31,7 @@ async def _deliver_job_callback(job_id: str) -> None:
         callback_job = await repository.claim_callback_delivery(
             job_id,
             lease_seconds=settings.callback_delivery_lease_seconds,
+            max_attempts=settings.callback_max_attempts,
         )
         if callback_job is None:
             return
@@ -94,6 +95,7 @@ async def _recover_pending_callbacks() -> None:
         job_ids = await repository.list_callback_jobs_due(
             limit=settings.callback_recovery_batch_size,
             lease_seconds=settings.callback_delivery_lease_seconds,
+            max_attempts=settings.callback_max_attempts,
         )
     publisher = CallbackTaskPublisher()
     for job_id in job_ids:

@@ -81,6 +81,17 @@ class ImageJob(Base):
     )
     callback_last_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
 
+    deadline_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    failed_node: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    failure_message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    failed_image_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    failure_duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    upstream_status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

@@ -190,6 +190,61 @@ async def test_customer_callback_uses_object_key_and_customer_field_names() -> N
 
 
 @pytest.mark.asyncio
+async def test_failed_customer_callback_contains_structured_failure() -> None:
+    completed_at = datetime(2026, 9, 3, 9, 10, tzinfo=UTC)
+    job = ImageJob(
+        id="job_failed",
+        status="failed",
+        filter_profile_id="global_filter_v1",
+        beautify_profile_id="integration_natural_v1",
+        similarity_profile_id="library_similarity_v2",
+        enhance_level=1,
+        max_selected=1,
+        total_count=1,
+        processed_count=1,
+        selected_count=0,
+        rejected_count=0,
+        not_selected_count=0,
+        completed_at=completed_at,
+        items=[],
+    )
+    callback_job = CallbackJob(
+        id=job.id,
+        callback_url="https://client.test/callback",
+        status="failed",
+        completed_at=completed_at,
+        attempts=1,
+        callback_contract="customer_v1",
+        failed_node="classification",
+        failure_code="UPSTREAM_HTTP_ERROR",
+        failure_message="节点 classification 执行失败：HTTP 404",
+        failed_image_id="img_failed",
+        failure_duration_ms=1250,
+        upstream_status_code=404,
+        failed_at=completed_at,
+    )
+
+    payload = await build_job_callback_payload(
+        callback_job,
+        FakeCallbackRepository(job),
+        Settings(_env_file=None),
+        FakeCallbackStorage(),
+    )
+    body = payload.model_dump(mode="json", by_alias=True)
+
+    assert body["errorMessage"] == "节点 classification 执行失败：HTTP 404"
+    assert body["failure"] == {
+        "node": "classification",
+        "code": "UPSTREAM_HTTP_ERROR",
+        "message": "节点 classification 执行失败：HTTP 404",
+        "imageId": "img_failed",
+        "durationMs": 1250,
+        "upstreamStatusCode": 404,
+        "failedAt": "2026-09-03T09:10:00Z",
+    }
+
+
+@pytest.mark.asyncio
 async def test_post_callback_accepts_any_2xx_response(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = {}
 

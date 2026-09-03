@@ -261,6 +261,8 @@ class UploadBatchService:
             not_selected_count=0,
             dispatch_cursor=0,
             callback_url=batch.callback_url,
+            deadline_at=datetime.now(UTC)
+            + timedelta(seconds=self.settings.pipeline_job_timeout_seconds),
         )
         self.session.add(job)
         self.session.add_all(

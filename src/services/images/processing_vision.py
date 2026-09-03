@@ -344,39 +344,25 @@ class ProcessingVisionService:
                 },
             ],
         }
-        response_formats = (
-            [_strict_processing_response_format(), {"type": "json_object"}]
+        body["response_format"] = (
+            _strict_processing_response_format()
             if self.settings.ai_processing_strict_json_schema_enabled
-            else [{"type": "json_object"}]
+            else {"type": "json_object"}
         )
-        for index, response_format in enumerate(response_formats):
-            body["response_format"] = response_format
-            request = Request(
-                _chat_completions_url(self.settings.ai_tagging_base_url),
-                data=json.dumps(body).encode("utf-8"),
-                headers={
-                    "Authorization": f"Bearer {self.settings.ai_tagging_api_key}",
-                    "Content-Type": "application/json",
-                },
-                method="POST",
-            )
-            try:
-                with urlopen(
-                    request,
-                    timeout=self.settings.ai_tagging_timeout_seconds,
-                ) as response:
-                    return json.loads(response.read().decode("utf-8"))
-            except HTTPError as exc:
-                can_fallback = index == 0 and exc.code in {400, 422}
-                if not can_fallback:
-                    raise
-                logger.warning(
-                    "ai_processing_strict_schema_unsupported status=%s; "
-                    "falling_back=json_object",
-                    exc.code,
-                )
-                exc.close()
-        raise AssertionError("response format fallback loop must return or raise")
+        request = Request(
+            _chat_completions_url(self.settings.ai_tagging_base_url),
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.settings.ai_tagging_api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urlopen(
+            request,
+            timeout=self.settings.ai_tagging_timeout_seconds,
+        ) as response:
+            return json.loads(response.read().decode("utf-8"))
 
 
 def _strict_processing_response_format() -> dict[str, object]:

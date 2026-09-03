@@ -105,6 +105,16 @@ class CreateImageJobResponse(BaseModel):
     total: int
 
 
+class PipelineFailureResponse(BaseModel):
+    node: str
+    code: str
+    message: str
+    image_id: str | None = None
+    duration_ms: int | None = None
+    upstream_status_code: int | None = None
+    failed_at: datetime | None = None
+
+
 class ImageJobProgressResponse(BaseModel):
     job_id: str
     status: JobStatus
@@ -116,6 +126,7 @@ class ImageJobProgressResponse(BaseModel):
     not_selected: int = 0
     tagging: int = 0
     stage_counts: dict[str, int] = Field(default_factory=dict)
+    failure: PipelineFailureResponse | None = None
 
 
 class ImageJobHistoryItemResponse(BaseModel):
@@ -129,6 +140,7 @@ class ImageJobHistoryItemResponse(BaseModel):
     ai_tagging_model: str | None = None
     created_at: datetime
     completed_at: datetime | None = None
+    failure: PipelineFailureResponse | None = None
 
 
 class ImageJobHistoryResponse(BaseModel):
@@ -315,3 +327,4 @@ class ImageJobResultsResponse(BaseModel):
     limit: int = 50
     offset: int = 0
     images: list[ImageJobResultItemResponse]
+    failure: PipelineFailureResponse | None = None

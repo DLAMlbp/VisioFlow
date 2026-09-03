@@ -123,6 +123,15 @@ async def _analyze_image_content(image_id: str) -> None:
                 ),
                 error_message=None if succeeded else outcome.error_message,
             )
+            if not succeeded:
+                await repository.fail_item(
+                    item,
+                    outcome.error_message or "大模型内容特征识别失败",
+                    node="content_analysis",
+                    code="UPSTREAM_UNAVAILABLE",
+                    duration_ms=outcome.duration_ms,
+                )
+                return
             await repository.complete_analysis_stage(item.id, succeeded=succeeded)
             if await repository.claim_match_if_ready(item.id):
                 MatchTaskPublisher().publish(item.id)

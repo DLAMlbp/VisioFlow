@@ -813,6 +813,7 @@ function App() {
 
             {workflowStep === 5 && <>
               <header className="sop-stage-heading result-heading-row"><div><span>步骤 5 / 6</span><h2>人工复核</h2><p>检查处理结果、修正待复核项，并按需要重试失败图片。</p></div>{results && <button className="primary-inline" type="button" onClick={() => setWorkflowStep(6)}>进入交付<ChevronRight size={16} /></button>}</header>
+              {results?.failure && <section className="action-panel failed-action"><header><AlertTriangle size={18} aria-hidden="true" /><div><strong>任务已在“{failureNodeLabel(results.failure.node)}”节点停止</strong><span>{results.failure.message}</span></div></header><p>错误码：{results.failure.code}{results.failure.upstream_status_code ? ` · 上游 HTTP ${results.failure.upstream_status_code}` : ""}{results.failure.duration_ms != null ? ` · 耗时 ${(results.failure.duration_ms / 1000).toFixed(1)} 秒` : ""}</p></section>}
               {results ? <ResultsPanel results={results} averageScore={averageScore} resultFilter={resultFilter} visibleResults={visibleResults} selectedImage={selectedImage} page={resultPage} onFilterChange={(filter) => void changeResultPage(0, filter)} onPageChange={(page) => void changeResultPage(page)} onSelectImage={setSelectedImage} onReviewResolved={applyReviewResult} onRetry={(imageId) => void retryImage(imageId)} onRedactionSaved={async () => { await loadResultPage(results.job_id, operationVersionRef.current, resultPage, resultFilter); setMessage("Logo遮挡框已人工复核并重新生成图片"); }} /> : <div className="queue-empty">结果正在汇总，完成后会自动进入复核。</div>}
             </>}
 
@@ -1521,6 +1522,24 @@ function FailedResult({ reasons, onRetry }: { reasons: string[]; onRetry: () => 
       <button className="retry-action" type="button" onClick={onRetry}><RefreshCw size={16} aria-hidden="true" />重试这张图片</button>
     </section>
   );
+}
+
+function failureNodeLabel(node: string): string {
+  return ({
+    dispatch: "任务分发",
+    preprocess_queue: "预处理排队",
+    preprocess: "上传校验与预处理",
+    classification: "标准分类",
+    filtering: "规则过滤",
+    classification_and_filtering: "分类与过滤",
+    ranking: "结果排序",
+    beautify_planning: "AI 美化规划",
+    beautifying: "逐图美化",
+    content_analysis: "内容分析",
+    embedding: "向量生成",
+    matching: "素材匹配",
+    job_deadline: "整任务时限"
+  } as Record<string, string>)[node] ?? node;
 }
 
 function OutcomeSummary({ image, result }: { image: ResultImage; result?: SimilarityTaggingResult }) {

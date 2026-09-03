@@ -77,6 +77,7 @@ interface BackendJobResults {
   limit: number;
   offset: number;
   images: BackendResultImage[];
+  failure?: JobResults["failure"];
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -272,7 +273,8 @@ export const api = {
           result_total: result.result_total,
           limit: result.limit,
           offset: result.offset,
-          images
+          images,
+          failure: result.failure
         };
       },
       downloadSelectedResultsArchive(jobId: string, imageIds?: string[]): Promise<Blob> {

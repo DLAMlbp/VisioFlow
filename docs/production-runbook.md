@@ -24,11 +24,11 @@ EARLY_SEMANTIC_BRANCH_ENABLED=true
 
 ```dotenv
 AI_PROCESSING_STRICT_JSON_SCHEMA_ENABLED=true
-AI_PROCESSING_SCHEMA_MAX_RETRIES=1
+AI_PROCESSING_SCHEMA_MAX_RETRIES=0
 AI_PROCESSING_MAX_COMPLETION_TOKENS=3000
 ```
 
-系统先请求严格 JSON Schema；供应商以 HTTP 400/422 表示不支持时自动回退到 `json_object`。模型返回缺字段、类型错误或无效 JSON 时会按 `AI_PROCESSING_SCHEMA_MAX_RETRIES` 纠错，默认最多增加一次付费 AI 调用。最终失败会将错误字段、尝试次数、`finish_reason`、内容 SHA256 和最多 2000 字的脱敏响应摘要保存到 `image_items.ai_processing_diagnostic_json`；Bearer 凭据和图片 Base64 不会保存。排障后只对明确选中的失败图片执行人工重试，禁止批量自动重试历史失败任务。
+系统对每个 AI 节点只请求一次。供应商拒绝 Schema、响应缺字段、类型错误或返回无效 JSON 时立即终止任务，并在进度、结果和回调中返回失败节点与错误码。诊断仍会保存到 `image_items.ai_processing_diagnostic_json`；Bearer 凭据和图片 Base64 不会保存。排障后只对明确选中的失败图片执行人工重试，禁止批量自动重试历史失败任务。
 
 正式公网入口必须在外部负载均衡器或 API Gateway 终止 HTTPS。不要把 Compose 的 HTTP、PostgreSQL、Redis 或 MinIO 内部端口直接暴露到公网。
 

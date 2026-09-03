@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from celery import Task
-
 from src.core.config import get_settings
 from src.core.metrics import emit_metric
 from src.db.session import AsyncSessionLocal
@@ -19,7 +17,6 @@ from src.services.images.processing_vision import (
 )
 from src.services.images.quality import QualityEngine
 from src.services.images.redaction_policy import evaluate_ground_film
-from src.services.images.vision_rate_limit import retry_countdown
 from src.services.jobs.progression import advance_after_preprocess as _advance_after_preprocess
 from src.services.managed_profiles import redaction_from_snapshot, standards_from_snapshots
 from src.services.storage.factory import get_storage_provider
@@ -28,35 +25,13 @@ from src.workers.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 
-class RoutedProcessingTask(Task):
-    def on_failure(self, exc, task_id, args, kwargs, einfo) -> None:
-        image_id = args[0] if args else kwargs.get("image_id")
-        if image_id:
-            try:
-                asyncio.run(_mark_processing_failed(image_id))
-            except Exception:
-                logger.exception("Unable to mark routed processing as failed")
-
-
 @celery_app.task(
-    bind=True,
-    base=RoutedProcessingTask,
     name="image.apply_routed_processing",
     queue="filtering",
-    max_retries=3,
-    default_retry_delay=10,
+    max_retries=0,
 )
-def apply_routed_processing(task, image_id: str) -> None:
-    try:
-        asyncio.run(_apply_routed_processing(image_id))
-    except Exception as exc:
-        countdown = retry_countdown(get_settings(), task.request.retries)
-        emit_metric(
-            logger,
-            "vision_task_retry_total",
-            labels={"operation": "routed_filter", "image_id": image_id, "delay": countdown},
-        )
-        raise task.retry(exc=exc, countdown=countdown) from exc
+def apply_routed_processing(image_id: str) -> None:
+    asyncio.run(_apply_routed_processing(image_id))
 
 
 async def _apply_routed_processing(image_id: str) -> None:
@@ -108,9 +83,6 @@ async def _apply_routed_processing(image_id: str) -> None:
             redaction_profile=redaction_profile,
         )
         if outcome.status != "completed" or outcome.payload is None:
-            if outcome.retryable:
-                await repository.reset_routed_processing_for_retry(item.id)
-                raise RuntimeError(outcome.error_message or "分支过滤调用失败")
             await repository.save_ai_processing(
                 item,
                 status="failed",
@@ -122,7 +94,11 @@ async def _apply_routed_processing(image_id: str) -> None:
                 error_message=outcome.error_message,
             )
             await repository.fail_item(
-                item, f"分支过滤失败：{outcome.error_message or '模型响应无效'}"
+                item,
+                f"分支过滤失败：{outcome.error_message or '模型响应无效'}",
+                node="filtering",
+                code="UPSTREAM_UNAVAILABLE" if outcome.retryable else "INVALID_AI_RESPONSE",
+                duration_ms=outcome.duration_ms,
             )
             await _advance_after_preprocess(repository, item)
             return
@@ -175,15 +151,6 @@ async def _apply_routed_processing(image_id: str) -> None:
             ],
         )
         await _advance_after_preprocess(repository, item)
-
-
-async def _mark_processing_failed(image_id: str) -> None:
-    async with AsyncSessionLocal() as session:
-        repository = ImageJobRepository(session)
-        item = await repository.get_item(image_id)
-        if item is not None and item.status == "analyzing":
-            await repository.fail_item(item, "分支过滤任务多次重试后仍失败")
-            await _advance_after_preprocess(repository, item)
 
 
 def _routed_snapshot(job, profile_id: str | None) -> dict[str, object] | None:

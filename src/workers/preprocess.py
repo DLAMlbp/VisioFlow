@@ -2,11 +2,9 @@ import asyncio
 import logging
 from io import BytesIO
 
-from celery import Task
 from PIL import Image
 
 from src.core.config import get_settings
-from src.core.metrics import emit_metric
 from src.db.session import AsyncSessionLocal
 from src.repositories.jobs import ImageJobRepository
 from src.schemas.jobs import ImageItemStatus
@@ -27,7 +25,6 @@ from src.services.images.processing_vision import (
 )
 from src.services.images.quality import QualityEngine
 from src.services.images.redaction_policy import evaluate_ground_film
-from src.services.images.vision_rate_limit import retry_countdown
 from src.services.jobs.dispatch import CompletionTaskPublisher
 from src.services.jobs.progression import advance_after_preprocess as _advance_after_preprocess
 from src.services.managed_profiles import (
@@ -44,35 +41,13 @@ from src.workers.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 
-class ImagePreprocessTask(Task):
-    def on_failure(self, exc, task_id, args, kwargs, einfo) -> None:
-        image_id = args[0] if args else kwargs.get("image_id")
-        if image_id:
-            try:
-                asyncio.run(_mark_item_failed(image_id, "图片处理任务多次重试后仍失败"))
-            except Exception:
-                logger.exception("Unable to mark image as failed after task retry exhaustion")
-
-
 @celery_app.task(
-    bind=True,
-    base=ImagePreprocessTask,
     name="image.preprocess_metadata",
     queue="preprocess",
-    max_retries=3,
-    default_retry_delay=10,
+    max_retries=0,
 )
-def preprocess_image_metadata(task, image_id: str) -> None:
-    try:
-        asyncio.run(_preprocess_image_metadata(image_id))
-    except Exception as exc:
-        countdown = retry_countdown(get_settings(), task.request.retries)
-        emit_metric(
-            logger,
-            "vision_task_retry_total",
-            labels={"operation": "preprocess", "image_id": image_id, "delay": countdown},
-        )
-        raise task.retry(exc=exc, countdown=countdown) from exc
+def preprocess_image_metadata(image_id: str) -> None:
+    asyncio.run(_preprocess_image_metadata(image_id))
 
 
 async def _preprocess_image_metadata(image_id: str) -> None:
@@ -298,14 +273,6 @@ async def _preprocess_image_metadata(image_id: str) -> None:
             reasons=warnings,
         )
         await _advance_after_preprocess(repository, item)
-
-
-async def _mark_item_failed(image_id: str, reason: str) -> None:
-    async with AsyncSessionLocal() as session:
-        repository = ImageJobRepository(session)
-        item = await repository.get_item(image_id)
-        if item is not None:
-            await repository.fail_item(item, reason)
 
 
 def _profile_instruction(snapshot: dict[str, object] | None, fallback: str) -> str:

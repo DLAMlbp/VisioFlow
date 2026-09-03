@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from celery import Task
-
 from src.core.config import get_settings
 from src.core.metrics import emit_metric
 from src.db.session import AsyncSessionLocal
@@ -27,7 +25,6 @@ from src.services.images.processing_vision import (
 )
 from src.services.images.quality import QualityEngine
 from src.services.images.redaction_policy import evaluate_ground_film
-from src.services.images.vision_rate_limit import retry_countdown
 from src.services.jobs.dispatch import RoutedProcessingTaskPublisher
 from src.services.jobs.progression import advance_after_preprocess as _advance_after_preprocess
 from src.services.managed_profiles import (
@@ -42,35 +39,13 @@ from src.workers.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 
-class CompletionTask(Task):
-    def on_failure(self, exc, task_id, args, kwargs, einfo) -> None:
-        image_id = args[0] if args else kwargs.get("image_id")
-        if image_id:
-            try:
-                asyncio.run(_mark_completion_failed(image_id))
-            except Exception:
-                logger.exception("Unable to mark completion classification as failed")
-
-
 @celery_app.task(
-    bind=True,
-    base=CompletionTask,
     name="image.classify_completion",
     queue="classification",
-    max_retries=3,
-    default_retry_delay=10,
+    max_retries=0,
 )
-def classify_completion(task, image_id: str) -> None:
-    try:
-        asyncio.run(_classify_completion(image_id))
-    except Exception as exc:
-        countdown = retry_countdown(get_settings(), task.request.retries)
-        emit_metric(
-            logger,
-            "vision_task_retry_total",
-            labels={"operation": "classification", "image_id": image_id, "delay": countdown},
-        )
-        raise task.retry(exc=exc, countdown=countdown) from exc
+def classify_completion(image_id: str) -> None:
+    asyncio.run(_classify_completion(image_id))
 
 
 async def _classify_completion(image_id: str) -> None:
@@ -112,9 +87,6 @@ async def _classify_completion(image_id: str) -> None:
             },
         )
         if outcome.status != "completed" or outcome.decision is None:
-            if outcome.retryable:
-                await repository.reset_completion_for_retry(item.id)
-                raise RuntimeError(outcome.error_message or "完工分类调用失败")
             await repository.save_completion_and_route(
                 item,
                 status="failed",
@@ -125,7 +97,11 @@ async def _classify_completion(image_id: str) -> None:
                 error_message=outcome.error_message,
             )
             await repository.fail_item(
-                item, f"完工分类失败：{outcome.error_message or '模型响应无效'}"
+                item,
+                f"完工分类失败：{outcome.error_message or '模型响应无效'}",
+                node="classification",
+                code="UPSTREAM_UNAVAILABLE" if outcome.retryable else "INVALID_AI_RESPONSE",
+                duration_ms=outcome.duration_ms,
             )
             await _advance_after_preprocess(repository, item)
             return
@@ -214,9 +190,6 @@ async def _classify_filter_standard(repository, item, job, settings, image_bytes
         },
     )
     if global_outcome.status != "completed" or global_outcome.payload is None:
-        if global_outcome.retryable:
-            await repository.reset_completion_for_retry(item.id)
-            raise RuntimeError(global_outcome.error_message or "全局过滤调用失败")
         await repository.save_completion_and_route(
             item,
             status="failed",
@@ -227,7 +200,15 @@ async def _classify_filter_standard(repository, item, job, settings, image_bytes
             error_message=global_outcome.error_message,
         )
         await repository.fail_item(
-            item, f"全局过滤失败：{global_outcome.error_message or '模型响应无效'}"
+            item,
+            f"全局过滤失败：{global_outcome.error_message or '模型响应无效'}",
+            node="filtering",
+            code=(
+                "UPSTREAM_UNAVAILABLE"
+                if global_outcome.retryable
+                else "INVALID_AI_RESPONSE"
+            ),
+            duration_ms=global_outcome.duration_ms,
         )
         await _advance_after_preprocess(repository, item)
         return
@@ -293,9 +274,6 @@ async def _classify_filter_standard(repository, item, job, settings, image_bytes
         },
     )
     if outcome.status != "completed" or outcome.payload is None or outcome.selected is None:
-        if outcome.retryable:
-            await repository.reset_completion_for_retry(item.id)
-            raise RuntimeError(outcome.error_message or "图片分类调用失败")
         await repository.save_completion_and_route(
             item,
             status="failed",
@@ -306,7 +284,11 @@ async def _classify_filter_standard(repository, item, job, settings, image_bytes
             error_message=outcome.error_message,
         )
         await repository.fail_item(
-            item, f"图片分类失败：{outcome.error_message or '模型响应无效'}"
+            item,
+            f"图片分类失败：{outcome.error_message or '模型响应无效'}",
+            node="classification",
+            code="UPSTREAM_UNAVAILABLE" if outcome.retryable else "INVALID_AI_RESPONSE",
+            duration_ms=outcome.duration_ms,
         )
         await _advance_after_preprocess(repository, item)
         return
@@ -393,9 +375,6 @@ async def _classify_and_filter_standard(
         },
     )
     if outcome.status != "completed" or outcome.payload is None or selection is None:
-        if outcome.retryable:
-            await repository.reset_completion_for_retry(item.id)
-            raise RuntimeError(outcome.error_message or "图片分类过滤调用失败")
         message = f"图片分类过滤失败：{outcome.error_message or '模型响应无效'}"
         await repository.fail_combined_classification_filter(
             item,
@@ -498,16 +477,6 @@ async def _classify_and_filter_standard(
     )
     if saved:
         await _advance_after_preprocess(repository, item)
-
-
-async def _mark_completion_failed(image_id: str) -> None:
-    async with AsyncSessionLocal() as session:
-        repository = ImageJobRepository(session)
-        item = await repository.get_item(image_id)
-        if item is not None and item.status == "analyzing":
-            await repository.fail_item(item, "完工分类任务多次重试后仍失败")
-            await _advance_after_preprocess(repository, item)
-
 
 def _snapshot_instruction(snapshot: dict[str, object] | None, fallback: str) -> str:
     instruction = (snapshot or {}).get("instruction")

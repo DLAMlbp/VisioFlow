@@ -148,6 +148,15 @@ async def _generate_image_tags(image_id: str) -> None:
             raw_response_json=outcome.raw_response,
             error_message=outcome.error_message,
         )
+        if outcome.status != "completed" or outcome.payload is None:
+            await repository.fail_item(
+                item,
+                outcome.error_message or "AI 内容分析失败",
+                node="content_analysis",
+                code="UPSTREAM_UNAVAILABLE",
+                duration_ms=outcome.duration_ms,
+            )
+            return
         reason = (
             match_decision.message
             if outcome.status == "completed"

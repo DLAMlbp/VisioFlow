@@ -7,7 +7,7 @@ from src.services.jobs.dispatch import BeautifyPlanTaskPublisher, MetadataTaskPu
 from src.workers.celery_app import celery_app
 
 
-@celery_app.task(name="image.dispatch_job", queue="control", max_retries=5)
+@celery_app.task(name="image.dispatch_job", queue="control", max_retries=0)
 def dispatch_job(job_id: str) -> None:
     asyncio.run(_dispatch_job(job_id))
 
@@ -38,7 +38,7 @@ async def _dispatch_job(job_id: str) -> None:
             )
 
 
-@celery_app.task(name="image.rank_job", queue="control", max_retries=3)
+@celery_app.task(name="image.rank_job", queue="control", max_retries=0)
 def rank_job(job_id: str) -> None:
     asyncio.run(_rank_job(job_id))
 

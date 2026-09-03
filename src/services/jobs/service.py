@@ -1,5 +1,6 @@
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import PurePosixPath
 from typing import Annotated
@@ -33,6 +34,7 @@ from src.schemas.jobs import (
     ImageMetricsResponse,
     ImageSimilarityResultResponse,
     JobStatus,
+    PipelineFailureResponse,
     UpdateLogoRedactionResponse,
 )
 from src.services.ai_model_config import load_ai_model_settings
@@ -74,6 +76,20 @@ class JobNotFound(AppError):
 
 class InvalidJobRequest(AppError):
     code = "INVALID_JOB_REQUEST"
+
+
+def _failure_response(snapshot) -> PipelineFailureResponse | None:
+    if not snapshot.failed_node:
+        return None
+    return PipelineFailureResponse(
+        node=snapshot.failed_node,
+        code=snapshot.failure_code or "NODE_FAILED",
+        message=snapshot.failure_message or "节点执行失败",
+        image_id=snapshot.failed_image_id,
+        duration_ms=snapshot.failure_duration_ms,
+        upstream_status_code=snapshot.upstream_status_code,
+        failed_at=snapshot.failed_at,
+    )
 
 
 @dataclass(frozen=True)
@@ -198,6 +214,8 @@ class ImageJobService:
             dispatch_cursor=0,
             callback_url=str(payload.callback_url) if payload.callback_url else None,
             callback_contract=payload.callback_contract,
+            deadline_at=datetime.now(UTC)
+            + timedelta(seconds=self.settings.pipeline_job_timeout_seconds),
         )
         items = [
             ImageItem(
@@ -241,6 +259,7 @@ class ImageJobService:
                 + snapshot.stage_counts.get("matching", 0)
             ),
             stage_counts=snapshot.stage_counts,
+            failure=_failure_response(snapshot),
         )
 
     async def list_history(self, limit: int, offset: int) -> ImageJobHistoryResponse:
@@ -267,6 +286,19 @@ class ImageJobService:
                     ),
                     created_at=job.created_at,
                     completed_at=job.completed_at,
+                    failure=(
+                        PipelineFailureResponse(
+                            node=job.failed_node,
+                            code=job.failure_code or "NODE_FAILED",
+                            message=job.failure_message or "节点执行失败",
+                            image_id=job.failed_image_id,
+                            duration_ms=job.failure_duration_ms,
+                            upstream_status_code=job.upstream_status_code,
+                            failed_at=job.failed_at,
+                        )
+                        if job.failed_node
+                        else None
+                    ),
                 )
                 for job in jobs
             ],
@@ -480,6 +512,7 @@ class ImageJobService:
             limit=limit,
             offset=offset,
             images=images,
+            failure=_failure_response(snapshot),
         )
 
     async def update_logo_redaction(

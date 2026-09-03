@@ -1,6 +1,7 @@
 import logging
+import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import cast, delete, desc, func, literal, or_, select, update
@@ -25,6 +26,36 @@ _POST_FILTER_ACTIVE_STATUSES = (
     "enhanced",
     "tagging",
 )
+
+_SECRET_PATTERN = re.compile(
+    r"(?i)(authorization|api[-_ ]?key|token|secret|password)\s*[:=]\s*[^\s,;]+"
+)
+_BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+
+
+def _safe_failure_message(reason: str) -> str:
+    normalized = " ".join(str(reason).split())
+    normalized = _SECRET_PATTERN.sub(r"\1=[REDACTED]", normalized)
+    normalized = _BEARER_PATTERN.sub("Bearer [REDACTED]", normalized)
+    return normalized[:1000] or "节点执行失败"
+
+
+def _failure_node_for_item(item: ImageItem) -> str:
+    if item.completion_status in {"pending", "processing"}:
+        return "classification"
+    if item.ai_processing_status in {"pending", "processing", "failed"}:
+        return "filtering"
+    if item.beautify_plan_status in {"pending", "processing", "failed"}:
+        return "beautify_planning"
+    if item.status == "enhancing":
+        return "beautifying"
+    if item.analysis_status in {"pending", "processing", "failed"}:
+        return "content_analysis"
+    if item.embedding_status in {"pending", "processing", "failed"}:
+        return "embedding"
+    if item.match_status in {"pending", "queued", "processing", "failed"}:
+        return "matching"
+    return "preprocess"
 
 
 def terminal_job_status(*, total_count: int, failed_count: int) -> str:
@@ -74,7 +105,14 @@ class JobProgressSnapshot:
     selected_count: int
     rejected_count: int
     not_selected_count: int
-    stage_counts: dict[str, int]
+    failed_node: str | None = None
+    failure_code: str | None = None
+    failure_message: str | None = None
+    failed_image_id: str | None = None
+    failure_duration_ms: int | None = None
+    upstream_status_code: int | None = None
+    failed_at: datetime | None = None
+    stage_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -85,6 +123,13 @@ class CallbackJob:
     completed_at: datetime
     attempts: int
     callback_contract: str = "native_v1"
+    failed_node: str | None = None
+    failure_code: str | None = None
+    failure_message: str | None = None
+    failed_image_id: str | None = None
+    failure_duration_ms: int | None = None
+    upstream_status_code: int | None = None
+    failed_at: datetime | None = None
 
 
 class ImageJobRepository:
@@ -299,22 +344,6 @@ class ImageJobRepository:
         )
         await self.session.commit()
         return result.rowcount == 1
-
-    async def reset_beautify_plan_for_retry(self, image_id: str) -> None:
-        await self.session.execute(
-            update(ImageItem)
-            .where(
-                ImageItem.id == image_id,
-                ImageItem.status == "beautify_planning",
-                ImageItem.beautify_plan_status == "processing",
-            )
-            .values(
-                status="filtered",
-                beautify_plan_status="pending",
-                beautify_plan_started_at=None,
-            )
-        )
-        await self.session.commit()
 
     async def complete_metadata_for_completion(self, item: ImageItem) -> bool:
         result = await self.session.execute(
@@ -570,17 +599,17 @@ class ImageJobRepository:
             item.id,
             {"decision": "failed", "reasons_json": [error_message]},
         )
-        await self.session.execute(
-            update(ImageJob)
-            .where(ImageJob.id == item.job_id)
-            .values(processed_count=ImageJob.processed_count + 1)
-        )
-        await self.session.commit()
         item.status = "failed"
         item.completion_status = "failed"
         item.ai_processing_status = "failed"
-        await self.complete_job_if_finished(item.job_id)
-        return True
+        return await self.fail_job(
+            item.job_id,
+            node="classification_and_filtering",
+            code="INVALID_AI_RESPONSE",
+            reason=error_message,
+            image_id=item.id,
+            duration_ms=duration_ms,
+        )
 
     async def claim_routed_processing(self, image_id: str) -> ImageItem | None:
         result = await self.session.execute(
@@ -603,30 +632,6 @@ class ImageJobRepository:
             return None
         await self.session.commit()
         return await self.get_item(image_id)
-
-    async def reset_completion_for_retry(self, image_id: str) -> None:
-        await self.session.execute(
-            update(ImageItem)
-            .where(
-                ImageItem.id == image_id,
-                ImageItem.status == "analyzing",
-                ImageItem.completion_status == "processing",
-            )
-            .values(completion_status="pending", completion_started_at=None)
-        )
-        await self.session.commit()
-
-    async def reset_routed_processing_for_retry(self, image_id: str) -> None:
-        await self.session.execute(
-            update(ImageItem)
-            .where(
-                ImageItem.id == image_id,
-                ImageItem.status == "analyzing",
-                ImageItem.ai_processing_status == "processing",
-            )
-            .values(ai_processing_status="pending", ai_processing_started_at=None)
-        )
-        await self.session.commit()
 
     async def claim_analysis(self, image_id: str) -> ImageItem | None:
         result = await self.session.execute(
@@ -1004,23 +1009,96 @@ class ImageJobRepository:
         item.ai_processing_duration_ms = duration_ms
         item.ai_processing_error = error_message
 
-    async def fail_item(self, item: ImageItem, reason: str) -> None:
-        if not await self._transition_to_terminal(item, "failed"):
-            return
-        await self._upsert_result(
-            item.id,
-            {
-                "decision": "failed",
-                "reasons_json": [reason],
-            },
+    async def fail_item(
+        self,
+        item: ImageItem,
+        reason: str,
+        *,
+        node: str | None = None,
+        code: str = "NODE_FAILED",
+        duration_ms: int | None = None,
+        upstream_status_code: int | None = None,
+    ) -> bool:
+        """Fail the entire job once; never requeue sibling images in strict mode."""
+        return await self.fail_job(
+            item.job_id,
+            reason=reason,
+            node=node or _failure_node_for_item(item),
+            code=code,
+            image_id=item.id,
+            duration_ms=duration_ms,
+            upstream_status_code=upstream_status_code,
         )
-        await self.session.execute(
+
+    async def fail_job(
+        self,
+        job_id: str,
+        *,
+        reason: str,
+        node: str,
+        code: str = "NODE_FAILED",
+        image_id: str | None = None,
+        duration_ms: int | None = None,
+        upstream_status_code: int | None = None,
+    ) -> bool:
+        terminal_jobs = ("completed", "partial_failed", "failed", "cancelled")
+        safe_reason = _safe_failure_message(reason)
+        if upstream_status_code is None:
+            status_match = re.search(r"\bHTTP\s+(\d{3})\b", safe_reason, re.IGNORECASE)
+            upstream_status_code = int(status_match.group(1)) if status_match else None
+        transitioned = await self.session.execute(
             update(ImageJob)
-            .where(ImageJob.id == item.job_id)
-            .values(processed_count=ImageJob.processed_count + 1)
+            .where(ImageJob.id == job_id, ImageJob.status.not_in(terminal_jobs))
+            .values(
+                status="failed",
+                processed_count=ImageJob.total_count,
+                cancel_requested_at=func.now(),
+                completed_at=func.now(),
+                failed_node=node[:64],
+                failure_code=code[:64],
+                failure_message=safe_reason,
+                failed_image_id=image_id,
+                failure_duration_ms=duration_ms,
+                upstream_status_code=upstream_status_code,
+                failed_at=func.now(),
+            )
         )
+        if transitioned.rowcount != 1:
+            await self.session.rollback()
+            return False
+
+        terminal_items = ("selected", "rejected", "failed", "not_selected", "cancelled")
+        if image_id:
+            await self.session.execute(
+                update(ImageItem)
+                .where(
+                    ImageItem.id == image_id,
+                    ImageItem.job_id == job_id,
+                    ImageItem.status.not_in(terminal_items),
+                )
+                .values(status="failed")
+            )
+            await self._upsert_result(
+                image_id,
+                {"decision": "failed", "reasons_json": [safe_reason]},
+            )
+        await self.session.execute(
+            update(ImageItem)
+            .where(
+                ImageItem.job_id == job_id,
+                ImageItem.id != image_id if image_id else literal(True),
+                ImageItem.status.not_in(terminal_items),
+            )
+            .values(status="cancelled")
+        )
+        await self._mark_callback_pending(job_id)
         await self.session.commit()
-        await self.complete_job_if_finished(item.job_id)
+        emit_metric(
+            logger,
+            "pipeline_fail_fast_total",
+            labels={"job_id": job_id, "image_id": image_id, "node": node, "code": code},
+        )
+        return True
 
     async def complete_filter(
         self,
@@ -1423,6 +1501,13 @@ class ImageJobRepository:
                     ImageJob.selected_count,
                     ImageJob.rejected_count,
                     ImageJob.not_selected_count,
+                    ImageJob.failed_node,
+                    ImageJob.failure_code,
+                    ImageJob.failure_message,
+                    ImageJob.failed_image_id,
+                    ImageJob.failure_duration_ms,
+                    ImageJob.upstream_status_code,
+                    ImageJob.failed_at,
                 ).where(ImageJob.id == job_id)
             )
         ).one_or_none()
@@ -1656,6 +1741,7 @@ class ImageJobRepository:
             .values(
                 status="processing",
                 completed_at=None,
+                cancel_requested_at=None,
                 processed_count=func.greatest(ImageJob.processed_count - 1, 0),
                 callback_status=None,
                 callback_attempts=0,
@@ -1663,6 +1749,14 @@ class ImageJobRepository:
                 callback_last_attempt_at=None,
                 callback_delivered_at=None,
                 callback_last_error=None,
+                deadline_at=func.now() + timedelta(minutes=30),
+                failed_node=None,
+                failure_code=None,
+                failure_message=None,
+                failed_image_id=None,
+                failure_duration_ms=None,
+                upstream_status_code=None,
+                failed_at=None,
             )
         )
         await self.session.commit()
@@ -1699,6 +1793,7 @@ class ImageJobRepository:
                         "beautify_planning",
                         "enhancing",
                         "enhanced",
+                        "tagging",
                     )
                 ),
             )
@@ -1748,13 +1843,16 @@ class ImageJobRepository:
         await self.session.commit()
         return result.rowcount == 1
 
-    async def list_callback_jobs_due(self, *, limit: int, lease_seconds: int) -> list[str]:
+    async def list_callback_jobs_due(
+        self, *, limit: int, lease_seconds: int, max_attempts: int = 3
+    ) -> list[str]:
         now = datetime.now(UTC)
         lease_expired_at = now - timedelta(seconds=max(1, lease_seconds))
         result = await self.session.execute(
             select(ImageJob.id)
             .where(
                 ImageJob.callback_url.is_not(None),
+                ImageJob.callback_attempts < max(1, max_attempts),
                 ImageJob.status.in_(("completed", "partial_failed", "failed", "cancelled")),
                 or_(
                     (
@@ -1779,7 +1877,7 @@ class ImageJobRepository:
         return list(result.scalars())
 
     async def claim_callback_delivery(
-        self, job_id: str, *, lease_seconds: int
+        self, job_id: str, *, lease_seconds: int, max_attempts: int = 3
     ) -> CallbackJob | None:
         now = datetime.now(UTC)
         lease_expired_at = now - timedelta(seconds=max(1, lease_seconds))
@@ -1788,6 +1886,7 @@ class ImageJobRepository:
             .where(
                 ImageJob.id == job_id,
                 ImageJob.callback_url.is_not(None),
+                ImageJob.callback_attempts < max(1, max_attempts),
                 ImageJob.status.in_(("completed", "partial_failed", "failed", "cancelled")),
                 or_(
                     (
@@ -1819,6 +1918,13 @@ class ImageJobRepository:
                 ImageJob.completed_at,
                 ImageJob.callback_attempts,
                 ImageJob.callback_contract,
+                ImageJob.failed_node,
+                ImageJob.failure_code,
+                ImageJob.failure_message,
+                ImageJob.failed_image_id,
+                ImageJob.failure_duration_ms,
+                ImageJob.upstream_status_code,
+                ImageJob.failed_at,
             )
         )
         row = result.one_or_none()
@@ -1833,6 +1939,13 @@ class ImageJobRepository:
             completed_at=row.completed_at,
             attempts=row.callback_attempts,
             callback_contract=row.callback_contract,
+            failed_node=row.failed_node,
+            failure_code=row.failure_code,
+            failure_message=row.failure_message,
+            failed_image_id=row.failed_image_id,
+            failure_duration_ms=row.failure_duration_ms,
+            upstream_status_code=row.upstream_status_code,
+            failed_at=row.failed_at,
         )
 
     async def mark_callback_delivered(self, job_id: str) -> None:

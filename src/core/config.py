@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     api_key: str = ""
     integration_api_key: str = ""
     integration_max_files: int = 50
-    integration_url_download_timeout_seconds: int = 20
+    integration_url_download_timeout_seconds: int = Field(default=30, ge=1, le=30)
     integration_url_download_concurrency: int = 4
     integration_admission_enabled: bool = False
     integration_rate_limit_images_per_minute: int = Field(default=3, ge=1, le=10000)
@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     integration_non_completed_filter_profile: str = "standard_non_completed_v1"
     integration_beautify_profile: str = "integration_natural_v1"
     callback_timeout_seconds: int = 15
-    callback_max_attempts: int = 5
+    callback_max_attempts: int = Field(default=3, ge=1, le=3)
     callback_retry_base_seconds: int = 5
     callback_recovery_interval_seconds: int = 5
     callback_delivery_lease_seconds: int = 120
@@ -84,8 +84,8 @@ class Settings(BaseSettings):
     ai_tagging_model: str = "gpt-5.6-sol"
     ai_tagging_api_key: str = ""
     ai_tagging_timeout_seconds: int = 90
-    ai_tagging_max_retries: int = 2
-    ai_processing_schema_max_retries: int = Field(default=1, ge=0, le=3)
+    ai_tagging_max_retries: int = Field(default=0, ge=0, le=0)
+    ai_processing_schema_max_retries: int = Field(default=0, ge=0, le=0)
     ai_processing_max_completion_tokens: int = Field(default=3000, ge=800, le=8000)
     ai_processing_strict_json_schema_enabled: bool = True
     ai_tagging_image_long_side: int = 1024
@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     ai_tagging_retry_base_seconds: int = Field(default=10, ge=1, le=60)
     ai_tagging_max_retry_delay_seconds: int = Field(default=60, ge=1, le=300)
     ai_tagging_capacity_recovery_seconds: int = Field(default=60, ge=10, le=600)
-    ai_beautify_timeout_seconds: int = Field(default=60, ge=30, le=180)
+    ai_beautify_timeout_seconds: int = Field(default=90, ge=30, le=90)
     ai_global_scheduler_enabled: bool = True
     ai_tagging_store_raw_response: bool = False
     ai_config_encryption_key: str = ""
@@ -116,8 +116,11 @@ class Settings(BaseSettings):
     library_only_tags_enabled: bool = True
     library_match_shadow_mode: bool = False
     cleanup_interval_seconds: int = 3600
-    pipeline_recovery_interval_seconds: int = 300
-    pipeline_stale_seconds: int = 900
+    pipeline_recovery_interval_seconds: int = Field(default=30, ge=5, le=60)
+    pipeline_stale_seconds: int = Field(default=60, ge=30, le=60)
+    pipeline_ai_timeout_seconds: int = Field(default=90, ge=30, le=90)
+    pipeline_task_timeout_seconds: int = Field(default=60, ge=10, le=60)
+    pipeline_job_timeout_seconds: int = Field(default=1800, ge=60, le=1800)
     pipeline_recovery_lease_seconds: int = Field(default=86400, ge=3600, le=604800)
 
     @model_validator(mode="after")
