@@ -31,7 +31,7 @@ def upgrade() -> None:
         sa.text(
             """
             UPDATE processing_profiles
-            SET description=:description,
+            SET description=CAST(:description AS text),
                 instruction=:instruction,
                 config_json=jsonb_set(
                     jsonb_set(
