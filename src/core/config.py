@@ -1,6 +1,6 @@
 from functools import lru_cache
 from ipaddress import ip_address
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     ai_tagging_base_url: Literal["https://router.keenlight.ai/v1"] = (
         "https://router.keenlight.ai/v1"
     )
-    ai_tagging_model: str = "gpt-5.6-sol"
+    ai_tagging_model: Literal["gpt-5.6-luna"] = "gpt-5.6-luna"
     ai_tagging_api_key: str = ""
     ai_tagging_timeout_seconds: int = 90
     ai_tagging_max_retries: int = Field(default=0, ge=0, le=0)
@@ -127,6 +127,15 @@ class Settings(BaseSettings):
     pipeline_job_timeout_per_image_seconds: int = Field(default=30, ge=0, le=300)
     pipeline_enhancement_max_recovery_attempts: int = Field(default=0, ge=0, le=5)
     pipeline_recovery_lease_seconds: int = Field(default=86400, ge=3600, le=604800)
+
+    @model_validator(mode="before")
+    @classmethod
+    def lock_ai_provider_target(cls, values: Any) -> Any:
+        if isinstance(values, dict):
+            values = values.copy()
+            values.pop("ai_tagging_base_url", None)
+            values.pop("ai_tagging_model", None)
+        return values
 
     @model_validator(mode="after")
     def validate_production_configuration(self):

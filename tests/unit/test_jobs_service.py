@@ -134,7 +134,6 @@ async def test_create_job_persists_job_and_image_items() -> None:
         settings=Settings(
             max_images_per_job=50,
             ai_tagging_enabled=True,
-            ai_tagging_model="vision-model-test",
         ),
     )
 
@@ -144,7 +143,7 @@ async def test_create_job_persists_job_and_image_items() -> None:
     assert response.status == "queued"
     assert response.total == 2
     assert repository.item_count == 2
-    assert repository.jobs[response.job_id].ai_tagging_model == "vision-model-test"
+    assert repository.jobs[response.job_id].ai_tagging_model == "gpt-5.6-luna"
     assert repository.jobs[response.job_id].similarity_profile_id == "library_similarity_v2"
     assert repository.jobs[response.job_id].watermark_processing_enabled is True
 

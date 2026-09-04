@@ -437,7 +437,6 @@ function App() {
     try {
       const updated = await api.updateAIModelConfig({
         enabled: modelConfig.enabled,
-        model: modelConfig.model.trim(),
         ...(modelApiKey.trim() ? { api_key: modelApiKey.trim() } : {})
       });
       setModelConfig(updated);
@@ -664,12 +663,10 @@ function App() {
             </div>
             {modelConfigLoading || !modelConfig ? <div className="model-config-loading"><Loader2 className="spin" size={20} aria-hidden="true" />正在读取配置</div> : <>
               <label className="config-toggle"><input type="checkbox" checked={modelConfig.enabled} onChange={(event) => setModelConfig({ ...modelConfig, enabled: event.target.checked })} /><span>启用 AI 分类、规则过滤与美化规划</span></label>
-              <label className="config-field">模型<input value={modelConfig.model} maxLength={120} onChange={(event) => setModelConfig({ ...modelConfig, model: event.target.value })} /></label>
-              <label className="config-field">接口地址<input value={modelConfig.base_url} readOnly /></label>
               <label className="config-field">API Key<input type="password" value={modelApiKey} onChange={(event) => setModelApiKey(event.target.value)} placeholder={modelConfig.api_key_configured ? "已配置，留空则保持不变" : "请输入 API Key"} autoComplete="new-password" /></label>
               <a className="config-key-link" href="https://router.keenlight.ai/home" target="_blank" rel="noreferrer">获取</a>
               <p className="config-note">API Key 仅保存在服务端且不会在页面回显；模型配置会冻结到新任务记录中。</p>
-              <div className="model-config-actions"><button className="ghost-button" type="button" onClick={() => setModelConfigOpen(false)} disabled={modelConfigSaving}>取消</button><button className="primary-button" type="button" onClick={() => void saveModelConfig()} disabled={modelConfigSaving || !modelConfig.model.trim()}>{modelConfigSaving && <Loader2 className="spin" size={16} aria-hidden="true" />}{modelConfigSaving ? "保存中" : "保存配置"}</button></div>
+              <div className="model-config-actions"><button className="ghost-button" type="button" onClick={() => setModelConfigOpen(false)} disabled={modelConfigSaving}>取消</button><button className="primary-button" type="button" onClick={() => void saveModelConfig()} disabled={modelConfigSaving}>{modelConfigSaving && <Loader2 className="spin" size={16} aria-hidden="true" />}{modelConfigSaving ? "保存中" : "保存配置"}</button></div>
             </>}
           </section>
         </div>

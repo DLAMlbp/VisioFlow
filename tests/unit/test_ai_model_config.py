@@ -19,7 +19,7 @@ class FakeRedis:
         self.value = value
 
 
-def test_runtime_config_cannot_override_locked_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runtime_config_cannot_override_locked_model_or_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
     redis = FakeRedis(
         {
             "ai_tagging_enabled": False,
@@ -33,17 +33,16 @@ def test_runtime_config_cannot_override_locked_base_url(monkeypatch: pytest.Monk
 
     assert loaded.ai_tagging_enabled is False
     assert loaded.ai_tagging_base_url == "https://router.keenlight.ai/v1"
-    assert loaded.ai_tagging_model == "alternate-model"
+    assert loaded.ai_tagging_model == "gpt-5.6-luna"
 
 
-def test_saved_runtime_config_always_uses_locked_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_saved_runtime_config_always_uses_locked_model_and_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
     redis = FakeRedis()
     monkeypatch.setattr(ai_model_config, "_redis", lambda _settings: redis)
 
     saved = ai_model_config.save_ai_model_settings(
         Settings(ai_config_encryption_key="encryption-secret-for-tests-123456"),
         enabled=True,
-        model="gpt-5.6-sol",
         api_key="secret-for-test",
     )
 
@@ -52,7 +51,7 @@ def test_saved_runtime_config_always_uses_locked_base_url(monkeypatch: pytest.Mo
     assert stored == {
         "ai_tagging_enabled": True,
         "ai_tagging_base_url": "https://router.keenlight.ai/v1",
-        "ai_tagging_model": "gpt-5.6-sol",
+        "ai_tagging_model": "gpt-5.6-luna",
         "ai_tagging_api_key_encrypted": stored["ai_tagging_api_key_encrypted"],
     }
     assert "secret-for-test" not in (redis.value or "")
@@ -62,13 +61,13 @@ def test_saved_runtime_config_always_uses_locked_base_url(monkeypatch: pytest.Mo
     assert loaded.ai_tagging_api_key == "secret-for-test"
 
 
-def test_update_request_rejects_base_url_override() -> None:
+def test_update_request_rejects_model_or_base_url_override() -> None:
     with pytest.raises(ValidationError):
         UpdateAIModelConfigRequest.model_validate(
             {
                 "enabled": True,
                 "base_url": "https://api.example.com/v1",
-                "model": "gpt-5.6-sol",
+                "model": "different-model",
             }
         )
 
@@ -79,19 +78,17 @@ def test_update_request_allows_key_only_configuration() -> None:
     )
 
     assert request.enabled is True
-    assert request.model is None
     assert request.api_key == "secret-for-test"
 
 
-def test_saved_runtime_config_preserves_model_when_omitted(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_saved_runtime_config_ignores_legacy_model(monkeypatch: pytest.MonkeyPatch) -> None:
     redis = FakeRedis({"ai_tagging_model": "configured-model"})
     monkeypatch.setattr(ai_model_config, "_redis", lambda _settings: redis)
 
     saved = ai_model_config.save_ai_model_settings(
         Settings(ai_config_encryption_key="encryption-secret-for-tests-123456"),
         enabled=True,
-        model=None,
         api_key="secret-for-test",
     )
 
-    assert saved.ai_tagging_model == "configured-model"
+    assert saved.ai_tagging_model == "gpt-5.6-luna"

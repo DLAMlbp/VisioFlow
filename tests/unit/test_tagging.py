@@ -120,10 +120,15 @@ def test_ai_tagging_defaults_use_locked_router_and_model() -> None:
 
     assert settings.ai_tagging_enabled is True
     assert settings.ai_tagging_base_url == "https://router.keenlight.ai/v1"
-    assert settings.ai_tagging_model == "gpt-5.6-sol"
+    assert settings.ai_tagging_model == "gpt-5.6-luna"
 
-    with pytest.raises(ValidationError):
-        Settings(ai_tagging_base_url="https://api.example.com/v1", _env_file=None)
+    locked = Settings(
+        ai_tagging_base_url="https://api.example.com/v1",
+        ai_tagging_model="different-model",
+        _env_file=None,
+    )
+    assert locked.ai_tagging_base_url == "https://router.keenlight.ai/v1"
+    assert locked.ai_tagging_model == "gpt-5.6-luna"
 
 
 def test_chat_completions_url_uses_configured_openai_compatible_base_url() -> None:

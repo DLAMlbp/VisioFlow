@@ -1,7 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 from redis.exceptions import RedisError
 
 from src.core.config import Settings, get_settings
@@ -13,9 +13,6 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 class AIModelConfigResponse(BaseModel):
     enabled: bool
-    provider: str
-    base_url: str
-    model: str
     api_key_configured: bool
 
 
@@ -23,26 +20,12 @@ class UpdateAIModelConfigRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
-    model: str | None = Field(default=None, min_length=1, max_length=120)
     api_key: str | None = Field(default=None, min_length=1, max_length=1024)
-
-    @field_validator("model")
-    @classmethod
-    def strip_required_value(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        value = value.strip()
-        if not value:
-            raise ValueError("不能为空")
-        return value
 
 
 def _response(settings: Settings) -> AIModelConfigResponse:
     return AIModelConfigResponse(
         enabled=settings.ai_tagging_enabled,
-        provider=settings.ai_tagging_provider,
-        base_url=settings.ai_tagging_base_url,
-        model=settings.ai_tagging_model,
         api_key_configured=bool(settings.ai_tagging_api_key),
     )
 
@@ -61,7 +44,6 @@ async def update_ai_model_config(
         updated = save_ai_model_settings(
             settings,
             enabled=payload.enabled,
-            model=payload.model,
             api_key=payload.api_key.strip() if payload.api_key else None,
         )
     except ValueError as exc:
