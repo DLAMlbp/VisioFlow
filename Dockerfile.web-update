@@ -1,4 +1,4 @@
 ARG WEB_RUNTIME_BASE
 FROM ${WEB_RUNTIME_BASE}
 
-COPY frontend/dist /usr/share/nginx/html
+COPY --chmod=755 frontend/dist /usr/share/nginx/html
