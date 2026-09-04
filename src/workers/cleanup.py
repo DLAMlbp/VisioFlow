@@ -217,18 +217,30 @@ async def _recover_stalled_images() -> None:
                         # The worker advanced or completed this stage after it
                         # was selected by cleanup; leave the current state intact.
                         continue
-            await repository.fail_job(
-                job.id,
-                node=node,
-                code=(
-                    "ENHANCEMENT_RECOVERY_EXHAUSTED"
-                    if item is not None and item.status == "enhancing"
-                    else "NODE_TIMEOUT"
-                ),
-                reason=f"节点 {node} 超过 {timeout_seconds} 秒未完成，任务已停止",
-                image_id=item.id if item is not None else None,
-                duration_ms=int((now - started_at).total_seconds() * 1000),
+            failure_code = (
+                "ENHANCEMENT_RECOVERY_EXHAUSTED"
+                if item is not None and item.status == "enhancing"
+                else "NODE_TIMEOUT"
             )
+            duration_ms = int((now - started_at).total_seconds() * 1000)
+            if item is not None and node != "ranking":
+                await repository.fail_item(
+                    item,
+                    f"节点 {node} 超过 {timeout_seconds} 秒未完成，当前图片已停止",
+                    node=node,
+                    code=failure_code,
+                    duration_ms=duration_ms,
+                )
+            else:
+                # Ranking is a job-level barrier and cannot be attributed to a
+                # single image.  Only true job-level failures cancel the batch.
+                await repository.fail_job(
+                    job.id,
+                    node=node,
+                    code=failure_code,
+                    reason=f"节点 {node} 超过 {timeout_seconds} 秒未完成，任务已停止",
+                    duration_ms=duration_ms,
+                )
 
 
 def _stalled_node(item, job, now, settings):

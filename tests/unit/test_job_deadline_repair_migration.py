@@ -1,7 +1,6 @@
 import importlib.util
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 MIGRATION_PATH = (
     ROOT / "alembic" / "versions" / "20260904_0043_repair_job_deadline_columns.py"

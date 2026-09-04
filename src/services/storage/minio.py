@@ -30,7 +30,13 @@ class MinIOStorageProvider(StorageProvider):
             aws_access_key_id=self.settings.s3_access_key,
             aws_secret_access_key=self.settings.s3_secret_key,
             region_name=self.settings.s3_region,
-            config=Config(signature_version="s3v4"),
+            config=Config(
+                signature_version="s3v4",
+                connect_timeout=3,
+                read_timeout=20,
+                retries={"total_max_attempts": 2, "mode": "standard"},
+                tcp_keepalive=True,
+            ),
         )
 
     async def healthcheck(self) -> None:

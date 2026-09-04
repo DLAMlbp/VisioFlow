@@ -211,3 +211,84 @@ async def test_analysis_embedding_join_claims_match_exactly_once() -> None:
     assert analysis_claim is True
     assert embedding_claim is False
     assert session.commits == 2
+
+
+@pytest.mark.asyncio
+async def test_analysis_batch_continues_after_one_image_download_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failed_item = _item()
+    failed_item.id = "img_failed"
+    failed_item.thumbnail_object_key = "thumbnails/unavailable.jpg"
+    healthy_item = _item()
+    healthy_item.id = "img_healthy"
+    healthy_item.thumbnail_object_key = "thumbnails/healthy.jpg"
+    failed: list[str] = []
+    completed: list[str] = []
+
+    class Repository(_Repository):
+        async def claim_analysis_batch(self, _image_id: str, *, limit: int):
+            assert limit == 4
+            return [failed_item, healthy_item]
+
+        async def fail_item(self, item, *_args, **_kwargs):
+            failed.append(item.id)
+
+        async def complete_analysis_stage(self, image_id: str, *, succeeded: bool):
+            assert succeeded is True
+            completed.append(image_id)
+
+    class Storage:
+        async def download(self, object_key: str):
+            if object_key == "thumbnails/unavailable.jpg":
+                raise RuntimeError("storage temporarily unavailable")
+            assert object_key == "thumbnails/healthy.jpg"
+            return b"healthy-image"
+
+    async def analyze_healthy(_provider, images, _max_retries):
+        assert images == [b"healthy-image"]
+        return [
+            TaggingOutcome(
+                status="completed",
+                payload=TagPayload(
+                    summary="healthy",
+                    scene="indoor",
+                    condition="completed",
+                    confidence=0.9,
+                ),
+            )
+        ]
+
+    monkeypatch.setattr(analysis, "AsyncSessionLocal", lambda: _SessionContext())
+    monkeypatch.setattr(analysis, "ImageJobRepository", Repository)
+    monkeypatch.setattr(
+        analysis,
+        "get_settings",
+        lambda: SimpleNamespace(early_semantic_branch_enabled=True),
+    )
+    monkeypatch.setattr(
+        analysis,
+        "load_ai_model_settings",
+        lambda _settings: SimpleNamespace(
+            ai_tagging_concurrency=4,
+            ai_tagging_max_retries=0,
+            ai_tagging_provider="openai",
+            ai_tagging_model="gpt-5.6-sol",
+            ai_tagging_store_raw_response=False,
+        ),
+    )
+    monkeypatch.setattr(analysis, "get_storage_provider", lambda: Storage())
+    monkeypatch.setattr(analysis, "get_tag_provider", lambda _settings: object())
+    monkeypatch.setattr(analysis, "analyze_many_with_retries", analyze_healthy)
+    published: list[str] = []
+    monkeypatch.setattr(
+        analysis.MatchTaskPublisher,
+        "publish",
+        lambda _publisher, image_id: published.append(image_id),
+    )
+
+    await analysis._analyze_image_content(failed_item.id)
+
+    assert failed == [failed_item.id]
+    assert completed == [healthy_item.id]
+    assert published == [healthy_item.id]

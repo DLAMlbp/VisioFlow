@@ -105,8 +105,9 @@ async def test_process_rejects_unsupported_or_corrupted_file() -> None:
     storage = MemoryStorage({"uploads/bad.gif": b"GIF89a not a valid permitted image"})
     service = ImageMetadataService(storage, Settings())
 
-    with pytest.raises(ImageMetadataError, match="不支持"):
+    with pytest.raises(ImageMetadataError, match="不支持") as error:
         await service.process(job_id="job_test", image_id="img_test", object_key="uploads/bad.gif")
+    assert error.value.reject_code == "INVALID_IMAGE"
 
 
 @pytest.mark.asyncio
@@ -114,8 +115,9 @@ async def test_process_rejects_object_larger_than_limit_before_download() -> Non
     storage = MemoryStorage({"uploads/large.jpg": b"x" * 1024})
     service = ImageMetadataService(storage, Settings(max_image_size_mb=0))
 
-    with pytest.raises(ImageMetadataError, match="实际大小"):
+    with pytest.raises(ImageMetadataError, match="实际大小") as error:
         await service.process(job_id="job_test", image_id="img_test", object_key="uploads/large.jpg")
+    assert error.value.reject_code == "IMAGE_TOO_LARGE"
 
 
 @pytest.mark.asyncio
@@ -124,12 +126,13 @@ async def test_process_rejects_decoded_pixels_above_memory_budget() -> None:
     storage = MemoryStorage({"uploads/too-many-pixels.jpg": source})
     service = ImageMetadataService(storage, Settings(max_image_pixels=1_000_000))
 
-    with pytest.raises(ImageMetadataError, match="解码像素超过安全上限"):
+    with pytest.raises(ImageMetadataError, match="解码像素超过安全上限") as error:
         await service.process(
             job_id="job_test",
             image_id="img_test",
             object_key="uploads/too-many-pixels.jpg",
         )
+    assert error.value.reject_code == "IMAGE_TOO_LARGE"
 
 
 def test_perceptual_hash_is_stable_for_the_same_image() -> None:

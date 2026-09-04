@@ -6,6 +6,18 @@ from src.core.config import Settings
 from src.services.storage.minio import MinIOStorageProvider
 
 
+def test_storage_client_has_bounded_timeouts_and_retry_budget() -> None:
+    provider = MinIOStorageProvider(Settings(_env_file=None))
+
+    config = provider.client.meta.config
+
+    assert config.connect_timeout == 3
+    assert config.read_timeout == 20
+    assert config.retries["total_max_attempts"] == 2
+    assert config.retries["mode"] == "standard"
+    assert config.tcp_keepalive is True
+
+
 @pytest.mark.asyncio
 async def test_presign_download_requests_an_attachment_response() -> None:
     provider = MinIOStorageProvider(Settings())

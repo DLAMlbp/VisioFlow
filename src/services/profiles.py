@@ -214,7 +214,7 @@ class SimilarityProfile(BaseModel):
     similarity_review_threshold: float = Field(ge=0, le=1)
     similarity_min_margin: float = Field(ge=0, le=1)
 
-    def model_post_init(self, __context: object) -> None:
+    def model_post_init(self, __context: object, /) -> None:
         if self.similarity_min_content_weight > self.similarity_max_content_weight:
             raise ValueError("内容特征最小权重不能超过最大权重")
         if not self.similarity_field_weights or any(

@@ -6,6 +6,7 @@ from src.core.config import Settings
 
 
 class RejectCode:
+    INVALID_IMAGE = "INVALID_IMAGE"
     IMAGE_TOO_SMALL = "IMAGE_TOO_SMALL"
     IMAGE_TOO_LARGE = "IMAGE_TOO_LARGE"
     EXTREME_BLUR = "EXTREME_BLUR"

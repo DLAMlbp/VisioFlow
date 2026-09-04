@@ -28,8 +28,8 @@ from src.services.jobs.callback_security import (
     CallbackConfigurationError,
     validate_callback_destination,
 )
-from src.services.jobs.dispatch import JobDispatchTaskPublisher
 from src.services.jobs.deadlines import job_deadline
+from src.services.jobs.dispatch import JobDispatchTaskPublisher
 from src.services.jobs.ids import (
     build_image_id,
     build_job_id,

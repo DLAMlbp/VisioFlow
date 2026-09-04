@@ -1,7 +1,7 @@
 from io import BytesIO
 
-from PIL import Image, ImageFilter
 import pytest
+from PIL import Image, ImageFilter
 
 from src.models.library_asset import LibraryAsset
 from src.models.library_asset_group import LibraryAssetGroup

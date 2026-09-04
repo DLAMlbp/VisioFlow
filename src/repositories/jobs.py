@@ -397,13 +397,16 @@ class ImageJobRepository:
                 ImageItem.enhancement_stage_started_at == started_at,
                 ImageItem.enhancement_recovery_attempts >= max_attempts,
             )
-            .values(status="failed")
+            # Acquire and retain the row lock without making the item terminal.
+            # fail_item performs the guarded terminal transition and progress
+            # accounting in the same transaction.
+            .values(enhancement_recovery_attempts=ImageItem.enhancement_recovery_attempts)
         )
         if result.rowcount != 1:
             await self.session.rollback()
             return False
-        # Keep this claim in the transaction so fail_job either commits the
-        # guarded item and job together or rolls both changes back.
+        # Keep this claim in the transaction so fail_item either commits the
+        # guarded item and job progress together or rolls both changes back.
         return True
 
     async def advance_enhancement_stage(
@@ -756,12 +759,11 @@ class ImageJobRepository:
         item.status = "failed"
         item.completion_status = "failed"
         item.ai_processing_status = "failed"
-        return await self.fail_job(
-            item.job_id,
+        return await self._finalize_isolated_item_failure(
+            item,
+            reason=error_message,
             node="classification_and_filtering",
             code="INVALID_AI_RESPONSE",
-            reason=error_message,
-            image_id=item.id,
             duration_ms=duration_ms,
         )
 
@@ -1220,16 +1222,119 @@ class ImageJobRepository:
         duration_ms: int | None = None,
         upstream_status_code: int | None = None,
     ) -> bool:
-        """Fail the entire job once; never requeue sibling images in strict mode."""
-        return await self.fail_job(
-            item.job_id,
-            reason=reason,
-            node=node or _failure_node_for_item(item),
+        """Fail one image without cancelling healthy siblings in the same job."""
+        failure_node = node or _failure_node_for_item(item)
+        safe_reason = _safe_failure_message(reason)
+        stage_values: dict[str, object] = {"preprocess_completed_at": func.now()}
+        if failure_node in {"classification", "classification_and_filtering"}:
+            stage_values.update(
+                completion_status="failed",
+                completion_error=safe_reason,
+                completion_completed_at=func.now(),
+            )
+        if failure_node in {"filtering", "classification_and_filtering"}:
+            stage_values.update(
+                ai_processing_status="failed",
+                ai_processing_error=safe_reason,
+                ai_processing_completed_at=func.now(),
+            )
+        if failure_node == "beautify_planning":
+            stage_values.update(
+                beautify_plan_status="failed",
+                beautify_plan_error=safe_reason,
+                beautify_plan_completed_at=func.now(),
+            )
+        if failure_node == "content_analysis":
+            stage_values.update(
+                analysis_status="failed",
+                analysis_completed_at=func.now(),
+            )
+        if failure_node == "embedding":
+            stage_values.update(
+                embedding_status="failed",
+                embedding_completed_at=func.now(),
+            )
+        if failure_node == "matching":
+            stage_values.update(
+                match_status="failed",
+                match_completed_at=func.now(),
+            )
+
+        if not await self._transition_to_terminal(item, "failed", stage_values):
+            await self.session.rollback()
+            return False
+        item.status = "failed"
+        return await self._finalize_isolated_item_failure(
+            item,
+            reason=safe_reason,
+            node=failure_node,
             code=code,
-            image_id=item.id,
             duration_ms=duration_ms,
             upstream_status_code=upstream_status_code,
         )
+
+    async def _finalize_isolated_item_failure(
+        self,
+        item: ImageItem,
+        *,
+        reason: str,
+        node: str,
+        code: str,
+        duration_ms: int | None = None,
+        upstream_status_code: int | None = None,
+    ) -> bool:
+        """Persist one terminal image failure and let the batch reach partial_failed."""
+        terminal_jobs = ("completed", "partial_failed", "failed", "cancelled")
+        safe_reason = _safe_failure_message(reason)
+        if upstream_status_code is None:
+            status_match = re.search(r"\bHTTP\s+(\d{3})\b", safe_reason, re.IGNORECASE)
+            upstream_status_code = int(status_match.group(1)) if status_match else None
+
+        await self._upsert_result(
+            item.id,
+            {"decision": "failed", "reasons_json": [safe_reason]},
+        )
+        progressed = await self.session.execute(
+            update(ImageJob)
+            .where(ImageJob.id == item.job_id, ImageJob.status.not_in(terminal_jobs))
+            .values(processed_count=ImageJob.processed_count + 1)
+        )
+        if progressed.rowcount != 1:
+            await self.session.rollback()
+            return False
+
+        # Keep the first image-level failure as the task-level diagnostic.  The
+        # job itself remains active until every sibling reaches a terminal state.
+        await self.session.execute(
+            update(ImageJob)
+            .where(
+                ImageJob.id == item.job_id,
+                ImageJob.status.not_in(terminal_jobs),
+                ImageJob.failed_node.is_(None),
+            )
+            .values(
+                failed_node=node[:64],
+                failure_code=code[:64],
+                failure_message=safe_reason,
+                failed_image_id=item.id,
+                failure_duration_ms=duration_ms,
+                upstream_status_code=upstream_status_code,
+                failed_at=func.now(),
+            )
+        )
+        await self.session.commit()
+        emit_metric(
+            logger,
+            "pipeline_item_failure_total",
+            labels={
+                "job_id": item.job_id,
+                "image_id": item.id,
+                "node": node,
+                "code": code,
+            },
+        )
+        await self.complete_job_if_finished(item.job_id)
+        return True
 
     async def fail_job(
         self,

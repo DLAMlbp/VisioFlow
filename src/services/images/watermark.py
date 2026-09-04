@@ -14,8 +14,8 @@ from src.core.config import Settings
 from src.services.images.adapters.lama_opencv import erase_lama_opencv
 from src.services.images.adapters.migan_openvino import erase_migan_openvino
 from src.services.images.adapters.rapidocr import detect_text_lines, detect_text_polygons
-from src.services.images.mosaic import Box
 from src.services.images.adapters.remove_ai_watermarks import erase_mask
+from src.services.images.mosaic import Box
 from src.services.images.redaction import (
     ImageStageResult,
     changed_pixels_outside_box,

@@ -9,8 +9,8 @@ from src.repositories.jobs import ImageJobRepository
 from src.services.ai_model_config import load_ai_model_settings
 from src.services.images.tagging import (
     PROMPT_VERSION,
-    TagPayload,
     TaggingOutcome,
+    TagPayload,
     analyze_many_with_retries,
     get_tag_provider,
     matching_content_payload,
@@ -153,7 +153,10 @@ async def _analyze_image_content(image_id: str) -> None:
                     code="UPSTREAM_UNAVAILABLE",
                     duration_ms=outcome.duration_ms,
                 )
-                return
+                # This batch claim may contain multiple independent images.  A
+                # storage/model failure for one image must not strand the other
+                # claimed rows in analysis_status=processing.
+                continue
             await repository.complete_analysis_stage(item.id, succeeded=succeeded)
             if await repository.claim_match_if_ready(item.id):
                 MatchTaskPublisher().publish(item.id)

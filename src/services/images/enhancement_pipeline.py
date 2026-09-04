@@ -7,7 +7,6 @@ import numpy as np
 
 from src.services.storage.keys import build_enhancement_work_object_key
 
-
 PIPELINE_STATE_VERSION = 1
 
 

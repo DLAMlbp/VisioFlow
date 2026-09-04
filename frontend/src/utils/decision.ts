@@ -67,6 +67,7 @@ export function statusLabel(status: JobStatus): string {
 
 export function rejectCodeLabel(code: string): string {
   const labels: Record<string, string> = {
+    INVALID_IMAGE: "图片格式无效或文件已损坏",
     IMAGE_TOO_SMALL: "图片尺寸不足",
     IMAGE_TOO_LARGE: "图片尺寸超出限制",
     EXTREME_BLUR: "图片严重模糊",

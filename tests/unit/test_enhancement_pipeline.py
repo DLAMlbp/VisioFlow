@@ -1,6 +1,7 @@
+from datetime import UTC, datetime
+
 import numpy as np
 import pytest
-from datetime import UTC, datetime
 
 from src.repositories.jobs import ImageJobRepository
 from src.services.images.enhancement_pipeline import (
@@ -213,7 +214,7 @@ async def test_stale_enhancement_claim_has_a_bounded_recovery_counter() -> None:
 
 
 @pytest.mark.asyncio
-async def test_exhausted_enhancement_failure_is_claimed_atomically() -> None:
+async def test_exhausted_enhancement_failure_locks_active_item_for_isolated_failure() -> None:
     started_at = datetime(2026, 9, 3, tzinfo=UTC)
 
     class Session:
@@ -244,4 +245,5 @@ async def test_exhausted_enhancement_failure_is_claimed_atomically() -> None:
     assert "enhancement_recovery_attempts >=" in statement
     assert "enhancement_stage_started_at" in statement
     assert "render" in session.statement.compile().params.values()
-    assert "failed" in session.statement.compile().params.values()
+    assert "failed" not in session.statement.compile().params.values()
+    assert "enhancing" in session.statement.compile().params.values()

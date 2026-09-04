@@ -3,6 +3,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from src.services.images.adapters.rapidocr import OcrTextLine
 from src.services.images.watermark import (
     DangjiaWatermarkProcessor,
     app_token_box_from_text_line,
@@ -13,7 +14,6 @@ from src.services.images.watermark import (
     reverse_alpha_blend,
 )
 from src.services.profiles import WatermarkRemovalConfig
-from src.services.images.adapters.rapidocr import OcrTextLine
 
 
 def test_app_token_box_projects_only_app_inside_an_ocr_line() -> None:

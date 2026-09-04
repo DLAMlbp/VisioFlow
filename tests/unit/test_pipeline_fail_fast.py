@@ -262,7 +262,9 @@ async def test_stalled_render_is_republished_without_failing_job(monkeypatch) ->
 
 
 @pytest.mark.asyncio
-async def test_stalled_render_fails_after_recovery_budget_is_exhausted(monkeypatch) -> None:
+async def test_stalled_render_fails_only_current_image_after_recovery_budget_is_exhausted(
+    monkeypatch,
+) -> None:
     now = datetime.now(UTC)
     job, item = _stalled_render_job(now)
     failures: list[tuple] = []
@@ -277,7 +279,7 @@ async def test_stalled_render_fails_after_recovery_budget_is_exhausted(monkeypat
         async def claim_exhausted_enhancement_failure(self, _image_id, **_kwargs):
             return True
 
-        async def fail_job(self, *args, **kwargs) -> None:
+        async def fail_item(self, *args, **kwargs) -> None:
             failures.append((args, kwargs))
 
     monkeypatch.setattr(cleanup, "AsyncSessionLocal", lambda: _CleanupSession(job, item))
@@ -298,8 +300,7 @@ async def test_stalled_render_fails_after_recovery_budget_is_exhausted(monkeypat
 
     assert len(failures) == 1
     args, kwargs = failures[0]
-    assert args == (job.id,)
-    assert kwargs["image_id"] == item.id
+    assert args[0] is item
     assert kwargs["node"] == "render"
     assert kwargs["code"] == "ENHANCEMENT_RECOVERY_EXHAUSTED"
 

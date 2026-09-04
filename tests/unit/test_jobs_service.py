@@ -1,17 +1,18 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import ValidationError
 
 from src.core.config import Settings
-from src.models.image_item import ImageItem
 from src.models.image_ai_tag import ImageAITag
+from src.models.image_item import ImageItem
 from src.models.image_job import ImageJob
 from src.models.image_metric import ImageMetric
 from src.models.image_result import ImageResult
 from src.models.image_similarity_match import ImageSimilarityMatch
-from src.repositories.jobs import JobProgressSnapshot, terminal_job_status
+from src.repositories.jobs import ImageJobRepository, JobProgressSnapshot, terminal_job_status
 from src.schemas.jobs import CreateImageJobRequest
 from src.services.jobs.service import (
     ImageJobService,
@@ -125,6 +126,38 @@ def test_terminal_job_status_distinguishes_all_failed_and_partial_failed() -> No
     assert terminal_job_status(total_count=3, failed_count=3) == "failed"
     assert terminal_job_status(total_count=3, failed_count=1) == "partial_failed"
     assert terminal_job_status(total_count=3, failed_count=0) == "completed"
+
+
+@pytest.mark.asyncio
+async def test_fail_item_isolates_failure_instead_of_failing_entire_job() -> None:
+    session = SimpleNamespace(rollback=AsyncMock())
+    repository = ImageJobRepository(session)  # type: ignore[arg-type]
+    repository._transition_to_terminal = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    repository._finalize_isolated_item_failure = AsyncMock(  # type: ignore[method-assign]
+        return_value=True
+    )
+    repository.fail_job = AsyncMock()  # type: ignore[method-assign]
+    item = ImageItem(
+        id="img_isolated",
+        job_id="job_batch",
+        object_key="uploads/isolate.jpg",
+        status="tagging",
+        analysis_status="processing",
+    )
+
+    result = await repository.fail_item(
+        item,
+        "content provider unavailable",
+        node="content_analysis",
+        code="UPSTREAM_UNAVAILABLE",
+    )
+
+    assert result is True
+    repository.fail_job.assert_not_awaited()
+    transition = repository._transition_to_terminal.await_args
+    assert transition.args[:2] == (item, "failed")
+    assert transition.args[2]["analysis_status"] == "failed"
+    repository._finalize_isolated_item_failure.assert_awaited_once()
 
 
 @pytest.mark.asyncio

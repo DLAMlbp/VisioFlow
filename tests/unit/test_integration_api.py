@@ -11,8 +11,8 @@ from src.schemas.jobs import (
     ImageJobResultItemResponse,
     ImageJobResultsResponse,
 )
-from src.services.integration_urls import StagedIntegrationImage
 from src.services.integration_admission import IntegrationAdmissionRejected
+from src.services.integration_urls import StagedIntegrationImage
 from src.services.storage.interfaces import StorageProvider
 
 

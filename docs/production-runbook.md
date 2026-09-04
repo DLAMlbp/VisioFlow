@@ -28,7 +28,7 @@ AI_PROCESSING_SCHEMA_MAX_RETRIES=0
 AI_PROCESSING_MAX_COMPLETION_TOKENS=3000
 ```
 
-系统对每个 AI 节点只请求一次。供应商拒绝 Schema、响应缺字段、类型错误或返回无效 JSON 时立即终止任务，并在进度、结果和回调中返回失败节点与错误码。诊断仍会保存到 `image_items.ai_processing_diagnostic_json`；Bearer 凭据和图片 Base64 不会保存。排障后只对明确选中的失败图片执行人工重试，禁止批量自动重试历史失败任务。
+系统对每张图片的每个 AI 节点只请求一次。供应商拒绝 Schema、响应缺字段、类型错误、返回无效 JSON，或单张图片在节点内超时时，只终止当前图片并记录失败节点与错误码；同批其他图片继续执行。整批处理完后，只要存在成功或业务拒绝结果，任务进入 `partial_failed` 并照常回调；仅全部图片失败时任务才进入 `failed`。诊断仍会保存到 `image_items.ai_processing_diagnostic_json`；Bearer 凭据和图片 Base64 不会保存。排障后只对明确选中的失败图片执行人工重试，禁止批量自动重试历史失败任务。只有任务截止时间、排序屏障等无法归属到单张图片的全局故障才会停止整批任务。
 
 正式公网入口必须在外部负载均衡器或 API Gateway 终止 HTTPS。不要把 Compose 的 HTTP、PostgreSQL、Redis 或 MinIO 内部端口直接暴露到公网。
 

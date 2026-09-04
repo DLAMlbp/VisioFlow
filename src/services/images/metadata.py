@@ -17,7 +17,9 @@ MAGIC_BYTES_CONTENT_TYPES = {
 
 
 class ImageMetadataError(Exception):
-    pass
+    def __init__(self, message: str, *, reject_code: str = "INVALID_IMAGE") -> None:
+        super().__init__(message)
+        self.reject_code = reject_code
 
 
 @dataclass(frozen=True)
@@ -43,12 +45,17 @@ class ImageMetadataService:
     async def process(self, *, job_id: str, image_id: str, object_key: str) -> ImageMetadata:
         object_size = await self.storage.get_size(object_key)
         max_size = self.settings.max_image_size_mb * 1024 * 1024
-        if object_size <= 0 or object_size > max_size:
-            raise ImageMetadataError(f"图片实际大小不符合限制（最大 {self.settings.max_image_size_mb}MB）")
+        if object_size <= 0:
+            raise ImageMetadataError("图片内容为空或文件已损坏")
+        if object_size > max_size:
+            raise ImageMetadataError(
+                f"图片实际大小超过限制（最大 {self.settings.max_image_size_mb}MB）",
+                reject_code="IMAGE_TOO_LARGE",
+            )
 
         image_bytes = await self.storage.download(object_key)
         if len(image_bytes) != object_size:
-            raise ImageMetadataError("图片读取大小与对象存储元数据不一致")
+            raise RuntimeError("图片读取大小与对象存储元数据不一致")
         content_type = detect_image_content_type(image_bytes)
         if content_type is None or content_type not in self.settings.allowed_image_content_types:
             raise ImageMetadataError("不支持的图片格式或 Magic Bytes 无效")
@@ -66,7 +73,8 @@ class ImageMetadataService:
                 if width * height > self.settings.max_image_pixels:
                     raise ImageMetadataError(
                         "图片解码像素超过安全上限"
-                        f"（最大 {self.settings.max_image_pixels:,} 像素）"
+                        f"（最大 {self.settings.max_image_pixels:,} 像素）",
+                        reject_code="IMAGE_TOO_LARGE",
                     )
                 thumbnail = make_thumbnail(image, self.settings.thumbnail_long_side)
         except (Image.DecompressionBombError, OSError, UnidentifiedImageError) as exc:

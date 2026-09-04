@@ -110,7 +110,10 @@ async def _preprocess_image_metadata(image_id: str) -> None:
                 object_key=item.object_key,
             )
         except ImageMetadataError as exc:
-            await repository.fail_item(item, str(exc))
+            # Invalid, corrupt and oversized inputs are business rejections.
+            # They must not turn an otherwise healthy multi-image job into a
+            # system failure.
+            await repository.reject_item(item, [exc.reject_code], reason=str(exc))
             await _advance_after_preprocess(repository, item)
             return
 
