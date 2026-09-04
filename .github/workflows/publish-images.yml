@@ -49,7 +49,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
       - name: Build API image
         uses: docker/build-push-action@v6
         with:
@@ -66,7 +66,7 @@ jobs:
             -v "$GITHUB_WORKSPACE/scripts:/app/scripts:ro" \
             -v "$GITHUB_WORKSPACE/training:/app/training:ro" \
             ghcr.io/${{ github.repository_owner }}/tuxiangshibie-api:${{ github.sha }} \
-            sh -c "pip install --no-cache-dir pytest==8.4.2 pytest-asyncio==1.2.0 httpx2 ruff==0.12.12 && ruff check src tests scripts/benchmark_redaction.py scripts/fetch_redaction_models.py scripts/evaluate_dangjia_logo.py scripts/prelabel_dangjia_logo_dataset.py scripts/validate_dangjia_dataset.py scripts/verify_logo_sample_acceptance.py scripts/verify_redaction_supply_chain.py training/yolox/dangjia_logo_nano.py && python -m py_compile training/yolox/dangjia_logo_nano.py && pytest -q"
+            sh -c "pip install --no-cache-dir pytest==8.4.2 pytest-asyncio==1.2.0 httpx2 ruff==0.12.12 && ruff check src tests scripts/benchmark_redaction.py scripts/fetch_redaction_models.py scripts/evaluate_dangjia_logo.py scripts/prelabel_dangjia_logo_dataset.py scripts/validate_dangjia_dataset.py scripts/verify_logo_sample_acceptance.py scripts/verify_redaction_supply_chain.py training/yolox/dangjia_logo_nano.py && PYTHONPYCACHEPREFIX=/tmp/pycache python -m py_compile training/yolox/dangjia_logo_nano.py && pytest -q"
       - name: Verify redaction runtime and pinned models
         run: |
           docker run --rm ghcr.io/${{ github.repository_owner }}/tuxiangshibie-api:${{ github.sha }} \
@@ -96,7 +96,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
       - name: Run frontend tests
         run: npm ci && npm test && npm run build && npm audit --omit=dev --audit-level=high
       - name: Build web image

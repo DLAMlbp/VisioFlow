@@ -10,6 +10,8 @@ RUN npm run build
 
 FROM nginx:1.29.1-alpine
 
+LABEL org.opencontainers.image.source="https://github.com/zuixi01/tuxiangshibie"
+
 ENV NGINX_ENVSUBST_FILTER=^API_KEY$
 
 COPY nginx.conf.template /etc/nginx/templates/default.conf.template
