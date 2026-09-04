@@ -162,10 +162,21 @@ class ImageAITagsResponse(BaseModel):
     status: str
     source: Literal["library", "legacy_ai"] | None = None
     summary: str | None = None
+    content_type: str | None = None
+    scene: str | None = None
+    space: str | None = None
+    view: str | None = None
+    condition: str | None = None
+    subjects: list[str] = Field(default_factory=list)
+    objects: list[str] = Field(default_factory=list)
+    attributes: dict[str, list[str]] = Field(default_factory=dict)
+    features: dict[str, list[str]] = Field(default_factory=dict)
+    ocr_text: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     categories: dict[str, list[str]] = Field(default_factory=dict)
     candidate_tags: list[str] = Field(default_factory=list)
     confidence: float | None = Field(default=None, ge=0, le=1)
+    content_confidence: float | None = Field(default=None, ge=0, le=1)
     risks: list[str] = Field(default_factory=list)
     source_object_key: str | None = None
     error_message: str | None = None

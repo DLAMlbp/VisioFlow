@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from src.core.config import Settings
 from src.models.image_item import ImageItem
+from src.models.image_ai_tag import ImageAITag
 from src.models.image_job import ImageJob
 from src.models.image_metric import ImageMetric
 from src.models.image_result import ImageResult
@@ -554,6 +555,35 @@ async def test_get_results_returns_decision_metrics_and_enhanced_key() -> None:
         message="图片与内容特征候选需要人工确认",
         candidate_json=[],
     )
+    item.ai_tag = ImageAITag(
+        id="tag_test",
+        image_id=item.id,
+        source_object_key="thumbnails/job_test/img_test.jpg",
+        provider="library",
+        model_name="openclip-test+source_v2",
+        prompt_version="library_similarity_v2",
+        status="completed",
+        duration_ms=875,
+        tag_json={
+            "summary": "工人在室内砌筑砖墙",
+            "content_type": "现场照片",
+            "scene": "未完成装修的室内施工现场",
+            "space": "客厅",
+            "view": "整体视角",
+            "condition": "墙面处于砌筑阶段",
+            "subjects": ["施工人员"],
+            "objects": ["砖块", "水泥"],
+            "attributes": {"材质": ["砖", "水泥"]},
+            "features": {"施工": ["墙体砌筑"]},
+            "ocr_text": [],
+            "tags": ["施工", "客厅"],
+            "categories": {"素材库标签": ["施工", "客厅"]},
+            "candidate_tags": [],
+            "confidence": 0.86,
+            "content_confidence": 0.94,
+            "risks": ["地面有散落材料"],
+        },
+    )
     item.ai_processing_json = {
         "filter": {
             "decision": "pass",
@@ -609,6 +639,12 @@ async def test_get_results_returns_decision_metrics_and_enhanced_key() -> None:
     assert response.images[0].tagging_result is not None
     assert response.images[0].tagging_result.auto_threshold == 0.6
     assert response.images[0].tagging_result.review_threshold == 0.45
+    assert response.images[0].ai_tags is not None
+    assert response.images[0].ai_tags.scene == "未完成装修的室内施工现场"
+    assert response.images[0].ai_tags.subjects == ["施工人员"]
+    assert response.images[0].ai_tags.objects == ["砖块", "水泥"]
+    assert response.images[0].ai_tags.features == {"施工": ["墙体砌筑"]}
+    assert response.images[0].ai_tags.content_confidence == 0.94
     assert response.images[0].enhanced_metrics.exposure == 92
     assert response.images[0].audit_dimensions[0].dimension == "分类 · 画面清晰度"
     assert response.images[0].audit_dimensions[0].passed is True

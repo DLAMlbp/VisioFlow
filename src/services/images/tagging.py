@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from src.core.config import Settings
 from src.services.images.vision_rate_limit import run_vision_request
 
-PROMPT_VERSION = "generic_visual_analysis_v2"
+PROMPT_VERSION = "generic_visual_analysis_v3"
 
 
 class TagPayload(BaseModel):
@@ -23,7 +23,7 @@ class TagPayload(BaseModel):
     # business fields and ignore extras instead of failing the whole image.
     model_config = ConfigDict(extra="ignore")
 
-    summary: str = Field(default="", max_length=80)
+    summary: str = Field(default="", max_length=240)
     scene: str = Field(default="", max_length=80)
     space: str = Field(default="", max_length=80)
     condition: str = Field(default="", max_length=80)
@@ -55,7 +55,8 @@ class TagPayload(BaseModel):
         normalized = dict(value)
         for field_name in ("summary", "scene", "space", "condition", "content_type", "view"):
             field_value = normalized.get(field_name)
-            normalized[field_name] = "" if field_value is None else str(field_value)[:80]
+            limit = 240 if field_name == "summary" else 80
+            normalized[field_name] = "" if field_value is None else str(field_value)[:limit]
         for field_name, limit in {
             "subjects": 12,
             "objects": 20,
@@ -383,7 +384,8 @@ def _chat_completions_url(base_url: str) -> str:
 _SYSTEM_PROMPT = """你是通用图片内容分析助手。只输出 JSON，不要 Markdown 或额外说明。
 必须返回 summary、scene、space、condition、content_type、subjects、objects、attributes、features、ocr_text、view、confidence、risks、tags、categories、candidate_tags。
 只描述图片中能够观察到的内容，不要根据预设业务标签猜测。
-summary 不超过 40 个字；subjects 最多 12 个；objects 最多 20 个。
+summary 使用 2 至 3 句完整描述，依次说明主要主体与动作、场景与空间、关键环境状态；建议 60 至 140 个字，最多 200 个字。不得用标签堆砌代替描述，也不得补充画面外无法确认的信息。
+subjects 最多 12 个；objects 最多 20 个。
 scene 描述整体场景；space 描述主要空间或区域；condition 描述可见状态；无法判断时留空。
 content_type 描述照片、文档、截图、插画等内容形态；view 描述整体、局部、特写等视角。
 objects 返回主要可见对象；attributes 返回通用视觉属性；features 返回图片自身可见的领域特征，键名不得预设业务标签。
@@ -393,7 +395,7 @@ risks 可包含人脸、证件、手机号或地址、二维码、聊天截图�
 
 _USER_PROMPT = """请分析这张图片，并按以下 JSON 返回：
 {
-  "summary":"图片可见内容的简短描述",
+  "summary":"图片可见内容的两至三句完整概述",
   "scene":"整体场景",
   "space":"主要空间或区域",
   "condition":"可见状态",
@@ -421,7 +423,7 @@ def _batch_user_prompt(image_count: int) -> str:
 {{
   "images":[
     {{
-      "summary":"图片可见内容的简短描述",
+      "summary":"图片可见内容的两至三句完整概述",
       "scene":"整体场景",
       "space":"主要空间或区域",
       "condition":"可见状态",

@@ -32,6 +32,7 @@ import { LibraryWorkspace } from "./LibraryWorkspace";
 import { ProfileWorkspace } from "./ProfileWorkspace";
 import brandLogo from "./assets/image-processing-logo.svg";
 import type {
+  AIImageTags,
   AIModelConfig,
   Decision,
   ImageMetrics,
@@ -1127,7 +1128,7 @@ function ImageDetail({ image, jobId, onBack, onReviewResolved, onRetry, onRedact
   const [auditExpanded, setAuditExpanded] = useState(false);
   const [beautifyExpanded, setBeautifyExpanded] = useState(false);
   const [processingExpanded, setProcessingExpanded] = useState(false);
-  const [classificationExpanded, setClassificationExpanded] = useState(false);
+  const [recognitionExpanded, setRecognitionExpanded] = useState(false);
   const imageUrl = showEnhanced && image.enhanced_url ? image.enhanced_url : image.original_url;
   const openUrl = image.enhanced_download_url ?? image.original_download_url
     ?? image.enhanced_url ?? image.original_url;
@@ -1138,7 +1139,7 @@ function ImageDetail({ image, jobId, onBack, onReviewResolved, onRetry, onRedact
   const auditRegionId = `audit-dimensions-${image.image_id}`;
   const beautifyRegionId = `beautify-details-${image.image_id}`;
   const processingRegionId = `processing-details-${image.image_id}`;
-  const classificationRegionId = `classification-content-${image.image_id}`;
+  const recognitionRegionId = `ai-content-recognition-${image.image_id}`;
   const hasRedactionOverlay = Boolean(
     image.beautify?.redaction?.watermark?.roi_px
       || image.beautify?.redaction?.logos?.boxes
@@ -1160,7 +1161,7 @@ function ImageDetail({ image, jobId, onBack, onReviewResolved, onRetry, onRedact
     setAuditExpanded(false);
     setBeautifyExpanded(false);
     setProcessingExpanded(false);
-    setClassificationExpanded(false);
+    setRecognitionExpanded(false);
     setShowRedactionOverlay(false);
     setEditingLogoBoxes(false);
     setLogoEditError(null);
@@ -1269,12 +1270,13 @@ function ImageDetail({ image, jobId, onBack, onReviewResolved, onRetry, onRedact
           {image.classification.review_required && <b>建议人工复核</b>}
         </div>
       ) : image.completion && <div className="completion-detail"><strong>{image.completion.label === "completed" ? "完工" : "非完工"} · {Math.round(image.completion.confidence * 100)}%</strong><p>{image.completion.reason}</p>{image.completion.review_required && <span>建议人工复核</span>}</div>}
-      {image.classification?.content_analysis && (
-        <ClassificationContentDetail
-          analysis={image.classification.content_analysis}
-          expanded={classificationExpanded}
-          regionId={classificationRegionId}
-          onToggle={() => setClassificationExpanded((current) => !current)}
+      {(image.classification?.content_analysis || image.ai_tags) && (
+        <AIContentRecognitionDetail
+          analysis={image.classification?.content_analysis}
+          legacyResult={image.ai_tags}
+          expanded={recognitionExpanded}
+          regionId={recognitionRegionId}
+          onToggle={() => setRecognitionExpanded((current) => !current)}
         />
       )}
       {auditDimensions.length > 0 && (
@@ -1587,25 +1589,46 @@ function OutcomeSummary({ image, result }: { image: ResultImage; result?: Simila
   return <section className="outcome-summary" aria-label="处理结果摘要">{items.map((item) => <div className={item.tone} key={item.label}>{item.icon}<span>{item.label}</span><strong title={item.value}>{item.value}</strong></div>)}</section>;
 }
 
-function ClassificationContentDetail({
+function AIContentRecognitionDetail({
   analysis,
+  legacyResult,
   expanded,
   onToggle,
   regionId
 }: {
-  analysis: ClassificationContentAnalysis;
+  analysis?: ClassificationContentAnalysis | null;
+  legacyResult?: AIImageTags;
   expanded: boolean;
   onToggle: () => void;
   regionId: string;
 }) {
+  if (!analysis && legacyResult) {
+    return (
+      <LegacyAIContentRecognitionDetail
+        result={legacyResult}
+        expanded={expanded}
+        regionId={regionId}
+        onToggle={onToggle}
+      />
+    );
+  }
+  if (!analysis) return null;
+
   const recognizedCount = analysis.subjects.length + analysis.objects.length;
   const summary = `${recognizedCount} 项主体/物体 · 识别置信度 ${Math.round(analysis.confidence * 100)}%`;
   const attributeEntries = Object.entries(analysis.attributes).filter(([, values]) => values.length > 0);
+  const overview = buildDetailedRecognitionOverview({
+    summary: analysis.summary,
+    scene: analysis.scene,
+    spaces: analysis.spaces,
+    view: analysis.view,
+    conditions: analysis.visible_conditions
+  });
 
   return (
     <DetailDisclosure
       className="classification-content"
-      title="AI 图片内容识别"
+      title="AI 内容识别"
       summary={summary}
       expanded={expanded}
       regionId={regionId}
@@ -1613,7 +1636,7 @@ function ClassificationContentDetail({
     >
       <div className="recognition-summary">
         <span>识别概览</span>
-        <strong>{analysis.summary}</strong>
+        <strong>{overview}</strong>
       </div>
 
       <dl className="recognition-facts">
@@ -1659,6 +1682,170 @@ function ClassificationContentDetail({
       </section>
     </DetailDisclosure>
   );
+}
+
+function LegacyAIContentRecognitionDetail({
+  result,
+  expanded,
+  onToggle,
+  regionId
+}: {
+  result: AIImageTags;
+  expanded: boolean;
+  onToggle: () => void;
+  regionId: string;
+}) {
+  const recognitionConfidenceValue = result.content_confidence
+    ?? (result.source === "library" ? null : result.confidence);
+  const recognitionConfidence = recognitionConfidenceValue == null
+    ? null
+    : Math.round(recognitionConfidenceValue * 100);
+  const matchConfidence = result.source === "library" && result.confidence != null
+    ? Math.round(result.confidence * 100)
+    : null;
+  const statusLabel = result.status === "completed" ? "识别完成" : result.status === "failed" ? "识别失败" : "正在识别";
+  const summary = recognitionConfidence == null ? statusLabel : `${statusLabel} · 内容置信度 ${recognitionConfidence}%`;
+  const normalizedTags = Array.from(new Set(result.tags.filter(Boolean)));
+  const normalizedTagKey = [...normalizedTags].sort().join("\u0000");
+  const categoryEntries = Object.entries(result.categories).filter(([, items]) => {
+    const values = Array.from(new Set(items.filter(Boolean)));
+    return values.length > 0 && [...values].sort().join("\u0000") !== normalizedTagKey;
+  });
+  const overview = result.summary
+    ? buildDetailedRecognitionOverview({
+        summary: result.summary,
+        scene: result.scene,
+        spaces: result.space ? [result.space] : [],
+        view: result.view,
+        conditions: result.condition ? [result.condition] : []
+      })
+    : result.error_message
+      ?? (result.status === "pending" ? "AI 正在分析图片内容" : "本次识别未返回内容概览");
+  const features = Object.entries(result.features ?? {}).filter(([, values]) => values.length > 0);
+  const attributes = Object.entries(result.attributes ?? {}).filter(([, values]) => values.length > 0);
+  const subjects = result.subjects ?? [];
+  const objects = result.objects ?? [];
+  const ocrText = result.ocr_text ?? [];
+
+  return (
+    <DetailDisclosure
+      className={`classification-content legacy-recognition ${result.status}`}
+      title="AI 内容识别"
+      summary={summary}
+      expanded={expanded}
+      regionId={regionId}
+      onToggle={onToggle}
+    >
+      <div className={`recognition-summary ${result.status}`}>
+        <span>识别概览</span>
+        <strong>{overview}</strong>
+      </div>
+
+      <dl className="recognition-facts">
+        <div><dt>内容类型</dt><dd>{result.content_type || "未明确"}</dd></div>
+        <div><dt>内容置信度</dt><dd>{recognitionConfidence == null ? "--" : `${recognitionConfidence}%`}</dd></div>
+        <div><dt>可见主体/物体</dt><dd>{subjects.length + objects.length} 项</dd></div>
+        <div><dt>风险提示</dt><dd>{result.risks.length} 项</dd></div>
+      </dl>
+
+      {(result.scene || result.space || result.view || result.condition) && (
+        <section className="recognition-group recognition-narrative">
+          <h3>场景与现场状态</h3>
+          <dl>
+            {result.scene && <div><dt>可见场景</dt><dd>{result.scene}</dd></div>}
+            {result.space && <div><dt>空间区域</dt><dd>{result.space}</dd></div>}
+            {result.view && <div><dt>拍摄视角</dt><dd>{result.view}</dd></div>}
+            {result.condition && <div><dt>现场状态</dt><dd>{result.condition}</dd></div>}
+          </dl>
+        </section>
+      )}
+
+      <RecognitionChips title="主要主体" items={subjects} emptyText="未识别到明确主体" />
+      <RecognitionChips title="可见物体、材料与工具" items={objects} emptyText="未识别到明确物体" />
+      {features.length > 0 && <RecognitionMapping title="现场内容特征" entries={features} />}
+      {attributes.length > 0 && <RecognitionMapping title="视觉属性" entries={attributes} />}
+
+      {normalizedTags.length > 0 && (
+        <RecognitionChips title="素材库匹配标签" items={normalizedTags} emptyText="未匹配到素材库标签" />
+      )}
+      {result.candidate_tags.length > 0 && (
+        <RecognitionChips title="待人工确认标签" items={result.candidate_tags} emptyText="没有待确认标签" />
+      )}
+      {categoryEntries.length > 0 && (
+        <RecognitionMapping title="素材标签分类" entries={categoryEntries} />
+      )}
+      {result.risks.length > 0 && (
+        <RecognitionEvidence title="风险提示" items={result.risks} tone="conflicting" />
+      )}
+      <section className="recognition-group recognition-ocr">
+        <h3>图片文字识别</h3>
+        {ocrText.length > 0 ? (
+          <blockquote>{ocrText.join(" / ")}</blockquote>
+        ) : (
+          <p className="recognition-empty">未识别到清晰文字</p>
+        )}
+      </section>
+      {(matchConfidence != null || result.status !== "completed") && (
+        <dl className="recognition-meta">
+          <div><dt>识别状态</dt><dd>{statusLabel}</dd></div>
+          {matchConfidence != null && <div><dt>素材匹配置信度</dt><dd>{matchConfidence}%</dd></div>}
+        </dl>
+      )}
+      {result.error_message && result.error_message !== overview && (
+        <p className="recognition-error"><AlertTriangle size={14} aria-hidden="true" />{result.error_message}</p>
+      )}
+    </DetailDisclosure>
+  );
+}
+
+function RecognitionMapping({ title, entries }: { title: string; entries: Array<[string, string[]]> }) {
+  return (
+    <section className="recognition-group recognition-attributes">
+      <h3>{title}</h3>
+      <dl>
+        {entries.map(([name, values]) => (
+          <div key={name}><dt>{name}</dt><dd>{values.join("、")}</dd></div>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
+function buildDetailedRecognitionOverview({
+  summary,
+  scene,
+  spaces,
+  view,
+  conditions
+}: {
+  summary?: string | null;
+  scene?: string | null;
+  spaces: string[];
+  view?: string | null;
+  conditions: string[];
+}) {
+  const base = summary?.trim() ?? "";
+  const context: string[] = [];
+  const normalizedSpaces = Array.from(new Set(spaces.map((item) => item.trim()).filter(Boolean)));
+  const normalizedConditions = Array.from(new Set(conditions.map((item) => item.trim()).filter(Boolean)));
+
+  if (scene?.trim() && !base.includes(scene.trim())) context.push(scene.trim());
+  if (normalizedSpaces.length > 0 && !normalizedSpaces.every((item) => base.includes(item))) {
+    context.push(`主要空间为${normalizedSpaces.join("、")}`);
+  }
+  if (view?.trim() && !base.includes(view.trim())) context.push(`画面采用${view.trim()}`);
+
+  const sentences = [base];
+  if (context.length > 0) sentences.push(context.join("，"));
+  const additionalConditions = normalizedConditions.filter((item) => !base.includes(item));
+  if (additionalConditions.length > 0) {
+    sentences.push(`现场可见状态：${additionalConditions.join("；")}`);
+  }
+
+  return sentences
+    .filter(Boolean)
+    .map((sentence) => /[。！？]$/.test(sentence) ? sentence : `${sentence}。`)
+    .join("");
 }
 
 function RecognitionChips({ title, items, emptyText }: { title: string; items: string[]; emptyText: string }) {

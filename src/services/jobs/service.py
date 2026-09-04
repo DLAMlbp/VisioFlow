@@ -358,6 +358,7 @@ class ImageJobService:
             metric = item.metric
             if result is None:
                 continue
+            ai_content = item.ai_tag.tag_json or {} if item.ai_tag is not None else {}
             selected_standard_id, activation_reason = selected_standard_from_processing_json(
                 item.ai_processing_json
             )
@@ -411,12 +412,23 @@ class ImageJobService:
                             source=(
                                 "library" if item.ai_tag.provider == "library" else "legacy_ai"
                             ),
-                            summary=(item.ai_tag.tag_json or {}).get("summary"),
-                            tags=(item.ai_tag.tag_json or {}).get("tags", []),
-                            categories=(item.ai_tag.tag_json or {}).get("categories", {}),
-                            candidate_tags=(item.ai_tag.tag_json or {}).get("candidate_tags", []),
-                            confidence=(item.ai_tag.tag_json or {}).get("confidence"),
-                            risks=(item.ai_tag.tag_json or {}).get("risks", []),
+                            summary=ai_content.get("summary"),
+                            content_type=ai_content.get("content_type"),
+                            scene=ai_content.get("scene"),
+                            space=ai_content.get("space"),
+                            view=ai_content.get("view"),
+                            condition=ai_content.get("condition"),
+                            subjects=ai_content.get("subjects", []),
+                            objects=ai_content.get("objects", []),
+                            attributes=ai_content.get("attributes", {}),
+                            features=ai_content.get("features", {}),
+                            ocr_text=ai_content.get("ocr_text", []),
+                            tags=ai_content.get("tags", []),
+                            categories=ai_content.get("categories", {}),
+                            candidate_tags=ai_content.get("candidate_tags", []),
+                            confidence=ai_content.get("confidence"),
+                            content_confidence=ai_content.get("content_confidence"),
+                            risks=ai_content.get("risks", []),
                             source_object_key=item.ai_tag.source_object_key,
                             error_message=item.ai_tag.error_message,
                         )

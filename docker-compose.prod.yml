@@ -185,7 +185,7 @@ services:
   celery-beat:
     <<: *app
     image: ${API_GATEWAY_IMAGE:?API_GATEWAY_IMAGE must be a versioned image reference}
-    command: celery -A src.workers.celery_app beat -l info
+    command: celery -A src.workers.celery_app beat -l info --schedule=/tmp/celerybeat-schedule
     environment:
       WORKER_ROLE: beat
     depends_on:

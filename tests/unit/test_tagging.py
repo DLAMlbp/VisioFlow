@@ -66,6 +66,18 @@ def test_tag_payload_normalizes_provider_scalar_attributes_and_tag_overflow() ->
     assert len(payload.tags) == 8
 
 
+def test_tag_payload_keeps_a_detailed_summary() -> None:
+    summary = (
+        "施工人员正在未装修的室内推动装有袋装物料的手推车。"
+        "画面覆盖毛坯房间与相邻通道，墙面和顶面仍有裸露区域。"
+        "地面可见灰尘及零散杂物，通行区域存在绊倒风险。"
+    )
+
+    payload = TagPayload.model_validate({"summary": summary})
+
+    assert payload.summary == summary
+
+
 @pytest.mark.asyncio
 async def test_disabled_tag_provider_preserves_image_with_reason() -> None:
     outcome = await DisabledTagProvider().tag(make_image())
