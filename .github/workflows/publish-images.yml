@@ -65,8 +65,10 @@ jobs:
             -v "$GITHUB_WORKSPACE/frontend:/app/frontend:ro" \
             -v "$GITHUB_WORKSPACE/scripts:/app/scripts:ro" \
             -v "$GITHUB_WORKSPACE/training:/app/training:ro" \
+            -v "$GITHUB_WORKSPACE/docker-compose.prod.yml:/app/docker-compose.prod.yml:ro" \
+            -v "$GITHUB_WORKSPACE/Dockerfile:/app/Dockerfile:ro" \
             ghcr.io/${{ github.repository_owner }}/tuxiangshibie-api:${{ github.sha }} \
-            sh -c "pip install --no-cache-dir pytest==8.4.2 pytest-asyncio==1.2.0 httpx2 ruff==0.12.12 && ruff check src tests scripts/benchmark_redaction.py scripts/fetch_redaction_models.py scripts/evaluate_dangjia_logo.py scripts/prelabel_dangjia_logo_dataset.py scripts/validate_dangjia_dataset.py scripts/verify_logo_sample_acceptance.py scripts/verify_redaction_supply_chain.py training/yolox/dangjia_logo_nano.py && PYTHONPYCACHEPREFIX=/tmp/pycache python -m py_compile training/yolox/dangjia_logo_nano.py && pytest -q"
+            sh -c "pip install --no-cache-dir pytest==8.4.2 pytest-asyncio==1.2.0 httpx2 psutil==7.0.0 ruff==0.12.12 && ruff check src tests scripts/benchmark_redaction.py scripts/fetch_redaction_models.py scripts/evaluate_dangjia_logo.py scripts/prelabel_dangjia_logo_dataset.py scripts/validate_dangjia_dataset.py scripts/verify_logo_sample_acceptance.py scripts/verify_redaction_supply_chain.py training/yolox/dangjia_logo_nano.py && PYTHONPYCACHEPREFIX=/tmp/pycache python -m py_compile training/yolox/dangjia_logo_nano.py && pytest -q"
       - name: Verify redaction runtime and pinned models
         run: |
           docker run --rm ghcr.io/${{ github.repository_owner }}/tuxiangshibie-api:${{ github.sha }} \
