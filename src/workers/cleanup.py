@@ -4,7 +4,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import selectinload
 
 from src.core.config import get_settings
@@ -12,6 +12,7 @@ from src.core.metrics import emit_metric
 from src.db.session import AsyncSessionLocal
 from src.models.image_item import ImageItem
 from src.models.image_job import ImageJob
+from src.models.library_asset import LibraryAsset
 from src.models.upload_batch import UploadBatch, UploadBatchItem
 from src.repositories.jobs import ImageJobRepository
 from src.services.jobs.dispatch import (
@@ -47,54 +48,86 @@ _POST_FILTER_ACTIVE_STATUSES = (
     "tagging",
 )
 
+_TERMINAL_JOB_STATUSES = ("completed", "partial_failed", "failed", "cancelled")
+
 
 @celery_app.task(name="maintenance.cleanup_expired_images", queue="cleanup", max_retries=0)
 def cleanup_expired_images() -> None:
     asyncio.run(_cleanup_expired_images())
 
 
-async def _cleanup_expired_images() -> None:
+async def _cleanup_expired_images(
+    *,
+    cutoff: datetime | None = None,
+    batch_size: int | None = None,
+) -> tuple[int, int]:
     settings = get_settings()
     storage = get_storage_provider()
-    cutoff = datetime.now(UTC) - timedelta(days=settings.image_retention_days)
+    cutoff = cutoff or datetime.now(UTC) - timedelta(hours=settings.task_retention_hours)
+    batch_size = batch_size or settings.cleanup_batch_size
     async with AsyncSessionLocal() as session:
+        protected_rows = (
+            await session.execute(
+                select(LibraryAsset.original_object_key, LibraryAsset.thumbnail_object_key)
+            )
+        ).all()
+        protected_object_keys = {
+            object_key for row in protected_rows for object_key in row if object_key
+        }
         result = await session.execute(
             select(ImageItem)
             .join(ImageJob, ImageJob.id == ImageItem.job_id)
             .where(
+                ImageJob.status.in_(_TERMINAL_JOB_STATUSES),
                 ImageJob.completed_at.is_not(None),
                 ImageJob.completed_at < cutoff,
                 ImageItem.purged_at.is_(None),
             )
-            .options(selectinload(ImageItem.result))
-            .limit(100)
+            .options(selectinload(ImageItem.result), selectinload(ImageItem.ai_tag))
+            .order_by(ImageJob.completed_at, ImageItem.id)
+            .limit(batch_size)
         )
-        for item in result.scalars().unique():
-            keys = [
-                item.object_key,
-                item.thumbnail_object_key,
-                item.analysis_object_key,
-                build_redaction_base_object_key(item.job_id, item.id),
-                *[
-                    build_enhancement_work_object_key(item.job_id, item.id, stage, extension)
-                    for stage, extension in (
-                        ("normalized", "jpg"),
-                        ("watermark-mask", "png"),
-                        ("watermark", "jpg"),
-                        ("beautified", "jpg"),
-                        ("state", "json"),
-                    )
-                ],
-            ]
-            if item.result is not None:
-                keys.append(item.result.enhanced_object_key)
-            for object_key in dict.fromkeys(key for key in keys if key):
-                try:
-                    await storage.delete(object_key)
-                except Exception:
-                    logger.warning("Unable to delete expired object %s", object_key, exc_info=True)
-            item.purged_at = datetime.now(UTC)
+        items = list(result.scalars().unique())
+        keys_by_item = _deletable_keys_by_item(items, protected_object_keys)
+        object_keys = list(
+            dict.fromkeys(object_key for keys in keys_by_item.values() for object_key in keys)
+        )
+        failed_keys: set[str] = set()
+        if object_keys:
+            try:
+                failed_keys = await storage.delete_many(object_keys)
+            except Exception:
+                failed_keys = set(object_keys)
+                logger.warning("Unable to batch-delete expired task objects", exc_info=True)
+        purged_at = datetime.now(UTC)
+        for item in items:
+            if keys_by_item[item.id].isdisjoint(failed_keys):
+                item.purged_at = purged_at
+            else:
+                logger.warning("Expired task objects remain for image %s", item.id)
         await session.commit()
+
+        expired_job_ids = list(
+            (
+                await session.execute(
+                    select(ImageJob.id)
+                    .where(
+                        ImageJob.status.in_(_TERMINAL_JOB_STATUSES),
+                        ImageJob.completed_at.is_not(None),
+                        ImageJob.completed_at < cutoff,
+                        ~ImageJob.items.any(ImageItem.purged_at.is_(None)),
+                    )
+                    .order_by(ImageJob.completed_at, ImageJob.id)
+                    .limit(batch_size)
+                )
+            ).scalars()
+        )
+        if expired_job_ids:
+            await session.execute(
+                delete(UploadBatch).where(UploadBatch.job_id.in_(expired_job_ids))
+            )
+            await session.execute(delete(ImageJob).where(ImageJob.id.in_(expired_job_ids)))
+            await session.commit()
 
         batches = await session.execute(
             select(UploadBatch)
@@ -104,7 +137,7 @@ async def _cleanup_expired_images() -> None:
                 UploadBatch.items.any(UploadBatchItem.status.in_(("registered", "abandoned"))),
             )
             .options(selectinload(UploadBatch.items))
-            .limit(20)
+            .limit(batch_size)
         )
         for batch in batches.scalars().unique():
             for item in batch.items:
@@ -120,6 +153,48 @@ async def _cleanup_expired_images() -> None:
             if batch.status == "registered":
                 batch.status = "expired"
         await session.commit()
+        return (
+            sum(item.purged_at == purged_at for item in items),
+            len(expired_job_ids),
+        )
+
+
+def _task_object_keys(item: ImageItem) -> list[str]:
+    keys = [
+        item.object_key,
+        item.thumbnail_object_key,
+        item.analysis_object_key,
+        build_redaction_base_object_key(item.job_id, item.id),
+        *[
+            build_enhancement_work_object_key(item.job_id, item.id, stage, extension)
+            for stage, extension in (
+                ("normalized", "jpg"),
+                ("watermark-mask", "png"),
+                ("watermark", "jpg"),
+                ("beautified", "jpg"),
+                ("state", "json"),
+            )
+        ],
+    ]
+    if item.result is not None:
+        keys.append(item.result.enhanced_object_key)
+    if item.ai_tag is not None:
+        keys.append(item.ai_tag.source_object_key)
+    return list(dict.fromkeys(object_key for object_key in keys if object_key))
+
+
+def _deletable_keys_by_item(
+    items: list[ImageItem],
+    protected_object_keys: set[str],
+) -> dict[str, set[str]]:
+    return {
+        item.id: {
+            object_key
+            for object_key in _task_object_keys(item)
+            if object_key not in protected_object_keys
+        }
+        for item in items
+    }
 
 
 @celery_app.task(name="maintenance.recover_stalled_images", queue="cleanup", max_retries=0)

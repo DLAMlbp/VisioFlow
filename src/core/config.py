@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     quality_exposure_clipping_penalty: float = 45.0
     quality_noise_penalty: float = 1.5
     profiles_directory: str = "profiles"
-    image_retention_days: int = 30
+    task_retention_hours: int = Field(default=24, ge=1, le=8760)
     redaction_models_directory: str = "models"
     redaction_onnx_threads: int = Field(default=1, ge=1, le=8)
 
@@ -118,6 +118,7 @@ class Settings(BaseSettings):
     library_only_tags_enabled: bool = True
     library_match_shadow_mode: bool = False
     cleanup_interval_seconds: int = 3600
+    cleanup_batch_size: int = Field(default=1000, ge=1, le=10000)
     pipeline_recovery_interval_seconds: int = Field(default=30, ge=5, le=60)
     pipeline_stale_seconds: int = Field(default=60, ge=30, le=60)
     pipeline_ai_timeout_seconds: int = Field(default=300, ge=90, le=600)

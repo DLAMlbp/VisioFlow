@@ -1,3 +1,4 @@
+import asyncio
 from abc import ABC, abstractmethod
 
 
@@ -20,6 +21,19 @@ class StorageProvider(ABC):
     @abstractmethod
     async def delete(self, object_key: str) -> None:
         pass
+
+    async def delete_many(self, object_keys: list[str]) -> set[str]:
+        """Delete object keys and return the keys that could not be removed."""
+        unique_keys = list(dict.fromkeys(object_keys))
+        results = await asyncio.gather(
+            *(self.delete(object_key) for object_key in unique_keys),
+            return_exceptions=True,
+        )
+        return {
+            object_key
+            for object_key, result in zip(unique_keys, results, strict=True)
+            if isinstance(result, BaseException)
+        }
 
     @abstractmethod
     async def presign_upload(

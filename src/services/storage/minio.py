@@ -79,6 +79,24 @@ class MinIOStorageProvider(StorageProvider):
             Key=object_key,
         )
 
+    async def delete_many(self, object_keys: list[str]) -> set[str]:
+        unique_keys = list(dict.fromkeys(object_keys))
+        for object_key in unique_keys:
+            validate_object_key(object_key)
+
+        failed: set[str] = set()
+        for offset in range(0, len(unique_keys), 1000):
+            chunk = unique_keys[offset : offset + 1000]
+            response = await asyncio.to_thread(
+                self.client.delete_objects,
+                Bucket=self.settings.s3_bucket,
+                Delete={"Objects": [{"Key": object_key} for object_key in chunk], "Quiet": True},
+            )
+            failed.update(
+                str(error["Key"]) for error in response.get("Errors", []) if error.get("Key")
+            )
+        return failed
+
     async def presign_upload(
         self,
         object_key: str,

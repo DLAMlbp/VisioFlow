@@ -53,7 +53,8 @@ def test_batch_pipeline_defaults_are_server_ready() -> None:
 
     assert settings.max_images_per_job == 500
     assert settings.job_dispatch_chunk_size == 25
-    assert settings.image_retention_days == 30
+    assert settings.task_retention_hours == 24
+    assert settings.cleanup_batch_size == 1000
     assert settings.inference_device == "auto"
 
 
