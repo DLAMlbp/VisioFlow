@@ -6,6 +6,211 @@
 
 面向装修图片的统一过滤标准、统一美化与素材库相似匹配服务。
 
+## 客户生产部署（Docker Compose）
+
+> 完整说明见 [`docs/客户服务器部署与更新操作手册.md`](docs/客户服务器部署与更新操作手册.md)，生产发布、备份与恢复规则见 [`docs/production-runbook.md`](docs/production-runbook.md)。
+
+生产服务器只负责拉取版本化镜像、运行容器、健康检查和回滚，**不要在服务器执行 `docker build`、`npm run build` 或其他源码构建命令，也不要使用 `latest` 镜像**。当前 GitLab 项目保存源码和部署配置；`docker-compose.prod.yml` 默认从 GHCR 拉取已由 CI 构建的生产镜像。
+
+### 1. 部署前准备
+
+- 推荐 Ubuntu Server 22.04/24.04、x86_64、Docker Engine 和 Docker Compose v2。
+- 推荐 12 核 CPU、24–32 GiB 内存和至少 100 GiB SSD；低于 16 GiB 内存必须先压测。
+- 准备 GitLab 只读代码权限；私有 GHCR 镜像还需准备仅有 `read:packages` 权限的读取令牌。
+- 准备 Web/API 域名、文件访问域名、AI 服务密钥和客户回调域名。
+
+在运维工作站取得待发布版本。`FULL_GIT_SHA` 必须替换成已经通过 CI 的完整 40 位提交 SHA：
+
+```bash
+git clone git@code.fengjiangit.com:aicode/visioflow.git
+cd visioflow
+git fetch origin --tags
+git checkout --detach FULL_GIT_SHA
+git rev-parse HEAD
+```
+
+把生产 Compose 和环境变量模板复制到服务器：
+
+```bash
+scp docker-compose.prod.yml .env.production.example \
+  ADMIN_USER@CUSTOMER_SERVER:/tmp/
+```
+
+### 2. 首次部署
+
+登录服务器并安装部署文件：
+
+```bash
+ssh ADMIN_USER@CUSTOMER_SERVER
+sudo -i
+umask 077
+install -d -o root -g root -m 750 /opt/image-intelligence
+install -o root -g root -m 640 \
+  /tmp/docker-compose.prod.yml \
+  /opt/image-intelligence/docker-compose.prod.yml
+install -o root -g root -m 600 \
+  /tmp/.env.production.example \
+  /opt/image-intelligence/.env.production
+cd /opt/image-intelligence
+```
+
+为每个密码或密钥分别生成随机值，并立即保存到客户的密码管理系统：
+
+```bash
+openssl rand -hex 32
+```
+
+编辑生产配置：
+
+```bash
+sudoedit /opt/image-intelligence/.env.production
+```
+
+至少替换模板中的域名、IP、数据库/MinIO 密码以及以下密钥，不能保留空值或示例值：
+
+```dotenv
+API_KEY=独立随机值
+INTEGRATION_API_KEY=独立随机值
+AI_TAGGING_API_KEY=AI服务密钥
+AI_CONFIG_ENCRYPTION_KEY=独立随机值
+CALLBACK_SIGNING_SECRET=独立随机值
+POSTGRES_PASSWORD=独立随机值
+MINIO_ROOT_PASSWORD=独立随机值
+S3_SECRET_KEY=与MINIO_ROOT_PASSWORD一致
+```
+
+所有应用组件必须指向同一个已经通过 CI 的版本；把 `FULL_GIT_SHA` 替换为真实完整 SHA：
+
+```dotenv
+API_IMAGE=ghcr.io/zuixi01/tuxiangshibie-api:FULL_GIT_SHA
+API_GATEWAY_IMAGE=ghcr.io/zuixi01/tuxiangshibie-api:FULL_GIT_SHA
+CLASSIFICATION_IMAGE=ghcr.io/zuixi01/tuxiangshibie-api:FULL_GIT_SHA
+RENDER_IMAGE=ghcr.io/zuixi01/tuxiangshibie-api:FULL_GIT_SHA
+WEB_IMAGE=ghcr.io/zuixi01/tuxiangshibie-web:FULL_GIT_SHA
+```
+
+以下生产工作流开关必须全部为 `true`：
+
+```dotenv
+COMPLETION_ROUTING_ENABLED=true
+BATCH_FILTER_BARRIER_ENABLED=true
+POST_FILTER_BEAUTIFY_PLAN_ENABLED=true
+COMBINED_CLASSIFY_FILTER_ENABLED=true
+EARLY_SEMANTIC_BRANCH_ENABLED=true
+LIBRARY_IMAGE_ONLY_MATCHING_ENABLED=true
+LIBRARY_ONLY_TAGS_ENABLED=true
+```
+
+如果 GHCR 镜像为私有包，使用只读令牌登录；令牌不要写进 README、`.env.production` 或命令历史：
+
+```bash
+read -s GHCR_TOKEN
+printf '%s' "$GHCR_TOKEN" | docker login ghcr.io \
+  -u GITHUB_USER --password-stdin
+unset GHCR_TOKEN
+```
+
+### 3. 发布前安全检查
+
+每次首次部署、更新或回滚前都执行：
+
+```bash
+cd /opt/image-intelligence
+uptime
+free -h
+swapon --show
+df -h
+df -ih
+docker system df
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml ps --all
+```
+
+出现下列任一情况时停止发布并先排障：磁盘或 inode 使用率达到 85%；可用磁盘不足 10 GiB 或文件系统容量的 20%；可用内存不足 2 GiB 或总内存的 25%；最近 5 分钟负载高于 CPU 核心数；已有构建、备份、迁移任务运行；系统出现 OOM 或磁盘错误。不要直接执行 `docker system prune`。
+
+### 4. 启动与验证
+
+先校验配置，再拉取和启动指定版本镜像：
+
+```bash
+cd /opt/image-intelligence
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml config --quiet
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml pull
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml up -d --remove-orphans
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml ps --all
+```
+
+验证服务和实际运行镜像：
+
+```bash
+curl --fail --silent http://127.0.0.1:8088/health/ready
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml images
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml logs --since 10m --tail 200 \
+  api worker-control worker-callback
+```
+
+`/health/ready` 必须返回 `ready`，其中数据库迁移、Redis、对象存储和关键配置均应为 `ok`。随后用少量测试图片完成一次端到端任务，不要直接放入生产全量流量。
+
+### 5. 更新到新版本
+
+先在运维工作站检出新的、已经通过 CI 的提交，并重新上传生产 Compose：
+
+```bash
+git fetch origin --tags
+git checkout --detach NEW_FULL_GIT_SHA
+git rev-parse HEAD
+scp docker-compose.prod.yml \
+  ADMIN_USER@CUSTOMER_SERVER:/tmp/docker-compose.prod.yml
+```
+
+服务器先保存当前可回滚配置，再安装新版 Compose：
+
+```bash
+sudo -i
+cd /opt/image-intelligence
+DEPLOY_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+install -d -o root -g root -m 700 ".deployments/$DEPLOY_ID"
+cp --preserve=mode,ownership .env.production \
+  ".deployments/$DEPLOY_ID/.env.production"
+cp --preserve=mode,ownership docker-compose.prod.yml \
+  ".deployments/$DEPLOY_ID/docker-compose.prod.yml"
+install -o root -g root -m 640 \
+  /tmp/docker-compose.prod.yml docker-compose.prod.yml
+echo "回滚快照：$DEPLOY_ID"
+```
+
+编辑 `.env.production`，把 `API_IMAGE`、`API_GATEWAY_IMAGE`、`CLASSIFICATION_IMAGE`、`RENDER_IMAGE` 和 `WEB_IMAGE` 全部更新为同一个 `NEW_FULL_GIT_SHA`，然后依次执行“发布前安全检查”和“启动与验证”中的命令。
+
+### 6. 回滚
+
+如果健康检查或端到端验证失败，停止继续发布，不在服务器修改代码或重新构建。使用上一步输出的快照编号回滚：
+
+```bash
+sudo -i
+cd /opt/image-intelligence
+PREVIOUS_DEPLOY_ID=替换为回滚快照编号
+cp --preserve=mode,ownership \
+  ".deployments/$PREVIOUS_DEPLOY_ID/.env.production" .env.production
+cp --preserve=mode,ownership \
+  ".deployments/$PREVIOUS_DEPLOY_ID/docker-compose.prod.yml" \
+  docker-compose.prod.yml
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml pull
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml up -d --remove-orphans
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml ps --all
+curl --fail --silent http://127.0.0.1:8088/health/ready
+```
+
+数据库迁移默认只允许向前兼容。不要在自动回滚中运行 `alembic downgrade`；确需数据库降级时必须先评估数据损失并单独审批。
+
 ## 已实现接口
 
 ```text
