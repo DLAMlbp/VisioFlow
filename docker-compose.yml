@@ -143,7 +143,7 @@ services:
     restart: "no"
 
   postgres:
-    image: pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+    image: harbor.dangjia.com/base/pgvector:0.8.1-pg16-trixie
     restart: unless-stopped
     environment:
       POSTGRES_USER: user
@@ -158,7 +158,7 @@ services:
       retries: 5
 
   redis:
-    image: redis@sha256:71da9275c5f3fcb97d0fa0c8c5b36cc995327265420f17a04bfd544f458059f7
+    image: harbor.dangjia.com/base/redis:7.4.5-alpine
     command: redis-server --appendonly yes --appendfsync everysec
     restart: unless-stopped
     healthcheck:
@@ -170,7 +170,7 @@ services:
       - redis-data:/data
 
   minio:
-    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    image: harbor.dangjia.com/base/minio:RELEASE.2025-04-22T22-12-26Z
     command: server /data --console-address ":9001"
     restart: unless-stopped
     environment:
@@ -188,7 +188,7 @@ services:
       retries: 12
 
   minio-init:
-    image: minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    image: harbor.dangjia.com/base/mc:RELEASE.2025-04-16T18-13-26Z
     depends_on:
       - minio
     entrypoint: >
