@@ -106,6 +106,7 @@ services:
     <<: *worker
     image: ${CLASSIFICATION_IMAGE:-${API_IMAGE:?API_IMAGE must be a versioned image reference}}
     command: celery -A src.workers.celery_app worker -Q classification,filtering -l info --concurrency=4 --without-mingle --without-gossip
+    stop_grace_period: 360s
     environment:
       WORKER_ROLE: classification
     mem_limit: 1280m
@@ -145,7 +146,9 @@ services:
 
   worker-render:
     <<: *worker
+    image: ${RENDER_IMAGE:-${API_IMAGE:?API_IMAGE must be a versioned image reference}}
     command: celery -A src.workers.celery_app worker -Q render -l info --concurrency=1 --max-tasks-per-child=3 --without-mingle --without-gossip
+    stop_grace_period: 360s
     environment:
       WORKER_ROLE: render
     mem_limit: 3072m

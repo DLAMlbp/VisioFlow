@@ -755,7 +755,7 @@ class ImageJobRepository:
             return False
         await self._upsert_result(
             item.id,
-            {"decision": "failed", "reasons_json": [error_message]},
+            {"decision": "failed", "final_score": None, "reasons_json": [error_message]},
         )
         item.status = "failed"
         item.completion_status = "failed"
@@ -1156,6 +1156,7 @@ class ImageJobRepository:
             item.id,
             {
                 "decision": "rejected",
+                "final_score": None,
                 "reject_codes_json": reject_codes,
                 "reasons_json": [reason or "未通过图片处理标准"],
             },
@@ -1293,7 +1294,7 @@ class ImageJobRepository:
 
         await self._upsert_result(
             item.id,
-            {"decision": "failed", "reasons_json": [safe_reason]},
+            {"decision": "failed", "final_score": None, "reasons_json": [safe_reason]},
         )
         progressed = await self.session.execute(
             update(ImageJob)
@@ -1387,7 +1388,7 @@ class ImageJobRepository:
             )
             await self._upsert_result(
                 image_id,
-                {"decision": "failed", "reasons_json": [safe_reason]},
+                {"decision": "failed", "final_score": None, "reasons_json": [safe_reason]},
             )
         await self.session.execute(
             update(ImageItem)
@@ -1497,6 +1498,7 @@ class ImageJobRepository:
         enhanced_object_key: str,
         analysis_object_key: str,
         enhanced_metrics: Mapping[str, float],
+        final_score: float,
         reasons: list[str],
         enhancement_audit: Mapping[str, object] | None = None,
     ) -> bool:
@@ -1524,6 +1526,7 @@ class ImageJobRepository:
             item.id,
             {
                 "decision": "enhanced",
+                "final_score": final_score,
                 "enhanced_object_key": enhanced_object_key,
                 "enhanced_metrics_json": dict(enhanced_metrics),
                 "enhancement_audit_json": (

@@ -12,6 +12,7 @@ from src.core.metrics import emit_metric
 from src.db.session import AsyncSessionLocal
 from src.repositories.jobs import ImageJobRepository
 from src.services.ai_model_config import load_ai_model_settings
+from src.services.images.cover_score import cover_score_from_processing
 from src.services.images.enhancement_pipeline import (
     decode_pipeline_state,
     pipeline_state_object_key,
@@ -239,11 +240,24 @@ async def _render_image(image_id: str) -> None:
             "contrast": enhanced_metrics.contrast_score,
             "noise": enhanced_metrics.noise_score,
         }
+        enhanced_technical_score = QualityEngine.calculate_weighted_quality_score(
+            sharpness=enhanced_metrics.sharpness_score,
+            exposure=enhanced_metrics.exposure_score,
+            contrast=enhanced_metrics.contrast_score,
+            noise=enhanced_metrics.noise_score,
+        )
+        previous_score = float(item.result.final_score or 0) if item.result else 0.0
+        final_score = cover_score_from_processing(
+            item.ai_processing_json,
+            technical_score=enhanced_technical_score,
+            legacy_fallback_score=previous_score,
+        )
         saved = await repository.complete_enhancement(
             item,
             enhanced_object_key=enhanced_object_key,
             analysis_object_key=analysis_object_key,
             enhanced_metrics=enhanced_metric_values,
+            final_score=final_score,
             reasons=reasons,
             enhancement_audit=enhancement_audit,
         )
@@ -264,7 +278,7 @@ async def _render_image(image_id: str) -> None:
             await repository.select_item(
                 item,
                 enhanced_object_key,
-                float(item.result.final_score or 0) if item.result else 0,
+                final_score,
                 reasons=[*reasons, "已跳过素材相似匹配"],
                 enhanced_metrics=enhanced_metric_values,
             )
@@ -287,7 +301,7 @@ async def _render_image(image_id: str) -> None:
             return
         if await repository.start_tagging(
             item,
-            final_score=float(item.result.final_score or 0) if item.result else 0,
+            final_score=final_score,
             reasons=reasons,
             enhanced_object_key=enhanced_object_key,
             enhanced_metrics=enhanced_metric_values,

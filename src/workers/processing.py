@@ -9,6 +9,7 @@ from src.db.session import AsyncSessionLocal
 from src.repositories.jobs import ImageJobRepository
 from src.services.ai_model_config import load_ai_model_settings
 from src.services.images.hard_filter import RejectCode
+from src.services.images.cover_score import COVER_SCORE_VERSION, calculate_cover_score
 from src.services.images.processing_vision import (
     PROCESSING_PROMPT_VERSION,
     ProcessingVisionService,
@@ -103,13 +104,15 @@ async def _apply_routed_processing(image_id: str) -> None:
             await _advance_after_preprocess(repository, item)
             return
 
+        processing_payload = outcome.payload.model_dump(mode="json")
+        processing_payload["cover_score_version"] = COVER_SCORE_VERSION
         await repository.save_ai_processing(
             item,
             status="completed",
             model_name=settings.ai_tagging_model,
             prompt_version=PROCESSING_PROMPT_VERSION,
             duration_ms=outcome.duration_ms,
-            payload=outcome.payload.model_dump(mode="json"),
+            payload=processing_payload,
             diagnostic_json=outcome.diagnostic_json,
             error_message=None,
         )
@@ -139,7 +142,10 @@ async def _apply_routed_processing(image_id: str) -> None:
             await _advance_after_preprocess(repository, item)
             return
 
-        final_score = _quality_score(item)
+        final_score = calculate_cover_score(
+            outcome.payload.cover_assessment,
+            technical_score=_quality_score(item),
+        )
         completion_reason = _completion_reason(item.completion_json)
         await repository.complete_filter(
             item,

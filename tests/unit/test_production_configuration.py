@@ -68,3 +68,5 @@ def test_production_enhancement_workers_have_isolated_resource_budgets() -> None
     assert services["worker-render"]["mem_limit"] == "3072m"
     assert "--concurrency=1" in services["worker-render"]["command"]
     assert "--max-tasks-per-child=3" in services["worker-render"]["command"]
+    assert services["worker-classification"]["stop_grace_period"] == "360s"
+    assert services["worker-render"]["stop_grace_period"] == "360s"

@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.services.images.cover_score import CoverAssessment
 from src.services.images.processing_vision import (
     ActivationEvaluation,
     FilterDecision,
@@ -47,6 +48,14 @@ async def test_combined_call_persists_classification_and_filter_atomically(
     standards = [_standard("std_finished"), _standard("std_fallback", fallback=True)]
     selected = standards[0]
     payload = ProcessingVisionPayload(
+        cover_assessment=CoverAssessment(
+            scene_completeness=5,
+            composition=5,
+            visual_appeal=5,
+            representativeness=5,
+            hard_fail=False,
+            risk_codes=[],
+        ),
         standard_selection=StandardSelection(
             evaluations=[
                 ActivationEvaluation(
@@ -128,6 +137,8 @@ async def test_combined_call_persists_classification_and_filter_atomically(
     assert repository.saved["routed_filter_profile_version"] == selected.version
     assert repository.saved["completion_payload"]["normalized"]["selected_standard_id"] == selected.id
     assert repository.saved["processing_payload"]["filter"]["decision"] == decision
+    assert repository.saved["processing_payload"]["cover_score_version"] == "cover_score_v1"
+    assert repository.saved["final_score"] == 75.0
     assert advanced == ["img_test"]
 
 

@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from src.core.config import Settings
+from src.services.images.cover_score import CoverAssessment
 from src.services.images.tagging import (
     TagPayload,
     _chat_completions_url,
@@ -26,7 +27,7 @@ from src.services.images.tagging import (
 from src.services.images.vision_rate_limit import run_vision_request
 from src.services.profiles import ProcessingStandard, RedactionProfile
 
-PROCESSING_PROMPT_VERSION = "indexed_paired_filter_redaction_v15"
+PROCESSING_PROMPT_VERSION = "indexed_paired_filter_redaction_cover_v16"
 logger = logging.getLogger(__name__)
 
 _DIAGNOSTIC_CONTENT_LIMIT = 2000
@@ -167,6 +168,7 @@ class ProcessingVisionPayload(BaseModel):
     standard_selection: StandardSelection | None = None
     filter: FilterDecision
     redaction_analysis: RedactionAssessment | None = None
+    cover_assessment: CoverAssessment
 
 
 class CandidateProcessingVisionPayload(BaseModel):
@@ -177,6 +179,7 @@ class CandidateProcessingVisionPayload(BaseModel):
     standard_selection: CandidateStandardSelection
     filter: FilterDecision
     redaction_analysis: RedactionAssessment | None = None
+    cover_assessment: CoverAssessment
 
 
 @dataclass(frozen=True)
@@ -636,6 +639,7 @@ def _parse_processing_content(
         standard_selection=selection,
         filter=wire_payload.filter,
         redaction_analysis=wire_payload.redaction_analysis,
+        cover_assessment=wire_payload.cover_assessment,
     )
 
 
@@ -941,6 +945,12 @@ def _user_prompt(
     "reason":"唯一分类的可见依据"
   }"""
     )
+    cover_instruction = """首图评价必须相对当前命中的分类独立完成，不能用技术清晰度代替展示价值。
+scene_completeness：主体或空间是否完整、裁切是否自然；composition：视角、平衡、层次和透视；
+visual_appeal：整洁度、光线、色彩和第一眼观感；representativeness：是否足以代表当前分类和项目。
+四项只允许 0 到 5 的整数。3=普通可用，4=明显优秀，5=无可见短板且可直接作为首图；
+无法被常规美化修复的严重裁切、遮挡、透视、杂乱或缺乏代表性必须 hard_fail=true。
+5 分必须极其克制；只要存在一项可见不足，该项就不得返回 5。risk_codes 只返回可见问题，可为空。"""
     return f"""请只根据图片可见内容完成一次分析。
 
 {standard_title}：
@@ -958,6 +968,7 @@ def _user_prompt(
 reject 时，filter.reason 必须只概括 passed=false 的维度、对应可见证据及当前标准边界；
 不得用清晰度、曝光等已通过项目掩盖真正的拒绝原因。
 pass 时，filter.reason 应概括最关键的通过证据。
+{cover_instruction}
 {repair_instruction}
 返回以下 JSON，禁止返回美化参数、内容分析或标签字段：
 {{
@@ -969,6 +980,14 @@ pass 时，filter.reason 应概括最关键的通过证据。
     "dimensions":[
       {{"dimension":"审核维度名称", "passed":true, "reason":"该维度的可见判断依据"}}
     ]
+  }},
+  "cover_assessment": {{
+    "scene_completeness":0,
+    "composition":0,
+    "visual_appeal":0,
+    "representativeness":0,
+    "hard_fail":false,
+    "risk_codes":[]
   }},
   "redaction_analysis": {{
     "left_bottom_watermark_detected":false,
@@ -993,4 +1012,5 @@ _SYSTEM_PROMPT = """你是图片过滤审核助手，只输出合法 JSON。
 过滤决定只能是 pass 或 reject。reason 必须准确说明图片与当前过滤要求的关系。
 reject 的整体 reason 必须直接对应失败维度，不得把已通过项目写成主要结论。
 必须逐项返回命中过滤标准的审核维度；任一维度不合格时整体必须 reject。
+必须按严格首图标准返回简洁的 cover_assessment，5 分只用于无可见短板的直接可用首图。
 不得返回美化参数、内容分析、标签、分类或候选标签。"""

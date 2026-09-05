@@ -13,6 +13,7 @@ from src.services.images.beautify_planning import (
     beautify_plan_from_json,
     build_stored_plan,
 )
+from src.services.images.cover_score import CoverAssessment
 from src.services.images.processing_vision import (
     ActivationEvaluation,
     FilterDecision,
@@ -44,6 +45,23 @@ def _filter_payload(*, decision: str = "pass") -> dict[str, object]:
         "dimensions": [{"dimension": "画面清晰度", "passed": decision == "pass", "reason": "主体可辨认"}]}}
 
 
+def _cover_payload() -> dict[str, object]:
+    return {
+        "cover_assessment": {
+            "scene_completeness": 5,
+            "composition": 5,
+            "visual_appeal": 5,
+            "representativeness": 5,
+            "hard_fail": False,
+            "risk_codes": [],
+        }
+    }
+
+
+def _cover_assessment() -> CoverAssessment:
+    return CoverAssessment.model_validate(_cover_payload()["cover_assessment"])
+
+
 def _beautify_payload(*, brightness: float = 1.05) -> dict[str, object]:
     return {
         "needed": True, "reason": "画面略暗", "confidence": 0.91,
@@ -64,7 +82,9 @@ def _beautify_payload(*, brightness: float = 1.05) -> dict[str, object]:
 async def test_filter_response_is_independent(monkeypatch: pytest.MonkeyPatch) -> None:
     service = ProcessingVisionService(Settings(ai_tagging_enabled=True, ai_tagging_api_key="test-key"))
     monkeypatch.setattr(service, "_request", lambda *_args: {
-        "choices": [{"message": {"content": json.dumps(_filter_payload(), ensure_ascii=False)}}]})
+        "choices": [{"message": {"content": json.dumps(
+            {**_filter_payload(), **_cover_payload()}, ensure_ascii=False
+        )}}]})
     outcome = await service.analyze(b"image", filter_instruction="只保留施工现场")
     assert outcome.status == "completed"
     assert outcome.payload.filter.decision == "pass"
@@ -73,12 +93,38 @@ async def test_filter_response_is_independent(monkeypatch: pytest.MonkeyPatch) -
 @pytest.mark.asyncio
 async def test_filter_response_rejects_content_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     service = ProcessingVisionService(Settings(ai_tagging_enabled=True, ai_tagging_api_key="test-key"))
-    payload = {**_filter_payload(), "content": {"tags": ["模型标签"]}}
+    payload = {**_filter_payload(), **_cover_payload(), "content": {"tags": ["模型标签"]}}
     monkeypatch.setattr(service, "_request", lambda *_args: {
         "choices": [{"message": {"content": json.dumps(payload, ensure_ascii=False)}}]})
     outcome = await service.analyze(b"image", filter_instruction="保留有效图片")
     assert outcome.status == "failed"
     assert "content" in outcome.error_message
+
+
+@pytest.mark.asyncio
+async def test_filter_response_requires_cover_assessment(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = ProcessingVisionService(
+        Settings(
+            ai_tagging_enabled=True,
+            ai_tagging_api_key="test-key",
+            ai_processing_schema_max_retries=0,
+        )
+    )
+    monkeypatch.setattr(
+        service,
+        "_request",
+        lambda *_args: {
+            "choices": [
+                {"message": {"content": json.dumps(_filter_payload(), ensure_ascii=False)}}
+            ]
+        },
+    )
+
+    outcome = await service.analyze(b"image", filter_instruction="保留有效图片")
+
+    assert outcome.status == "failed"
+    assert outcome.payload is None
+    assert "cover_assessment" in outcome.error_message
 
 
 def test_routed_filter_strict_schema_requires_complete_contract() -> None:
@@ -93,6 +139,7 @@ def test_routed_filter_strict_schema_requires_complete_contract() -> None:
         "standard_selection",
         "filter",
         "redaction_analysis",
+        "cover_assessment",
     }
     for definition in schema["$defs"].values():
         if "properties" in definition:
@@ -170,6 +217,7 @@ def test_indexed_batch_responses_map_to_real_ids_without_shared_state() -> None:
                     "confidence": 0.95,
                 },
                 **_filter_payload(),
+                **_cover_payload(),
                 "redaction_analysis": None,
             },
             ensure_ascii=False,
@@ -218,6 +266,7 @@ async def test_out_of_range_candidate_fails_once_without_retry(
                                     "confidence": 0.9,
                                 },
                                 **_filter_payload(),
+                                **_cover_payload(),
                                 "redaction_analysis": None,
                             },
                             ensure_ascii=False,
@@ -297,6 +346,7 @@ def test_selection_safely_completes_only_an_omitted_fallback() -> None:
         is_fallback=True,
     )
     payload = ProcessingVisionPayload(
+        cover_assessment=_cover_assessment(),
         standard_selection=StandardSelection(
             evaluations=[
                 ActivationEvaluation(
@@ -340,6 +390,7 @@ def test_selection_completes_an_omitted_nonselected_business_category() -> None:
         )
     ]
     payload = ProcessingVisionPayload(
+        cover_assessment=_cover_assessment(),
         standard_selection=StandardSelection(
             evaluations=[
                 ActivationEvaluation(
@@ -390,6 +441,7 @@ def test_selection_uses_explicit_selected_id_to_resolve_redundant_matches() -> N
         )
     ]
     payload = ProcessingVisionPayload(
+        cover_assessment=_cover_assessment(),
         standard_selection=StandardSelection(
             evaluations=[
                 ActivationEvaluation(
@@ -445,6 +497,7 @@ def test_selection_rebuilds_incomplete_evaluations_from_valid_selected_id() -> N
         )
     ]
     payload = ProcessingVisionPayload(
+        cover_assessment=_cover_assessment(),
         standard_selection=StandardSelection(
             evaluations=[
                 ActivationEvaluation(

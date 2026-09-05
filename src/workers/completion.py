@@ -16,6 +16,7 @@ from src.services.images.completion import (
     COMPLETION_PROMPT_VERSION,
     CompletionVisionService,
 )
+from src.services.images.cover_score import COVER_SCORE_VERSION, calculate_cover_score
 from src.services.images.hard_filter import RejectCode
 from src.services.images.processing_vision import (
     PROCESSING_PROMPT_VERSION,
@@ -455,6 +456,12 @@ async def _classify_and_filter_standard(
             "reason": selection.reason,
         }
     }
+    processing_payload = outcome.payload.model_dump(mode="json")
+    processing_payload["cover_score_version"] = COVER_SCORE_VERSION
+    cover_score = calculate_cover_score(
+        outcome.payload.cover_assessment,
+        technical_score=_quality_score(item),
+    )
     saved = await repository.complete_combined_classification_filter(
         item,
         model_name=settings.ai_tagging_model,
@@ -462,7 +469,7 @@ async def _classify_and_filter_standard(
         processing_prompt_version=PROCESSING_PROMPT_VERSION,
         duration_ms=outcome.duration_ms,
         completion_payload=completion_payload,
-        processing_payload=outcome.payload.model_dump(mode="json"),
+        processing_payload=processing_payload,
         diagnostic_json=outcome.diagnostic_json,
         routed_filter_profile_id=routed_id,
         routed_filter_profile_version=routed_version,
@@ -473,7 +480,7 @@ async def _classify_and_filter_standard(
             or ground_film.review_required
         ),
         passed=passed,
-        final_score=_quality_score(item),
+        final_score=cover_score,
         reasons=reasons,
         reject_codes=(
             []

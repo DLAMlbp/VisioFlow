@@ -112,6 +112,7 @@ restore_app() {
 set_env_value API_IMAGE "$new_api"
 set_env_value API_GATEWAY_IMAGE "$new_api"
 set_env_value CLASSIFICATION_IMAGE "$new_api"
+set_env_value RENDER_IMAGE "$new_api"
 set_env_value PIPELINE_AI_TIMEOUT_SECONDS "300"
 set_env_value PIPELINE_INPAINT_TIMEOUT_SECONDS "180"
 set_env_value PIPELINE_JOB_TIMEOUT_PER_IMAGE_SECONDS "30"

@@ -405,6 +405,7 @@ if [[ "$api_image" != "-" ]]; then
   set_env_value API_IMAGE "$api_image"
   set_env_value API_GATEWAY_IMAGE "$api_image"
   set_env_value CLASSIFICATION_IMAGE "$api_image"
+  set_env_value RENDER_IMAGE "$api_image"
   set_env_value PIPELINE_AI_TIMEOUT_SECONDS "300"
   set_env_value PIPELINE_INPAINT_TIMEOUT_SECONDS "180"
   set_env_value PIPELINE_JOB_TIMEOUT_PER_IMAGE_SECONDS "30"
@@ -643,12 +644,14 @@ try {
             API_IMAGE = $env:API_IMAGE
             API_GATEWAY_IMAGE = $env:API_GATEWAY_IMAGE
             CLASSIFICATION_IMAGE = $env:CLASSIFICATION_IMAGE
+            RENDER_IMAGE = $env:RENDER_IMAGE
             WEB_IMAGE = $env:WEB_IMAGE
         }
         try {
             $env:API_IMAGE = $apiPinnedImage
             $env:API_GATEWAY_IMAGE = $apiPinnedImage
             $env:CLASSIFICATION_IMAGE = $apiPinnedImage
+            $env:RENDER_IMAGE = $apiPinnedImage
             $env:WEB_IMAGE = if ($deployWeb) {
                 $webPinnedImage
             }

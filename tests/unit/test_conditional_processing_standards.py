@@ -38,6 +38,14 @@ def _payload(selected_candidate_index: int) -> dict[str, object]:
                 {"dimension": "清晰度", "passed": True, "reason": "主体边缘清晰"}
             ],
         },
+        "cover_assessment": {
+            "scene_completeness": 5,
+            "composition": 5,
+            "visual_appeal": 5,
+            "representativeness": 5,
+            "hard_fail": False,
+            "risk_codes": [],
+        },
     }
 
 

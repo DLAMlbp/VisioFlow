@@ -126,6 +126,14 @@ async def test_routed_processing_executes_one_backend_selected_standard(
                 {"dimension": "清晰度", "passed": True, "reason": "主体清晰"}
             ],
         },
+        "cover_assessment": {
+            "scene_completeness": 5,
+            "composition": 5,
+            "visual_appeal": 5,
+            "representativeness": 5,
+            "hard_fail": False,
+            "risk_codes": [],
+        },
     }
     service = ProcessingVisionService(
         Settings(ai_tagging_enabled=True, ai_tagging_api_key="test")

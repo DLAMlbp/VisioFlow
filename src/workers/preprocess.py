@@ -11,6 +11,7 @@ from src.schemas.jobs import ImageItemStatus
 from src.services.ai_model_config import load_ai_model_settings
 from src.services.images.beautify import NaturalBeautifyService
 from src.services.images.beautify_planning import neutralize_beautify_profile
+from src.services.images.cover_score import COVER_SCORE_VERSION, calculate_cover_score
 from src.services.images.hard_filter import HardFilterService, RejectCode
 from src.services.images.metadata import (
     ImageMetadataError,
@@ -192,17 +193,20 @@ async def _preprocess_image_metadata(image_id: str) -> None:
             },
             redaction_profile=redaction_profile,
         )
+        processing_payload = (
+            ai_outcome.payload.model_dump(mode="json")
+            if ai_outcome.payload is not None
+            else None
+        )
+        if processing_payload is not None:
+            processing_payload["cover_score_version"] = COVER_SCORE_VERSION
         await repository.save_ai_processing(
             item,
             status=ai_outcome.status,
             model_name=settings.ai_tagging_model,
             prompt_version=PROCESSING_PROMPT_VERSION,
             duration_ms=ai_outcome.duration_ms,
-            payload=(
-                ai_outcome.payload.model_dump(mode="json")
-                if ai_outcome.payload is not None
-                else None
-            ),
+            payload=processing_payload,
             error_message=ai_outcome.error_message,
         )
         if ai_outcome.status != "completed" or ai_outcome.payload is None:
@@ -270,9 +274,13 @@ async def _preprocess_image_metadata(image_id: str) -> None:
         if job.filter_enabled:
             warnings.append(f"AI 筛选：{ai_outcome.payload.filter.reason}")
 
+        cover_score = calculate_cover_score(
+            ai_outcome.payload.cover_assessment,
+            technical_score=final_score,
+        )
         await repository.complete_filter(
             item,
-            final_score=final_score,
+            final_score=cover_score,
             reasons=warnings,
         )
         await _advance_after_preprocess(repository, item)
