@@ -1,0 +1,46 @@
+stages:
+  - publish
+
+# Requires a Docker executor runner with privileged Docker-in-Docker support.
+# Set masked HARBOR_USERNAME and HARBOR_PASSWORD in GitLab CI/CD variables.
+# No application API keys are needed for this job.
+publish-harbor-web:
+  stage: publish
+  image: docker:27.5.1-cli
+  services:
+    - name: docker:27.5.1-dind
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: /certs
+    DOCKER_TLS_VERIFY: '1'
+    DOCKER_CERT_PATH: /certs/client
+    WEB_RELEASE_TAG: v20260905
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+    - when: never
+  script:
+    - |
+      set -eu
+      : "${HARBOR_USERNAME:?Set the Harbor push username in CI/CD variables}"
+      : "${HARBOR_PASSWORD:?Set the masked Harbor push password in CI/CD variables}"
+      case "$WEB_RELEASE_TAG" in
+        ''|latest|*[!A-Za-z0-9_.-]*) echo 'Use a versioned WEB_RELEASE_TAG' >&2; exit 2 ;;
+      esac
+      export DOCKER_CONFIG="$(mktemp -d)"
+      trap 'rm -f "$DOCKER_CONFIG/config.json"; rmdir "$DOCKER_CONFIG" 2>/dev/null || true' EXIT
+      printf '%s' "$HARBOR_PASSWORD" | docker login harbor.dangjia.com --username "$HARBOR_USERNAME" --password-stdin
+      web_image="harbor.dangjia.com/base/visioflow-web:$WEB_RELEASE_TAG"
+      if docker manifest inspect "$web_image" >/dev/null 2>&1; then
+        echo 'This tag already exists. Choose a new WEB_RELEASE_TAG instead of overwriting it.' >&2
+        exit 3
+      fi
+      # Docker-in-Docker cannot bind-mount the job checkout; COPY supplies tests.
+      docker build --pull --target build -f frontend/Dockerfile -t visioflow-web-test:"$CI_COMMIT_SHA" frontend
+      docker run --rm visioflow-web-test:"$CI_COMMIT_SHA" npm test
+      docker build --pull --label "org.opencontainers.image.revision=$CI_COMMIT_SHA" -f frontend/Dockerfile -t "$web_image" frontend
+      docker run --rm --add-host api:127.0.0.1 -e API_KEY=validation-only "$web_image" nginx -t
+      docker push "$web_image"
+      docker manifest inspect "$web_image" >/dev/null
+      printf 'Published WEB_IMAGE=%s\n' "$web_image"

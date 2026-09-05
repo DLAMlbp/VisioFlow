@@ -1,5 +1,7 @@
 # Image Intelligence Service
 
+本次 Harbor 交付（后端 `visioflow:v20260905`）请先按 [Harbor 首次部署说明](docs/harbor-first-deployment.md) 发布独立前端镜像并配置环境。使用 `bash scripts/customer-compose.sh logs --tail 100` 可自动加载 `.env.production`。以下 GHCR 示例适用于原发布方式。
+
 公司服务端接入说明见 [`docs/company-api.md`](docs/company-api.md)。交付包中的所有 API Key 均为空，必须由部署方自行配置。
 
 生产发布、健康验证、回滚和备份要求见 [`docs/production-runbook.md`](docs/production-runbook.md)。
