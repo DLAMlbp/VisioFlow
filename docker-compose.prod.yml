@@ -212,7 +212,7 @@ services:
     cpus: 0.5
 
   postgres:
-    image: pgvector/pgvector:0.8.1-pg16
+    image: harbor.dangjia.com/base/pgvector:0.8.1-pg16
     env_file:
       - .env.production
     restart: unless-stopped
@@ -234,7 +234,7 @@ services:
         max-file: "5"
 
   redis:
-    image: redis:7.4.5-alpine
+    image: harbor.dangjia.com/base/redis:7.4.5-alpine
     command: redis-server --appendonly yes --appendfsync everysec
     restart: unless-stopped
     healthcheck:
@@ -255,7 +255,7 @@ services:
         max-file: "5"
 
   minio:
-    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    image: harbor.dangjia.com/base/minio:RELEASE.2025-04-22T22-12-26Z
     command: server /data
     env_file:
       - .env.production
@@ -280,7 +280,7 @@ services:
         max-file: "5"
 
   minio-init:
-    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    image: harbor.dangjia.com/base/mc:RELEASE.2025-04-16T18-13-26Z
     env_file:
       - .env.production
     depends_on:
