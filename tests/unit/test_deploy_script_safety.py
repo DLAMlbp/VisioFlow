@@ -57,6 +57,7 @@ def test_containerized_release_tests_mount_the_production_compose() -> None:
     assert '"${productionComposePath}:/app/docker-compose.prod.yml:ro"' in script
     assert '$dockerfilePath = Join-Path $repoRoot "Dockerfile"' in script
     assert '"${dockerfilePath}:/app/Dockerfile:ro"' in script
+    assert "psutil==7.0.0" in script
 
 
 def test_compose_is_validated_before_legacy_workers_are_stopped() -> None:

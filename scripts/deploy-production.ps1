@@ -592,7 +592,7 @@ try {
                         --volume "${scriptsPath}:/app/scripts:ro" `
                         --volume "${productionComposePath}:/app/docker-compose.prod.yml:ro" `
                         --volume "${dockerfilePath}:/app/Dockerfile:ro" `
-                        $apiImage sh -c "pip install --no-cache-dir pytest==8.4.2 pytest-asyncio==1.2.0 httpx==0.28.1 && python -m pytest -q"
+                        $apiImage sh -c "pip install --no-cache-dir pytest==8.4.2 pytest-asyncio==1.2.0 httpx==0.28.1 psutil==7.0.0 && python -m pytest -q"
                     Assert-ExitCode "Backend tests"
                 }
                 & docker push $apiImage
