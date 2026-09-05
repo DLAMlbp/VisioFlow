@@ -114,16 +114,9 @@ async def test_routed_processing_executes_one_backend_selected_standard(
     )
     response = {
         "standard_selection": {
-            "evaluations": [
-                {
-                    "standard_id": standard.id,
-                    "matched": True,
-                    "reason": "后端已路由",
-                    "confidence": 1,
-                }
-            ],
-            "selected_standard_id": standard.id,
+            "selected_candidate_index": 0,
             "reason": "执行唯一分支",
+            "confidence": 1,
         },
         "filter": {
             "decision": "pass",

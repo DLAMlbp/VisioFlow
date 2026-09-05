@@ -23,25 +23,12 @@ def _standard(standard_id: str, priority: int) -> ProcessingStandard:
     )
 
 
-def _payload(selected_standard_id: str | None) -> dict[str, object]:
+def _payload(selected_candidate_index: int) -> dict[str, object]:
     return {
         "standard_selection": {
-            "evaluations": [
-                {
-                    "standard_id": "std_high",
-                    "matched": True,
-                    "reason": "符合高优先级标准",
-                    "confidence": 0.96,
-                },
-                {
-                    "standard_id": "std_low",
-                    "matched": False,
-                    "reason": "不符合另一类标准",
-                    "confidence": 0.93,
-                },
-            ],
-            "selected_standard_id": selected_standard_id,
+            "selected_candidate_index": selected_candidate_index,
             "reason": "选择命中的最高优先级标准",
+            "confidence": 0.96,
         },
         "filter": {
             "decision": "pass",
@@ -86,7 +73,7 @@ async def test_ai_selection_accepts_one_matching_standard(
         "_request",
         lambda *_args: {
             "choices": [
-                {"message": {"content": json.dumps(_payload("std_high"), ensure_ascii=False)}}
+                {"message": {"content": json.dumps(_payload(0), ensure_ascii=False)}}
             ]
         },
     )
@@ -103,20 +90,19 @@ async def test_ai_selection_accepts_one_matching_standard(
 
 
 @pytest.mark.asyncio
-async def test_ai_selection_normalizes_multiple_matches_when_selection_is_explicit(
+async def test_ai_selection_maps_second_candidate_to_its_real_standard_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ProcessingVisionService(
         Settings(ai_tagging_enabled=True, ai_tagging_api_key="test-key")
     )
-    invalid_payload = _payload("std_low")
-    invalid_payload["standard_selection"]["evaluations"][1]["matched"] = True
+    payload = _payload(1)
     monkeypatch.setattr(
         service,
         "_request",
         lambda *_args: {
             "choices": [
-                {"message": {"content": json.dumps(invalid_payload, ensure_ascii=False)}}
+                {"message": {"content": json.dumps(payload, ensure_ascii=False)}}
             ]
         },
     )
@@ -196,15 +182,13 @@ def test_formal_job_cannot_disable_required_processing_stages() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ai_selection_rejects_zero_matching_standards(
+async def test_ai_selection_rejects_out_of_range_candidate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ProcessingVisionService(
         Settings(ai_tagging_enabled=True, ai_tagging_api_key="test-key")
     )
-    payload = _payload(None)
-    for evaluation in payload["standard_selection"]["evaluations"]:
-        evaluation["matched"] = False
+    payload = _payload(2)
     payload["filter"] = {
         "decision": "pass",
         "reason": "没有规则命中，按任务策略保留",
@@ -237,22 +221,9 @@ async def test_combined_selection_routes_zero_specific_matches_to_fallback(
 ) -> None:
     regular = _standard("std_regular", 100)
     fallback = _standard("std_fallback", 10).model_copy(update={"is_fallback": True})
-    payload = _payload(None)
-    payload["standard_selection"]["evaluations"] = [
-        {
-            "standard_id": regular.id,
-            "matched": False,
-            "reason": "没有明确命中",
-            "confidence": 0.82,
-        },
-        {
-            "standard_id": fallback.id,
-            "matched": False,
-            "reason": "使用兜底标准",
-            "confidence": 0.8,
-        },
-    ]
-    payload["standard_selection"]["selected_standard_id"] = fallback.id
+    payload = _payload(1)
+    payload["standard_selection"]["reason"] = "没有明确分类命中，使用兜底标准"
+    payload["standard_selection"]["confidence"] = 0.8
     service = ProcessingVisionService(
         Settings(ai_tagging_enabled=True, ai_tagging_api_key="test-key")
     )

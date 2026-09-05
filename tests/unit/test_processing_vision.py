@@ -20,7 +20,9 @@ from src.services.images.processing_vision import (
     ProcessingVisionService,
     StandardSelection,
     _normalize_standard_selection,
+    _parse_processing_content,
     _strict_processing_response_format,
+    _user_prompt,
     compatibility_route_label,
     content_from_processing_json,
     precise_filter_reason,
@@ -96,6 +98,184 @@ def test_routed_filter_strict_schema_requires_complete_contract() -> None:
         if "properties" in definition:
             assert definition["additionalProperties"] is False
             assert set(definition["required"]) == set(definition["properties"])
+
+
+def test_indexed_schema_limits_selection_to_current_candidate_range() -> None:
+    response_format = _strict_processing_response_format(candidate_count=11)
+    schema = response_format["json_schema"]["schema"]
+    index_schema = schema["$defs"]["CandidateStandardSelection"]["properties"][
+        "selected_candidate_index"
+    ]
+
+    assert response_format["json_schema"]["name"] == "indexed_routed_filter_response"
+    assert index_schema["type"] == "integer"
+    assert index_schema["minimum"] == 0
+    assert index_schema["maximum"] == 10
+    assert index_schema["enum"] == list(range(11))
+    assert "standard_id" not in json.dumps(schema)
+
+
+def test_indexed_prompt_does_not_expose_business_standard_ids() -> None:
+    standards = [
+        ProcessingStandard(
+            id="std_private_finished_uuid",
+            name="完工图",
+            version=1,
+            description="完工图",
+            classification_rule="硬装已经完成",
+            filter_rule="审核清晰度",
+        ),
+        ProcessingStandard(
+            id="std_private_fallback_uuid",
+            name="其他装修图",
+            version=1,
+            description="其他装修图",
+            classification_rule="其他装修场景",
+            filter_rule="审核清晰度",
+            is_fallback=True,
+        ),
+    ]
+
+    prompt = _user_prompt(standards, indexed_selection=True)
+
+    assert '"candidate_index": 0' in prompt
+    assert '"candidate_index": 1' in prompt
+    assert "selected_candidate_index" in prompt
+    assert "std_private_finished_uuid" not in prompt
+    assert "std_private_fallback_uuid" not in prompt
+    assert "selected_standard_id" not in prompt
+
+
+def test_indexed_batch_responses_map_to_real_ids_without_shared_state() -> None:
+    standards = [
+        ProcessingStandard(
+            id=f"std_{index:02d}_opaque_identifier",
+            name=f"分类 {index}",
+            version=1,
+            description=f"分类 {index}",
+            classification_rule=f"命中分类 {index}",
+            filter_rule="审核图片质量",
+            is_fallback=index == 10,
+        )
+        for index in range(11)
+    ]
+
+    for image_index in range(500):
+        candidate_index = image_index % len(standards)
+        content = json.dumps(
+            {
+                "standard_selection": {
+                    "selected_candidate_index": candidate_index,
+                    "reason": f"命中候选 {candidate_index}",
+                    "confidence": 0.95,
+                },
+                **_filter_payload(),
+                "redaction_analysis": None,
+            },
+            ensure_ascii=False,
+        )
+        payload = _parse_processing_content(content, standards=standards)
+
+        assert payload.standard_selection is not None
+        assert payload.standard_selection.selected_standard_id == standards[candidate_index].id
+        assert payload.standard_selection.evaluations[0].standard_id == standards[candidate_index].id
+
+
+@pytest.mark.asyncio
+async def test_out_of_range_candidate_fails_once_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ProcessingVisionService(
+        Settings(
+            ai_tagging_enabled=True,
+            ai_tagging_api_key="test-key",
+            ai_global_scheduler_enabled=False,
+            ai_processing_schema_max_retries=0,
+        )
+    )
+    standard = ProcessingStandard(
+        id="std_only",
+        name="唯一标准",
+        version=1,
+        description="唯一标准",
+        classification_rule="始终命中",
+        filter_rule="审核图片质量",
+    )
+    calls = 0
+
+    def fake_request(*_args):
+        nonlocal calls
+        calls += 1
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "standard_selection": {
+                                    "selected_candidate_index": 1,
+                                    "reason": "错误序号",
+                                    "confidence": 0.9,
+                                },
+                                **_filter_payload(),
+                                "redaction_analysis": None,
+                            },
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(service, "_request", fake_request)
+
+    outcome = await service.analyze(b"image", standards=[standard])
+
+    assert outcome.status == "failed"
+    assert outcome.payload is None
+    assert "候选范围之外" in outcome.error_message
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_provider_timeout_is_explicit_upstream_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ProcessingVisionService(
+        Settings(
+            _env_file=None,
+            ai_tagging_enabled=True,
+            ai_tagging_api_key="test-key",
+            ai_global_scheduler_enabled=False,
+        )
+    )
+    monkeypatch.setattr(
+        service,
+        "_request",
+        lambda *_args: (_ for _ in ()).throw(TimeoutError("provider timed out")),
+    )
+
+    outcome = await service.analyze(b"image", filter_instruction="保留有效图片")
+
+    assert outcome.status == "failed"
+    assert outcome.retryable is True
+    assert outcome.failure_kind == "upstream_error"
+    assert outcome.failure_code == "UPSTREAM_UNAVAILABLE"
+    assert outcome.diagnostic_json["request_result"] == "error"
+    assert outcome.diagnostic_json["request_error_type"] == "TimeoutError"
+    assert outcome.diagnostic_json["validation_result"] == "not_run"
+
+
+@pytest.mark.asyncio
+async def test_missing_api_key_maps_to_configuration_code() -> None:
+    service = ProcessingVisionService(
+        Settings(_env_file=None, ai_tagging_enabled=True, ai_tagging_api_key="")
+    )
+
+    outcome = await service.analyze(b"image", filter_instruction="保留有效图片")
+
+    assert outcome.failure_kind == "auth_config_error"
+    assert outcome.failure_code == "AI_CONFIGURATION_ERROR"
 
 
 def test_selection_safely_completes_only_an_omitted_fallback() -> None:
@@ -389,12 +569,12 @@ def test_strict_schema_unsupported_does_not_issue_fallback_request(
     service = ProcessingVisionService(
         Settings(ai_tagging_enabled=True, ai_tagging_api_key="test-key")
     )
-    request_formats: list[str] = []
+    request_bodies: list[dict[str, object]] = []
 
     def fake_urlopen(request, *, timeout):
         del timeout
         body = json.loads(request.data.decode())
-        request_formats.append(body["response_format"]["type"])
+        request_bodies.append(body)
         raise HTTPError(request.full_url, 400, "unsupported", None, None)
 
     monkeypatch.setattr(processing_vision_module, "_resize_for_tagging", lambda *_args: b"jpeg")
@@ -408,9 +588,24 @@ def test_strict_schema_unsupported_does_not_issue_fallback_request(
     )
 
     with pytest.raises(HTTPError):
-        service._request(b"image", [standard], "reject", {}, None)
+        service._request(
+            b"image",
+            [standard],
+            "reject",
+            {},
+            None,
+            indexed_selection=True,
+        )
 
-    assert request_formats == ["json_schema"]
+    assert len(request_bodies) == 1
+    body = request_bodies[0]
+    assert body["response_format"]["type"] == "json_schema"
+    assert body["response_format"]["json_schema"]["name"] == (
+        "indexed_routed_filter_response"
+    )
+    prompt = body["messages"][1]["content"][0]["text"]
+    assert '"candidate_index": 0' in prompt
+    assert "standard_test" not in prompt
 
 
 @pytest.mark.asyncio

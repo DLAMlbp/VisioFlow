@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, MutableMapping
 from urllib.error import HTTPError
 
 from redis.asyncio import Redis
@@ -66,6 +66,7 @@ async def run_vision_request[T](
     *,
     operation: str,
     request: Callable[[], T],
+    telemetry: MutableMapping[str, object] | None = None,
 ) -> T:
     """Run one provider request under the shared cross-worker capacity guard."""
     token: str | None = None
@@ -81,10 +82,13 @@ async def run_vision_request[T](
             await redis.aclose()
             redis = None
 
+    scheduler_wait_ms = round((time.perf_counter() - wait_started) * 1000)
+    if telemetry is not None:
+        telemetry["scheduler_wait_ms"] = scheduler_wait_ms
     emit_metric(
         logger,
         "vision_scheduler_wait_ms",
-        value=round((time.perf_counter() - wait_started) * 1000),
+        value=scheduler_wait_ms,
         labels={"operation": operation},
     )
     request_started = time.perf_counter()
@@ -92,6 +96,10 @@ async def run_vision_request[T](
         result = await asyncio.to_thread(request)
     except Exception as exc:
         duration_ms = round((time.perf_counter() - request_started) * 1000)
+        if telemetry is not None:
+            telemetry["request_duration_ms"] = duration_ms
+            telemetry["request_result"] = "error"
+            telemetry["request_error_type"] = type(exc).__name__
         status_code = exc.code if isinstance(exc, HTTPError) else None
         emit_metric(
             logger,
@@ -108,10 +116,14 @@ async def run_vision_request[T](
             await _set_cooldown(redis, settings, exc)
         raise
     else:
+        duration_ms = round((time.perf_counter() - request_started) * 1000)
+        if telemetry is not None:
+            telemetry["request_duration_ms"] = duration_ms
+            telemetry["request_result"] = "success"
         emit_metric(
             logger,
             "vision_request_duration_ms",
-            value=round((time.perf_counter() - request_started) * 1000),
+            value=duration_ms,
             labels={"operation": operation, "outcome": "success"},
         )
         return result

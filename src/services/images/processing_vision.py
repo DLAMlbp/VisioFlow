@@ -6,8 +6,9 @@ import json
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, MutableMapping
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Literal
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -25,7 +26,7 @@ from src.services.images.tagging import (
 from src.services.images.vision_rate_limit import run_vision_request
 from src.services.profiles import ProcessingStandard, RedactionProfile
 
-PROCESSING_PROMPT_VERSION = "paired_filter_redaction_v13"
+PROCESSING_PROMPT_VERSION = "indexed_paired_filter_redaction_v15"
 logger = logging.getLogger(__name__)
 
 _DIAGNOSTIC_CONTENT_LIMIT = 2000
@@ -51,6 +52,16 @@ class StandardSelection(BaseModel):
     evaluations: list[ActivationEvaluation] = Field(min_length=1, max_length=20)
     selected_standard_id: str | None = Field(default=None, max_length=80)
     reason: str = Field(min_length=1, max_length=300)
+
+
+class CandidateStandardSelection(BaseModel):
+    """Compact model-facing selection without backend business identifiers."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    selected_candidate_index: int = Field(ge=0, le=19, strict=True)
+    reason: str = Field(min_length=1, max_length=300)
+    confidence: float = Field(ge=0, le=1)
 
 
 class FilterDimensionResult(BaseModel):
@@ -158,6 +169,16 @@ class ProcessingVisionPayload(BaseModel):
     redaction_analysis: RedactionAssessment | None = None
 
 
+class CandidateProcessingVisionPayload(BaseModel):
+    """Wire response used while selecting from task-frozen standards."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    standard_selection: CandidateStandardSelection
+    filter: FilterDecision
+    redaction_analysis: RedactionAssessment | None = None
+
+
 @dataclass(frozen=True)
 class ProcessingVisionOutcome:
     status: Literal["completed", "failed"]
@@ -166,7 +187,19 @@ class ProcessingVisionOutcome:
     error_message: str | None = None
     duration_ms: int | None = None
     retryable: bool = False
+    failure_kind: Literal[
+        "contract_error", "upstream_error", "auth_config_error", "internal_error"
+    ] | None = None
     diagnostic_json: dict[str, object] | None = None
+
+    @property
+    def failure_code(self) -> str:
+        return {
+            "contract_error": "INVALID_AI_RESPONSE",
+            "upstream_error": "UPSTREAM_UNAVAILABLE",
+            "auth_config_error": "AI_CONFIGURATION_ERROR",
+            "internal_error": "INTERNAL_ERROR",
+        }.get(self.failure_kind, "INVALID_AI_RESPONSE")
 
 
 class ProcessingVisionService:
@@ -186,10 +219,16 @@ class ProcessingVisionService:
         before_schema_retry: Callable[[], Awaitable[None]] | None = None,
     ) -> ProcessingVisionOutcome:
         if not self.settings.ai_tagging_enabled:
-            return ProcessingVisionOutcome(status="failed", error_message="AI 图片处理未启用")
+            return ProcessingVisionOutcome(
+                status="failed",
+                error_message="AI 图片处理未启用",
+                failure_kind="auth_config_error",
+            )
         if not self.settings.ai_tagging_api_key:
             return ProcessingVisionOutcome(
-                status="failed", error_message="未配置 AI_TAGGING_API_KEY"
+                status="failed",
+                error_message="未配置 AI_TAGGING_API_KEY",
+                failure_kind="auth_config_error",
             )
 
         validate_selection = standards is not None
@@ -205,6 +244,10 @@ class ProcessingVisionService:
         ]
         started = time.perf_counter()
         failures: list[dict[str, object]] = []
+        diagnostic_details: dict[str, object] = {
+            "candidate_count": len(candidates) if validate_selection else 0,
+            "validation_result": "not_run",
+        }
         repair_context: dict[str, str] | None = None
         max_attempts = self.settings.ai_processing_schema_max_retries + 1
 
@@ -223,19 +266,33 @@ class ProcessingVisionService:
                         image_context,
                         route_label,
                         redaction_profile,
+                        validate_selection,
                         repair_context,
                     ),
+                    telemetry=diagnostic_details,
                 )
-                content = _response_content(response)
-                payload = _parse_processing_content(content)
-                if validate_selection:
-                    payload = _normalize_standard_selection(
-                        payload, candidates, unmatched_standard_policy
+                parse_started = time.perf_counter()
+                try:
+                    content = _response_content(response)
+                    payload = _parse_processing_content(
+                        content,
+                        standards=candidates if validate_selection else None,
+                        diagnostic=diagnostic_details,
+                    )
+                    if validate_selection:
+                        payload = _normalize_standard_selection(
+                            payload, candidates, unmatched_standard_policy
+                        )
+                    diagnostic_details["validation_result"] = "passed"
+                finally:
+                    diagnostic_details["parse_duration_ms"] = round(
+                        (time.perf_counter() - parse_started) * 1000
                     )
                 diagnostic = _schema_diagnostic(
                     failures,
                     attempts=attempt_index + 1,
                     recovered=bool(failures),
+                    details=diagnostic_details,
                 )
                 return ProcessingVisionOutcome(
                     status="completed",
@@ -245,6 +302,7 @@ class ProcessingVisionService:
                     diagnostic_json=diagnostic,
                 )
             except (KeyError, IndexError, TypeError, ValueError, ValidationError) as exc:
+                diagnostic_details["validation_result"] = "failed"
                 failure = _contract_failure_diagnostic(
                     response,
                     exc,
@@ -280,19 +338,47 @@ class ProcessingVisionService:
                     error_message=message,
                     duration_ms=round((time.perf_counter() - started) * 1000),
                     retryable=False,
+                    failure_kind="contract_error",
                     diagnostic_json=_schema_diagnostic(
                         failures,
                         attempts=attempt_index + 1,
                         recovered=False,
+                        details=diagnostic_details,
                     ),
                 )
             except (HTTPError, URLError, TimeoutError) as exc:
+                diagnostic_details["validation_result"] = "not_run"
                 return ProcessingVisionOutcome(
                     status="failed",
                     raw_response=response,
                     error_message=_processing_error_message(exc),
                     duration_ms=round((time.perf_counter() - started) * 1000),
                     retryable=_is_retryable_error(exc),
+                    failure_kind=_transport_failure_kind(exc),
+                    diagnostic_json=_schema_diagnostic(
+                        failures,
+                        attempts=attempt_index + 1,
+                        recovered=False,
+                        details=diagnostic_details,
+                    ),
+                )
+            except Exception as exc:
+                logger.exception("Unexpected AI processing failure")
+                diagnostic_details["validation_result"] = "not_run"
+                diagnostic_details["internal_error_type"] = type(exc).__name__
+                return ProcessingVisionOutcome(
+                    status="failed",
+                    raw_response=response,
+                    error_message="AI 图片处理发生内部错误",
+                    duration_ms=round((time.perf_counter() - started) * 1000),
+                    retryable=False,
+                    failure_kind="internal_error",
+                    diagnostic_json=_schema_diagnostic(
+                        failures,
+                        attempts=attempt_index + 1,
+                        recovered=False,
+                        details=diagnostic_details,
+                    ),
                 )
 
         raise AssertionError("schema retry loop must return an outcome")
@@ -305,6 +391,7 @@ class ProcessingVisionService:
         image_context: dict[str, int | float] | None,
         route_label: str | None = None,
         redaction_profile: RedactionProfile | None = None,
+        indexed_selection: bool = False,
         repair_context: dict[str, str] | None = None,
     ) -> dict[str, object]:
         resized = _resize_for_tagging(
@@ -317,6 +404,7 @@ class ProcessingVisionService:
             image_context,
             route_label,
             redaction_profile,
+            indexed_selection,
             repair_context,
         )
         body = {
@@ -345,7 +433,9 @@ class ProcessingVisionService:
             ],
         }
         body["response_format"] = (
-            _strict_processing_response_format()
+            _strict_processing_response_format(
+                candidate_count=len(standards) if indexed_selection else None
+            )
             if self.settings.ai_processing_strict_json_schema_enabled
             else {"type": "json_object"}
         )
@@ -365,13 +455,31 @@ class ProcessingVisionService:
             return json.loads(response.read().decode("utf-8"))
 
 
-def _strict_processing_response_format() -> dict[str, object]:
-    schema = ProcessingVisionPayload.model_json_schema()
+@lru_cache(maxsize=21)
+def _strict_processing_response_format(
+    candidate_count: int | None = None,
+) -> dict[str, object]:
+    if candidate_count is not None and not 1 <= candidate_count <= 20:
+        raise ValueError("分类候选数量必须在 1 到 20 之间")
+    schema = (
+        CandidateProcessingVisionPayload.model_json_schema()
+        if candidate_count is not None
+        else ProcessingVisionPayload.model_json_schema()
+    )
     _enforce_strict_json_schema(schema)
+    if candidate_count is not None:
+        selection = schema["$defs"]["CandidateStandardSelection"]
+        index_schema = selection["properties"]["selected_candidate_index"]
+        index_schema["maximum"] = candidate_count - 1
+        index_schema["enum"] = list(range(candidate_count))
     return {
         "type": "json_schema",
         "json_schema": {
-            "name": "routed_filter_response",
+            "name": (
+                "indexed_routed_filter_response"
+                if candidate_count is not None
+                else "routed_filter_response"
+            ),
             "strict": True,
             "schema": schema,
         },
@@ -438,15 +546,15 @@ def _schema_diagnostic(
     *,
     attempts: int,
     recovered: bool,
+    details: dict[str, object] | None = None,
 ) -> dict[str, object] | None:
-    if not failures:
-        return None
-    return {
-        "kind": "schema_validation",
-        "attempts": attempts,
-        "recovered": recovered,
-        "failures": failures,
-    }
+    diagnostic = dict(details or {})
+    diagnostic["attempts"] = attempts
+    diagnostic["recovered"] = recovered
+    if failures:
+        diagnostic["kind"] = "schema_validation"
+        diagnostic["failures"] = failures
+    return diagnostic or None
 
 
 def _diagnostic_content(response: dict[str, object] | None) -> str | None:
@@ -478,7 +586,12 @@ def _sanitize_diagnostic_content(content: str) -> str:
     return sanitized[:_DIAGNOSTIC_CONTENT_LIMIT]
 
 
-def _parse_processing_content(content: object) -> ProcessingVisionPayload:
+def _parse_processing_content(
+    content: object,
+    *,
+    standards: list[ProcessingStandard] | None = None,
+    diagnostic: MutableMapping[str, object] | None = None,
+) -> ProcessingVisionPayload:
     """Accept JSON text and harmless Markdown fencing, then validate the contract."""
     if not isinstance(content, str):
         raise TypeError("AI response content must be text")
@@ -494,7 +607,36 @@ def _parse_processing_content(content: object) -> ProcessingVisionPayload:
         end = text.rfind("}")
         if start >= 0 and end > start:
             text = text[start : end + 1]
-    return ProcessingVisionPayload.model_validate_json(text)
+    if standards is None:
+        return ProcessingVisionPayload.model_validate_json(text)
+
+    wire_payload = CandidateProcessingVisionPayload.model_validate_json(text)
+    selected_index = wire_payload.standard_selection.selected_candidate_index
+    if diagnostic is not None:
+        diagnostic["returned_candidate_index"] = selected_index
+    if selected_index >= len(standards):
+        raise ValueError("AI 选择了任务候选范围之外的分类序号")
+    selected_standard = standards[selected_index]
+    if diagnostic is not None:
+        diagnostic["mapped_standard_id"] = selected_standard.id
+    selected_reason = wire_payload.standard_selection.reason
+    selection = StandardSelection(
+        evaluations=[
+            ActivationEvaluation(
+                standard_id=selected_standard.id,
+                matched=True,
+                reason=selected_reason,
+                confidence=wire_payload.standard_selection.confidence,
+            )
+        ],
+        selected_standard_id=selected_standard.id,
+        reason=selected_reason,
+    )
+    return ProcessingVisionPayload(
+        standard_selection=selection,
+        filter=wire_payload.filter,
+        redaction_analysis=wire_payload.redaction_analysis,
+    )
 
 
 def _validation_field_paths(error: ValidationError) -> list[str]:
@@ -515,6 +657,14 @@ def _processing_error_message(error: Exception) -> str:
     if isinstance(error, ValueError):
         return f"AI 图片处理响应不一致：{str(error)[:300]}"
     return _safe_error_message(error).replace("AI 标签", "AI 图片处理")
+
+
+def _transport_failure_kind(
+    error: HTTPError | URLError | TimeoutError,
+) -> Literal["upstream_error", "auth_config_error"]:
+    if isinstance(error, HTTPError) and error.code in {401, 403}:
+        return "auth_config_error"
+    return "upstream_error"
 
 
 def selected_standard_from_processing_json(
@@ -687,26 +837,52 @@ def content_from_processing_json(payload: object) -> TagPayload | None:
         return None
 
 
+@lru_cache(maxsize=128)
+def _standard_prompt_json(
+    indexed_selection: bool,
+    standards: tuple[tuple[str, str, str, bool, str], ...],
+) -> str:
+    payload: list[dict[str, object]] = []
+    for candidate_index, standard_values in enumerate(standards):
+        standard_id, name, filter_rule, is_fallback, classification_rule = standard_values
+        item: dict[str, object] = {
+            "name": name,
+            "filter_rule": filter_rule,
+            "is_fallback": is_fallback,
+        }
+        if indexed_selection:
+            item["candidate_index"] = candidate_index
+        else:
+            item["id"] = standard_id
+        if classification_rule:
+            item["classification_rule"] = classification_rule
+        payload.append(item)
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def _user_prompt(
     standards: list[ProcessingStandard],
     unmatched_standard_policy: Literal["reject"] = "reject",
     image_context: dict[str, int | float] | None = None,
     route_label: str | None = None,
     redaction_profile: RedactionProfile | None = None,
+    indexed_selection: bool = False,
     repair_context: dict[str, str] | None = None,
 ) -> str:
     del unmatched_standard_policy
-    standard_payload = []
-    for standard in standards:
-        item = {
-            "id": standard.id,
-            "name": standard.name or standard.description,
-            "filter_rule": standard.filter_rule,
-            "is_fallback": standard.is_fallback,
-        }
-        if len(standards) > 1:
-            item["classification_rule"] = standard.classification_rule
-        standard_payload.append(item)
+    standard_payload_json = _standard_prompt_json(
+        indexed_selection,
+        tuple(
+            (
+                standard.id,
+                standard.name or standard.description,
+                standard.filter_rule,
+                standard.is_fallback,
+                standard.classification_rule if len(standards) > 1 else "",
+            )
+            for standard in standards
+        ),
+    )
     routing_instruction = (
         "该标准已由独立分类阶段选定。不要再次分类，"
         "必须将唯一标准标记为 matched，并且只执行它的 filter_rule。"
@@ -744,13 +920,35 @@ def _user_prompt(
 左下角拍摄水印仅用于记录；当标准 allow_during_filter=true 时，绝不能仅因该水印 reject。
 地膜 coverage_ratio 衡量地膜可见区域，不是Logo文字或油墨面积。不要在 filter 中自行执行阈值，后端会确定性判定。"""
     )
+    selection_output_instruction = (
+        "逐条比较所有候选项，但只返回唯一命中的 selected_candidate_index。"
+        "它必须是候选列表中原样提供的整数，禁止返回标准名称、标准 ID 或其他数字。"
+        if indexed_selection
+        else "必须返回每项评估及唯一命中的标准原始 ID。"
+    )
+    selection_contract = (
+        """  "standard_selection": {
+    "selected_candidate_index":0,
+    "reason":"唯一分类的可见依据",
+    "confidence":0.0
+  }"""
+        if indexed_selection
+        else """  "standard_selection": {
+    "evaluations":[
+      {"standard_id":"候选标准原始 ID", "matched":true, "reason":"分类或后端路由依据", "confidence":0.0}
+    ],
+    "selected_standard_id":"唯一命中的标准 ID",
+    "reason":"唯一分类的可见依据"
+  }"""
+    )
     return f"""请只根据图片可见内容完成一次分析。
 
 {standard_title}：
-{json.dumps(standard_payload, ensure_ascii=False)}
+{standard_payload_json}
 图片元数据和本地客观质量指标：{json.dumps(image_context or {}, ensure_ascii=False)}
 
 {routing_instruction}
+{selection_output_instruction}
 {branch_instruction}
 {redaction_instruction}
 零条命中或多条同时命中都属于分类错误，不得猜测、放行或按优先级覆盖。
@@ -763,13 +961,7 @@ pass 时，filter.reason 应概括最关键的通过证据。
 {repair_instruction}
 返回以下 JSON，禁止返回美化参数、内容分析或标签字段：
 {{
-  "standard_selection": {{
-    "evaluations":[
-      {{"standard_id":"候选标准原始 ID", "matched":true, "reason":"分类或后端路由依据", "confidence":0.0}}
-    ],
-    "selected_standard_id":"唯一命中的标准 ID",
-    "reason":"唯一分类的可见依据"
-  }},
+{selection_contract},
   "filter": {{
     "decision":"pass 或 reject",
     "reason":"整体判断依据",

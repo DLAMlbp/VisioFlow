@@ -9,6 +9,7 @@ def test_production_compose_uses_the_consolidated_worker_topology() -> None:
     assert "worker-openclip:" in compose
     assert "-Q openclip" in compose
     assert "-Q classification,filtering" in compose
+    assert "CLASSIFICATION_IMAGE" in compose
     assert "worker-embedding:" not in compose
     assert "worker-library:" not in compose
     assert "worker-filter:" not in compose
@@ -65,6 +66,7 @@ def test_compose_is_validated_before_legacy_workers_are_stopped() -> None:
     assert validation < retirement
     assert "$savedImageEnvironment" in script
     assert "$env:API_GATEWAY_IMAGE = $apiPinnedImage" in script
+    assert "$env:CLASSIFICATION_IMAGE = $apiPinnedImage" in script
 
 
 def test_dockerfile_does_not_duplicate_the_large_model_cache_for_chown() -> None:
@@ -104,6 +106,7 @@ def test_local_api_deploy_updates_gateway_and_rolls_back_compose() -> None:
     )
 
     assert 'set_env_value API_GATEWAY_IMAGE "$new_api"' in script
+    assert 'set_env_value CLASSIFICATION_IMAGE "$new_api"' in script
     assert 'docker image inspect "$new_api"' in script
     assert 'cp --preserve=mode,ownership docker-compose.prod.yml "$compose_snapshot"' in script
     assert 'cp --preserve=mode,ownership "$compose_snapshot" docker-compose.prod.yml' in script
@@ -115,3 +118,20 @@ def test_local_api_deploy_updates_gateway_and_rolls_back_compose() -> None:
     backup = script.index('echo "== database backup =="')
     replace_compose = script.index('mv "$compose_temporary" docker-compose.prod.yml')
     assert backup < replace_compose
+
+
+def test_classification_deploy_is_digest_pinned_and_worker_isolated() -> None:
+    script = (ROOT / "scripts" / "deploy-classification-worker.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"$classification_image" != sha256:*' in script
+    assert '"$classification_image" != *@sha256:*' in script
+    assert 'cp --preserve=mode,ownership .env.production "$snapshot"' in script
+    assert 'dc up -d --no-deps worker-classification' in script
+    assert 'other_container_ids | sort > "$before_other"' in script
+    assert 'other_container_ids | sort > "$after_other"' in script
+    assert 'actual_image_id="$(docker inspect --format' in script
+    assert 'expected_image_id="$(docker image inspect --format' in script
+    assert "set_env_value API_IMAGE" not in script
+    assert "dc up -d --remove-orphans" not in script

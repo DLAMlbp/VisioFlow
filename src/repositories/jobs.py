@@ -716,6 +716,7 @@ class ImageJobRepository:
         duration_ms: int | None,
         diagnostic_json: Mapping[str, object] | None,
         error_message: str,
+        code: str = "INVALID_AI_RESPONSE",
     ) -> bool:
         """Record a terminal combined-call failure without a half-saved stage."""
         result = await self.session.execute(
@@ -763,7 +764,7 @@ class ImageJobRepository:
             item,
             reason=error_message,
             node="classification_and_filtering",
-            code="INVALID_AI_RESPONSE",
+            code=code,
             duration_ms=duration_ms,
         )
 

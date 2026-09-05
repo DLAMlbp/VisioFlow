@@ -104,6 +104,7 @@ services:
 
   worker-classification:
     <<: *worker
+    image: ${CLASSIFICATION_IMAGE:-${API_IMAGE:?API_IMAGE must be a versioned image reference}}
     command: celery -A src.workers.celery_app worker -Q classification,filtering -l info --concurrency=4 --without-mingle --without-gossip
     environment:
       WORKER_ROLE: classification

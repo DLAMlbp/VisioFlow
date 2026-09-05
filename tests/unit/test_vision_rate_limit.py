@@ -49,16 +49,21 @@ async def test_run_vision_request_acquires_and_releases_global_slot(monkeypatch)
         lambda *_args, **_kwargs: redis,
     )
 
+    telemetry: dict[str, object] = {}
     result = await vision_rate_limit.run_vision_request(
         _settings(),
         operation="classification",
         request=lambda: {"ok": True},
+        telemetry=telemetry,
     )
 
     assert result == {"ok": True}
     assert redis.eval_calls[0][1] == 4
     assert len(redis.removed) == 1
     assert redis.closed is True
+    assert telemetry["request_result"] == "success"
+    assert isinstance(telemetry["scheduler_wait_ms"], int)
+    assert isinstance(telemetry["request_duration_ms"], int)
 
 
 @pytest.mark.asyncio

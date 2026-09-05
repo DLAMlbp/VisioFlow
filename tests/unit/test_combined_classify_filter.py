@@ -180,5 +180,65 @@ async def test_combined_path_includes_global_filter_without_an_extra_ai_call(
     assert standard.filter_rule in captured[0][0].filter_rule
 
 
+@pytest.mark.asyncio
+async def test_combined_timeout_persists_upstream_failure_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingRepository:
+        saved: dict[str, object] | None = None
+
+        async def fail_combined_classification_filter(self, _item, **values) -> bool:
+            self.saved = values
+            return True
+
+    class TimeoutService:
+        def __init__(self, _settings) -> None:
+            pass
+
+        async def analyze(self, *_args, **_kwargs):
+            return ProcessingVisionOutcome(
+                status="failed",
+                error_message="AI 图片处理请求超时",
+                duration_ms=90000,
+                retryable=True,
+                failure_kind="upstream_error",
+                diagnostic_json={"candidate_count": 2, "validation_result": "not_run"},
+            )
+
+    monkeypatch.setattr(completion, "ProcessingVisionService", TimeoutService)
+    monkeypatch.setattr(completion, "_advance_after_preprocess", _ignore_advance)
+    repository = FailingRepository()
+    standards = [_standard("std_finished"), _standard("std_fallback", fallback=True)]
+    item = SimpleNamespace(
+        id="img_timeout",
+        job_id="job_timeout",
+        width=1600,
+        height=1200,
+        metric=None,
+    )
+    job = SimpleNamespace(
+        processing_standard_snapshots=[standard.model_dump() for standard in standards],
+        redaction_profile_snapshot=None,
+        beautify_profile_snapshot=None,
+    )
+
+    await completion._classify_and_filter_standard(
+        repository,
+        item,
+        job,
+        SimpleNamespace(ai_tagging_model="test-model"),
+        b"image",
+        standards,
+    )
+
+    assert repository.saved is not None
+    assert repository.saved["code"] == "UPSTREAM_UNAVAILABLE"
+    assert repository.saved["diagnostic_json"]["candidate_count"] == 2
+
+
 async def _record_advance(target: list[str], image_id: str) -> None:
     target.append(image_id)
+
+
+async def _ignore_advance(_repository, _item) -> None:
+    return None

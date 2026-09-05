@@ -1,0 +1,9 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+COPY --chown=app:app src/services/images/processing_vision.py /app/src/services/images/processing_vision.py
+COPY --chown=app:app src/services/images/vision_rate_limit.py /app/src/services/images/vision_rate_limit.py
+COPY --chown=app:app src/workers/completion.py /app/src/workers/completion.py
+COPY --chown=app:app src/repositories/jobs.py /app/src/repositories/jobs.py
+
+LABEL org.opencontainers.image.description="Indexed classification contract and diagnostics hotfix"

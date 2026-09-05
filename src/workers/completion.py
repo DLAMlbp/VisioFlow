@@ -369,6 +369,12 @@ async def _classify_and_filter_standard(
             "job_id": item.job_id,
             "image_id": item.id,
             "status": outcome.status,
+            "candidate_count": (outcome.diagnostic_json or {}).get("candidate_count"),
+            "returned_candidate_index": (outcome.diagnostic_json or {}).get(
+                "returned_candidate_index"
+            ),
+            "validation_result": (outcome.diagnostic_json or {}).get("validation_result"),
+            "failure_kind": outcome.failure_kind,
             "selected_standard_id": (
                 selection.selected_standard_id if selection is not None else None
             ),
@@ -384,6 +390,7 @@ async def _classify_and_filter_standard(
             duration_ms=outcome.duration_ms,
             diagnostic_json=outcome.diagnostic_json,
             error_message=message,
+            code=outcome.failure_code,
         )
         await _advance_after_preprocess(repository, item)
         return
@@ -412,6 +419,7 @@ async def _classify_and_filter_standard(
             duration_ms=outcome.duration_ms,
             diagnostic_json=outcome.diagnostic_json,
             error_message="分类结果对应的过滤标准快照不存在",
+            code="INTERNAL_ERROR",
         )
         await _advance_after_preprocess(repository, item)
         return
