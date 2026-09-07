@@ -11,8 +11,17 @@ from typing import Any
 from src.services.images.similarity import reliability_weighted_similarity_score
 
 
-AUTO_THRESHOLD = 0.60
-REVIEW_THRESHOLD = 0.45
+AUTO_THRESHOLD = 0.70
+REVIEW_THRESHOLD = 0.70
+MIN_GROUP_MARGIN = 0.03
+SEMANTIC_BONUS = 0.06
+UNSUPPORTED_AUTO_THRESHOLD = 0.70
+FALLBACK_AUTO_ENABLED = False
+FALLBACK_AUTO_THRESHOLD = 0.92
+FALLBACK_MIN_MARGIN = 0.12
+FALLBACK_MIN_SUPPORT = 2
+FALLBACK_MIN_FEATURE_SCORE = 0.70
+FALLBACK_MIN_FEATURE_STRENGTH = 0.10
 
 
 @dataclass(frozen=True)
@@ -21,14 +30,33 @@ class QueryResult:
     expected_asset_id: str | None
     top1_asset_id: str | None
     top1_score: float
+    top1_ranking_score: float
     top1_similarity_score: float
     top1_feature_score: float | None
     top1_feature_reliability: float | None
     top1_feature_coverage: float | None
     top2_score: float
     margin: float
+    core_requirements_passed: bool
+    core_evidence_mode: str
+    group_support_count: int
     correct: bool
     top5: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True)
+class CandidateResult:
+    candidate_id: str
+    similarity_score: float
+    feature_score: float | None
+    feature_reliability: float | None
+    feature_coverage: float | None
+    final_score: float
+    ranking_score: float
+    expected_id: str | None
+    core_requirements_passed: bool
+    core_evidence_mode: str
+    group_support_count: int
 
 
 def load_rows(path: Path) -> list[dict[str, Any]]:
@@ -46,25 +74,17 @@ def summarize_queries(
     *,
     min_content_weight: float = 0.0,
     max_content_weight: float = 0.30,
+    review_threshold: float = REVIEW_THRESHOLD,
+    semantic_bonus: float = SEMANTIC_BONUS,
+    fallback_auto_enabled: bool = FALLBACK_AUTO_ENABLED,
 ) -> list[QueryResult]:
-    grouped: dict[
-        str,
-        list[
-            tuple[
-                str,
-                float,
-                float | None,
-                float | None,
-                float | None,
-                float,
-                str | None,
-            ]
-        ],
-    ] = defaultdict(list)
+    grouped: dict[str, list[CandidateResult]] = defaultdict(list)
     for row in rows:
         query_id = str(row.get("query_id", "")).strip()
         candidate_id = str(row.get("candidate_asset_id", "")).strip()
         expected_raw = str(row.get("expected_asset_id", "")).strip()
+        expected_raw = str(row.get("expected_group_id") or expected_raw).strip()
+        candidate_id = str(row.get("candidate_group_id") or candidate_id).strip()
         if not query_id or not candidate_id:
             raise ValueError("每行必须包含 query_id 和 candidate_asset_id")
         try:
@@ -123,71 +143,145 @@ def summarize_queries(
             final_score = similarity_score
         if not 0 <= final_score <= 1:
             raise ValueError("final_score 必须是 0 到 1 之间的数字")
-        grouped[query_id].append(
-            (
-                candidate_id,
-                similarity_score,
-                feature_score,
-                feature_reliability,
-                feature_coverage,
+        core_requirements_passed = (
+            str(row.get("core_requirements_passed", "true")).strip().lower()
+            not in {"0", "false", "no"}
+        )
+        core_evidence_mode = str(
+            row.get("core_evidence_mode")
+            or ("supported" if core_requirements_passed else "conflicted")
+        ).strip()
+        if core_evidence_mode == "rejected":
+            core_evidence_mode = "unsupported"
+        core_score_raw = row.get("core_evidence_score")
+        core_evidence_score = (
+            float(core_score_raw)
+            if core_score_raw is not None and str(core_score_raw).strip()
+            else (1.0 if core_evidence_mode == "supported" else 0.0)
+        )
+        if not 0 <= core_evidence_score <= 1:
+            raise ValueError("core_evidence_score 必须是 0 到 1 之间的数字")
+        ranking_raw = row.get("ranking_score")
+        ranking_score = (
+            float(ranking_raw)
+            if ranking_raw is not None and str(ranking_raw).strip()
+            else _ranking_score(
                 final_score,
-                expected_raw or None,
+                core_evidence_mode=core_evidence_mode,
+                core_evidence_score=core_evidence_score,
+                semantic_bonus=semantic_bonus,
+            )
+        )
+        try:
+            group_support_count = int(row.get("group_support_count") or 1)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("group_support_count 必须是正整数") from exc
+        if group_support_count < 1:
+            raise ValueError("group_support_count 必须是正整数")
+        grouped[query_id].append(
+            CandidateResult(
+                candidate_id=candidate_id,
+                similarity_score=similarity_score,
+                feature_score=feature_score,
+                feature_reliability=feature_reliability,
+                feature_coverage=feature_coverage,
+                final_score=final_score,
+                ranking_score=ranking_score,
+                expected_id=expected_raw or None,
+                core_requirements_passed=core_requirements_passed,
+                core_evidence_mode=core_evidence_mode,
+                group_support_count=group_support_count,
             )
         )
 
     results: list[QueryResult] = []
     for query_id, candidates in grouped.items():
-        expected_values = {candidate[6] for candidate in candidates}
+        expected_values = {candidate.expected_id for candidate in candidates}
         if len(expected_values) != 1:
             raise ValueError(f"query_id={query_id} 的 expected_asset_id 不一致")
         expected = expected_values.pop()
-        ranked = sorted(candidates, key=lambda candidate: candidate[5], reverse=True)
-        (
-            top1_asset_id,
-            top1_similarity,
-            top1_feature,
-            top1_reliability,
-            top1_coverage,
-            top1_score,
-            _,
-        ) = ranked[0]
-        top2_score = ranked[1][5] if len(ranked) > 1 else 0.0
+        ranked = sorted(
+            candidates,
+            key=lambda candidate: (
+                candidate.ranking_score,
+                candidate.similarity_score,
+                candidate.candidate_id,
+            ),
+            reverse=True,
+        )
+        eligible = [
+            candidate
+            for candidate in ranked
+            if candidate.core_evidence_mode != "conflicted"
+            and (
+                candidate.core_evidence_mode != "fallback"
+                or fallback_auto_enabled
+            )
+        ]
+        viable = [
+            candidate
+            for candidate in eligible
+            if candidate.final_score >= review_threshold
+        ]
+        selection_pool = viable or eligible or ranked
+        top1 = selection_pool[0]
+        comparable = (
+            [candidate for candidate in eligible if candidate.core_evidence_mode == "exact"]
+            if top1.core_evidence_mode == "exact"
+            else eligible
+        )
+        top2_score = comparable[1].ranking_score if len(comparable) > 1 else 0.0
         results.append(
             QueryResult(
                 query_id=query_id,
                 expected_asset_id=expected,
-                top1_asset_id=top1_asset_id,
-                top1_score=top1_score,
-                top1_similarity_score=top1_similarity,
-                top1_feature_score=top1_feature,
-                top1_feature_reliability=top1_reliability,
-                top1_feature_coverage=top1_coverage,
+                top1_asset_id=top1.candidate_id,
+                top1_score=top1.final_score,
+                top1_ranking_score=top1.ranking_score,
+                top1_similarity_score=top1.similarity_score,
+                top1_feature_score=top1.feature_score,
+                top1_feature_reliability=top1.feature_reliability,
+                top1_feature_coverage=top1.feature_coverage,
                 top2_score=top2_score,
-                margin=top1_score - top2_score if len(ranked) > 1 else 1.0,
-                correct=expected is not None and top1_asset_id == expected,
+                margin=(
+                    top1.ranking_score - top2_score if len(comparable) > 1 else 1.0
+                ),
+                core_requirements_passed=top1.core_requirements_passed,
+                core_evidence_mode=top1.core_evidence_mode,
+                group_support_count=top1.group_support_count,
+                correct=expected is not None and top1.candidate_id == expected,
                 top5=tuple(
                     {
-                        "asset_id": candidate_id,
-                        "similarity_score": similarity_score,
-                        "feature_score": feature_score,
-                        "feature_reliability": feature_reliability,
-                        "feature_coverage": feature_coverage,
-                        "final_score": candidate_score,
-                        "expected": candidate_id == expected,
+                        "asset_id": candidate.candidate_id,
+                        "similarity_score": candidate.similarity_score,
+                        "feature_score": candidate.feature_score,
+                        "feature_reliability": candidate.feature_reliability,
+                        "feature_coverage": candidate.feature_coverage,
+                        "final_score": candidate.final_score,
+                        "expected": candidate.candidate_id == expected,
+                        "core_requirements_passed": candidate.core_requirements_passed,
+                        "core_evidence_mode": candidate.core_evidence_mode,
+                        "group_support_count": candidate.group_support_count,
                     }
-                    for (
-                        candidate_id,
-                        similarity_score,
-                        feature_score,
-                        feature_reliability,
-                        feature_coverage,
-                        candidate_score,
-                        _,
-                    ) in ranked[:5]
+                    for candidate in ranked[:5]
                 ),
             )
         )
     return sorted(results, key=lambda result: result.query_id)
+
+
+def _ranking_score(
+    final_score: float,
+    *,
+    core_evidence_mode: str,
+    core_evidence_score: float,
+    semantic_bonus: float,
+) -> float:
+    if core_evidence_mode == "exact":
+        return 2.0
+    if core_evidence_mode == "supported":
+        return final_score + semantic_bonus * core_evidence_score
+    return final_score
 
 
 def calibrate(
@@ -198,10 +292,35 @@ def calibrate(
     min_auto_matches: int = 30,
     min_positive_samples: int = 0,
     min_negative_samples: int = 0,
+    min_group_margin: float = MIN_GROUP_MARGIN,
+    auto_threshold: float = AUTO_THRESHOLD,
+    review_threshold: float = REVIEW_THRESHOLD,
+    fallback_auto_threshold: float = FALLBACK_AUTO_THRESHOLD,
+    unsupported_auto_threshold: float = UNSUPPORTED_AUTO_THRESHOLD,
+    fallback_auto_enabled: bool = FALLBACK_AUTO_ENABLED,
+    fallback_min_margin: float = FALLBACK_MIN_MARGIN,
+    fallback_min_support: int = FALLBACK_MIN_SUPPORT,
+    fallback_min_feature_score: float = FALLBACK_MIN_FEATURE_SCORE,
+    fallback_min_feature_strength: float = FALLBACK_MIN_FEATURE_STRENGTH,
 ) -> dict[str, Any]:
     if not queries:
         raise ValueError("没有可校准的人工标注样本")
-    automatic = [query for query in queries if query.top1_score >= AUTO_THRESHOLD]
+    automatic = [
+        query
+        for query in queries
+        if _automatic_match_allowed(
+            query,
+            auto_threshold=auto_threshold,
+            min_group_margin=min_group_margin,
+            fallback_auto_threshold=fallback_auto_threshold,
+            unsupported_auto_threshold=unsupported_auto_threshold,
+            fallback_auto_enabled=fallback_auto_enabled,
+            fallback_min_margin=fallback_min_margin,
+            fallback_min_support=fallback_min_support,
+            fallback_min_feature_score=fallback_min_feature_score,
+            fallback_min_feature_strength=fallback_min_feature_strength,
+        )
+    ]
     automatic_correct = sum(query.correct for query in automatic)
     automatic_precision = (
         automatic_correct / len(automatic) if automatic else None
@@ -210,7 +329,7 @@ def calibrate(
     positive_queries = [query for query in queries if query.expected_asset_id is not None]
     negative_queries = [query for query in queries if query.expected_asset_id is None]
     retrievable_positives = sum(
-        query.top1_score >= REVIEW_THRESHOLD
+        query.top1_score >= review_threshold
         and any(candidate["expected"] for candidate in query.top5)
         for query in positive_queries
     )
@@ -228,9 +347,18 @@ def calibrate(
     review_recall_met = review_recall is not None and review_recall >= target_review_recall
     ready = enough_samples and enough_automatic and precision_met and review_recall_met
     evaluation = {
-        "auto_threshold": AUTO_THRESHOLD,
-        "review_threshold": REVIEW_THRESHOLD,
-        "decision_rule": "top1_final_score >= auto_threshold",
+        "auto_threshold": auto_threshold,
+        "review_threshold": review_threshold,
+        "minimum_group_margin": min_group_margin,
+        "fallback_auto_threshold": fallback_auto_threshold,
+        "unsupported_auto_threshold": unsupported_auto_threshold,
+        "fallback_auto_enabled": fallback_auto_enabled,
+        "fallback_minimum_group_margin": fallback_min_margin,
+        "fallback_minimum_support": fallback_min_support,
+        "decision_rule": (
+            "runtime-equivalent semantic priority, score, group margin, core evidence, "
+            "and fallback support gates"
+        ),
         "auto_matches": len(automatic),
         "correct_auto_matches": automatic_correct,
         "precision": (
@@ -261,6 +389,41 @@ def calibrate(
     }
 
 
+def _automatic_match_allowed(
+    query: QueryResult,
+    *,
+    auto_threshold: float,
+    min_group_margin: float,
+    fallback_auto_threshold: float,
+    unsupported_auto_threshold: float,
+    fallback_auto_enabled: bool,
+    fallback_min_margin: float,
+    fallback_min_support: int,
+    fallback_min_feature_score: float,
+    fallback_min_feature_strength: float,
+) -> bool:
+    if query.core_evidence_mode == "conflicted":
+        return False
+    if query.core_evidence_mode == "unsupported":
+        return (
+            query.top1_score >= unsupported_auto_threshold
+            and query.margin >= min_group_margin
+        )
+    if query.core_evidence_mode != "fallback":
+        return query.top1_score >= auto_threshold and query.margin >= min_group_margin
+    feature_strength = (
+        (query.top1_feature_reliability or 0.0)
+        * (query.top1_feature_coverage or 0.0)
+    )
+    return (
+        fallback_auto_enabled
+        and query.top1_score >= fallback_auto_threshold
+        and query.margin >= fallback_min_margin
+        and query.group_support_count >= fallback_min_support
+        and query.top1_feature_score is not None
+        and query.top1_feature_score >= fallback_min_feature_score
+        and feature_strength >= fallback_min_feature_strength
+    )
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="根据人工标注候选对校准图片向量与内容特征混合匹配阈值"
@@ -272,6 +435,22 @@ def main() -> None:
     parser.add_argument("--min-auto-matches", type=int, default=30)
     parser.add_argument("--min-positive-samples", type=int, default=300)
     parser.add_argument("--min-negative-samples", type=int, default=300)
+    parser.add_argument("--min-group-margin", type=float, default=MIN_GROUP_MARGIN)
+    parser.add_argument("--auto-threshold", type=float, default=AUTO_THRESHOLD)
+    parser.add_argument("--review-threshold", type=float, default=REVIEW_THRESHOLD)
+    parser.add_argument(
+        "--fallback-auto-threshold", type=float, default=FALLBACK_AUTO_THRESHOLD
+    )
+    parser.add_argument(
+        "--unsupported-auto-threshold", type=float, default=UNSUPPORTED_AUTO_THRESHOLD
+    )
+    parser.add_argument("--fallback-auto-enabled", action="store_true")
+    parser.add_argument(
+        "--fallback-min-margin", type=float, default=FALLBACK_MIN_MARGIN
+    )
+    parser.add_argument(
+        "--fallback-min-support", type=int, default=FALLBACK_MIN_SUPPORT
+    )
     args = parser.parse_args()
     if not 0 < args.target_precision <= 1:
         parser.error("--target-precision 必须大于 0 且不超过 1")
@@ -281,13 +460,34 @@ def main() -> None:
         parser.error("--target-review-recall 必须大于 0 且不超过 1")
     if args.min_positive_samples < 0 or args.min_negative_samples < 0:
         parser.error("最小正负样本数不能小于 0")
+    if not 0 <= args.min_group_margin <= 1:
+        parser.error("--min-group-margin 必须是 0 到 1 之间的数字")
+    for name in (
+        "auto_threshold",
+        "review_threshold",
+        "fallback_auto_threshold",
+        "unsupported_auto_threshold",
+        "fallback_min_margin",
+    ):
+        if not 0 <= getattr(args, name) <= 1:
+            parser.error(f"--{name.replace('_', '-')} 必须是 0 到 1 之间的数字")
+    if args.fallback_min_support < 1:
+        parser.error("--fallback-min-support 必须至少为 1")
     report = calibrate(
-        summarize_queries(load_rows(args.input)),
+        summarize_queries(load_rows(args.input), review_threshold=args.review_threshold),
         target_precision=args.target_precision,
         target_review_recall=args.target_review_recall,
         min_auto_matches=args.min_auto_matches,
         min_positive_samples=args.min_positive_samples,
         min_negative_samples=args.min_negative_samples,
+        min_group_margin=args.min_group_margin,
+        auto_threshold=args.auto_threshold,
+        review_threshold=args.review_threshold,
+        fallback_auto_threshold=args.fallback_auto_threshold,
+        unsupported_auto_threshold=args.unsupported_auto_threshold,
+        fallback_auto_enabled=args.fallback_auto_enabled,
+        fallback_min_margin=args.fallback_min_margin,
+        fallback_min_support=args.fallback_min_support,
     )
     serialized = json.dumps(report, ensure_ascii=False, indent=2)
     if args.output:

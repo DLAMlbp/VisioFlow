@@ -6,6 +6,9 @@ from PIL import Image, ImageFilter
 from src.models.library_asset import LibraryAsset
 from src.models.library_asset_group import LibraryAssetGroup
 from src.services.images.similarity import (
+    CORE_MODE_FALLBACK,
+    CORE_MODE_SUPPORTED,
+    CORE_MODE_UNSUPPORTED,
     ScoredCandidate,
     apply_shadow_mode,
     combined_similarity_score,
@@ -13,6 +16,7 @@ from src.services.images.similarity import (
     feature_similarity,
     feature_similarity_evidence,
     reliability_weighted_similarity_score,
+    score_candidate,
 )
 from src.services.profiles import SimilarityProfile
 from src.workers.library import _prepare_library_image
@@ -37,18 +41,19 @@ def test_hybrid_match_combines_image_and_content_scores() -> None:
     assert result.feature_score == 0.80
 
 
-def test_final_score_above_sixty_matches_even_when_candidates_are_close() -> None:
+def test_close_candidate_groups_require_review_even_above_auto_threshold() -> None:
     result = decide_similarity(candidates=[
         _candidate("ast_1", ["完工", "厨房"], 0.90, 0.90),
         _candidate("ast_2", ["完工", "客厅"], 0.88, 0.88)],
         settings=_policy().model_copy(update={"similarity_min_margin": 0.05}))
-    assert result.decision == "matched"
-    assert result.tags == ["完工", "厨房"]
+    assert result.decision == "pending_review"
+    assert result.tags == []
+    assert "得分过于接近" in result.message
     assert result.candidates[0]["tags"] == ["完工", "厨房"]
     assert result.candidates[0]["preview_object_key"] == "uploads/ast_1.jpg"
 
 
-def test_same_reference_image_prefers_the_broader_tag_set() -> None:
+def test_same_reference_image_in_different_groups_requires_review() -> None:
     result = decide_similarity(
         candidates=[
             _candidate("ast_narrow", ["日常", "新房"], 0.91, 0.90, sha256="same-image"),
@@ -63,10 +68,9 @@ def test_same_reference_image_prefers_the_broader_tag_set() -> None:
         settings=_policy().model_copy(update={"similarity_min_margin": 0.05}),
     )
 
-    assert result.decision == "matched"
-    assert result.matched_asset_id == "ast_broad"
-    assert result.tags == ["日常", "新房", "精装房", "旧房", "改建"]
-    assert "标签范围更广" in result.message
+    assert result.decision == "pending_review"
+    assert result.tags == []
+    assert result.candidate_margin == pytest.approx(0.01)
 
 
 def test_missing_content_features_fall_back_to_image_score() -> None:
@@ -97,6 +101,68 @@ def test_below_review_threshold_is_unmatched() -> None:
     assert result.decision == "unmatched"
     assert result.tags == []
     assert result.matched_asset_id is None
+
+
+@pytest.mark.parametrize(
+    ("score", "expected_decision", "expected_tags"),
+    [
+        (0.70, "matched", ["施工", "水电"]),
+        (0.6999, "unmatched", []),
+    ],
+)
+def test_binary_threshold_includes_seventy_percent_and_rejects_below(
+    score: float,
+    expected_decision: str,
+    expected_tags: list[str],
+) -> None:
+    policy = _policy().model_copy(
+        update={
+            "similarity_auto_threshold": 0.70,
+            "similarity_review_threshold": 0.70,
+            "similarity_min_margin": 0.0,
+        }
+    )
+
+    result = decide_similarity(
+        candidates=[_candidate("ast_1", ["施工", "水电"], score, None)],
+        settings=policy,
+    )
+
+    assert result.decision == expected_decision
+    assert result.tags == expected_tags
+
+
+def test_unsupported_candidate_matches_at_seventy_with_three_percent_margin() -> None:
+    best = _candidate("mudwork", ["泥工验收"], 0.7257, None)
+    best = ScoredCandidate(
+        **{
+            **best.__dict__,
+            "core_evidence_mode": CORE_MODE_UNSUPPORTED,
+            "core_requirements_passed": False,
+        }
+    )
+    second = _candidate("water", ["水电验收"], 0.6847, None)
+    second = ScoredCandidate(
+        **{
+            **second.__dict__,
+            "core_evidence_mode": CORE_MODE_UNSUPPORTED,
+            "core_requirements_passed": False,
+        }
+    )
+    policy = _policy().model_copy(
+        update={
+            "similarity_auto_threshold": 0.70,
+            "similarity_review_threshold": 0.70,
+            "similarity_min_margin": 0.03,
+            "similarity_group_unsupported_auto_threshold": 0.70,
+        }
+    )
+
+    result = decide_similarity(candidates=[best, second], settings=policy)
+
+    assert result.decision == "matched"
+    assert result.tags == ["泥工验收"]
+    assert result.candidate_margin == pytest.approx(0.041)
 
 
 def test_shadow_mode_converts_automatic_match_to_review_without_tags() -> None:
@@ -239,7 +305,7 @@ def test_similarity_score_is_always_clamped_to_valid_range() -> None:
     assert low.final_score == 0.0
 
 
-def test_candidate_margin_is_audit_only_and_does_not_veto_sixty_points() -> None:
+def test_candidate_margin_vetoes_automatic_group_match() -> None:
     result = decide_similarity(
         candidates=[
             _candidate("ast_1", ["厨房"], 0.80, 0.80),
@@ -248,9 +314,34 @@ def test_candidate_margin_is_audit_only_and_does_not_veto_sixty_points() -> None
         settings=_policy().model_copy(update={"similarity_min_margin": 0.05}),
     )
 
-    assert result.decision == "matched"
+    assert result.decision == "pending_review"
     assert round(result.candidate_margin or 0, 6) == 0.04
     assert "candidate_margin" not in result.candidates[0]
+
+
+def test_assets_in_same_group_do_not_reduce_group_margin() -> None:
+    shared_group = LibraryAssetGroup(
+        id="grp_shared",
+        tags=["日常", "拆除"],
+        tag_key="日常\x1f拆除",
+        status="active",
+    )
+    first = _candidate("ast_1", shared_group.tags, 0.90, 0.90, group=shared_group)
+    second = _candidate("ast_2", shared_group.tags, 0.89, 0.89, group=shared_group)
+    other = _candidate("ast_3", ["日常", "水电"], 0.70, 0.70)
+
+    result = decide_similarity(
+        candidates=[first, second, other],
+        settings=_policy().model_copy(update={"similarity_min_margin": 0.05}),
+    )
+
+    assert result.decision == "matched"
+    assert result.matched_asset_id == "ast_1"
+    assert result.candidate_margin == pytest.approx(0.20)
+    assert [candidate["group_id"] for candidate in result.candidates] == [
+        "grp_shared",
+        "grp_ast_3",
+    ]
 
 
 def test_same_candidates_produce_identical_result_twenty_times() -> None:
@@ -269,14 +360,234 @@ def test_same_candidates_produce_identical_result_twenty_times() -> None:
     assert {result.decision for result in results} == {"matched"}
 
 
+def test_specific_group_requires_evidence_from_structured_content() -> None:
+    policy = _policy().model_copy(
+        update={
+            "similarity_group_matching_enabled": True,
+            "similarity_group_tag_rules": {
+                "卫生间": {
+                    "dimension": "space",
+                    "fields": ["space", "scene", "subjects", "objects"],
+                    "keywords": ["卫生间", "浴室", "马桶"],
+                }
+            },
+        }
+    )
+    group = LibraryAssetGroup(
+        id="grp_bathroom",
+        tags=["日常", "旧房", "拆除", "卫生间"],
+        tag_key="日常\x1f旧房\x1f拆除\x1f卫生间",
+        status="active",
+    )
+    asset = LibraryAsset(
+        id="ast_bathroom",
+        original_object_key="uploads/bathroom.jpg",
+        group_id=group.id,
+        group=group,
+        status="active",
+        analysis_json={"space": "卫生间", "content_confidence": 0.95},
+    )
+
+    candidate = score_candidate(
+        asset=asset,
+        tags=list(group.tags),
+        similarity_score=0.90,
+        query_content={
+            "space": "墙体转角及砖砌结构区域",
+            "scene": "建筑施工中的墙体局部",
+            "objects": ["红色砖块", "砂浆", "管线"],
+            # Stale output fields must never count as visual evidence.
+            "tags": ["卫生间"],
+            "categories": {"素材库标签": ["卫生间"]},
+            "content_confidence": 0.93,
+        },
+        settings=policy,
+    )
+    result = decide_similarity(candidates=[candidate], settings=policy)
+
+    assert candidate.core_requirements_passed is False
+    assert result.decision == "pending_review"
+    assert result.tags == []
+
+
+def test_specific_group_keeps_complete_tag_set_when_core_evidence_passes() -> None:
+    policy = _policy().model_copy(
+        update={
+            "similarity_group_matching_enabled": True,
+            "similarity_group_tag_rules": {
+                "卫生间": {
+                    "dimension": "space",
+                    "fields": ["space", "scene", "subjects", "objects"],
+                    "keywords": ["卫生间", "浴室", "马桶"],
+                }
+            },
+        }
+    )
+    tags = ["日常", "施工报价", "旧房", "局改", "拆除", "卫生间"]
+    group = LibraryAssetGroup(
+        id="grp_bathroom",
+        tags=tags,
+        tag_key="\x1f".join(tags),
+        status="active",
+    )
+    asset = LibraryAsset(
+        id="ast_bathroom",
+        original_object_key="uploads/bathroom.jpg",
+        group_id=group.id,
+        group=group,
+        status="active",
+        analysis_json={"space": "卫生间", "content_confidence": 0.95},
+    )
+
+    candidate = score_candidate(
+        asset=asset,
+        tags=tags,
+        similarity_score=0.90,
+        query_content={
+            "space": "正在拆除的卫生间",
+            "objects": ["马桶", "墙砖"],
+            "content_confidence": 0.95,
+        },
+        settings=policy,
+    )
+    result = decide_similarity(candidates=[candidate], settings=policy)
+
+    assert candidate.core_requirements_passed is True
+    assert result.decision == "matched"
+    assert result.tags == tags
+
+
+def test_canonical_concepts_support_non_literal_construction_stage_evidence() -> None:
+    policy = _policy().model_copy(
+        update={
+            "similarity_group_matching_enabled": True,
+            "similarity_semantic_concepts": {
+                "woodwork": ["石膏板", "龙骨", "吊顶"],
+                "completed_state": ["封板完成", "已成型"],
+            },
+            "similarity_group_tag_rules": {
+                "木工完工": {
+                    "dimension": "stage",
+                    "fields": ["scene", "condition", "objects", "features"],
+                    "keywords": ["木工完工"],
+                    "required_concepts": ["woodwork"],
+                    "supporting_concepts": ["completed_state"],
+                }
+            },
+        }
+    )
+    tags = ["日常", "新房", "木工完工"]
+    group = LibraryAssetGroup(
+        id="grp_woodwork",
+        tags=tags,
+        tag_key="\x1f".join(tags),
+        status="active",
+    )
+    asset = LibraryAsset(
+        id="ast_woodwork",
+        original_object_key="uploads/woodwork.jpg",
+        group_id=group.id,
+        group=group,
+        status="active",
+        analysis_json={"scene": "室内施工", "objects": ["石膏板", "轻钢龙骨"]},
+    )
+
+    candidate = score_candidate(
+        asset=asset,
+        tags=tags,
+        similarity_score=0.86,
+        query_content={
+            "scene": "顶面造型施工现场",
+            "condition": "吊顶封板完成，整体已成型",
+            "objects": ["绿色石膏板", "龙骨"],
+            "content_confidence": 0.94,
+        },
+        settings=policy,
+    )
+    result = decide_similarity(candidates=[candidate], settings=policy)
+
+    assert candidate.core_requirements_passed is True
+    assert candidate.core_evidence_mode == CORE_MODE_SUPPORTED
+    assert candidate.core_evidence["dimensions"]["stage"]["matched_concepts"] == [
+        "completed_state",
+        "woodwork",
+    ]
+    assert result.decision == "matched"
+    assert result.tags == tags
+
+
+def test_semantically_supported_group_outranks_higher_scoring_generic_group() -> None:
+    supported = _candidate("specific", ["木工完工"], 0.82, 0.82)
+    supported = ScoredCandidate(
+        **{
+            **supported.__dict__,
+            "core_evidence_mode": CORE_MODE_SUPPORTED,
+            "core_requirements_passed": True,
+        }
+    )
+    fallback = _candidate("generic", ["日常", "巡查工地"], 0.96, 0.94)
+    fallback = ScoredCandidate(
+        **{
+            **fallback.__dict__,
+            "core_evidence_mode": CORE_MODE_FALLBACK,
+            "core_requirements_passed": True,
+            "group_prototype_count": 3,
+            "group_support_count": 3,
+        }
+    )
+    policy = _policy().model_copy(
+        update={
+            "similarity_group_matching_enabled": True,
+            "similarity_group_fallback_auto_threshold": 0.92,
+        }
+    )
+
+    result = decide_similarity(candidates=[fallback, supported], settings=policy)
+
+    assert result.decision == "matched"
+    assert result.matched_asset_id == "specific"
+    assert result.tags == ["木工完工"]
+
+
+def test_generic_group_requires_multiple_prototypes_and_strong_content_support() -> None:
+    fallback = _candidate("generic", ["日常", "巡查工地"], 0.96, 0.94)
+    fallback = ScoredCandidate(
+        **{
+            **fallback.__dict__,
+            "core_evidence_mode": CORE_MODE_FALLBACK,
+            "core_requirements_passed": True,
+            "feature_reliability": 0.9,
+            "feature_coverage": 0.8,
+            "group_prototype_count": 1,
+            "group_support_count": 1,
+        }
+    )
+    policy = _policy().model_copy(
+        update={
+            "similarity_group_matching_enabled": True,
+            "similarity_group_fallback_auto_threshold": 0.92,
+            "similarity_group_fallback_min_support": 2,
+        }
+    )
+
+    result = decide_similarity(candidates=[fallback], settings=policy)
+
+    assert result.decision == "pending_review"
+    assert result.tags == []
+    assert "多个代表图" in result.message
+
+
 def _candidate(
     asset_id: str,
     tags: list[str],
     image_score: float,
     content_score: float | None,
     sha256: str | None = None,
+    group: LibraryAssetGroup | None = None,
 ) -> ScoredCandidate:
-    group = LibraryAssetGroup(id=f"grp_{asset_id}", tags=tags, tag_key="\x1f".join(tags), status="active")
+    group = group or LibraryAssetGroup(
+        id=f"grp_{asset_id}", tags=tags, tag_key="\x1f".join(tags), status="active"
+    )
     asset = LibraryAsset(id=asset_id, original_object_key=f"uploads/{asset_id}.jpg",
         group_id=group.id, group=group, status="active", sha256=sha256)
     policy = _policy()

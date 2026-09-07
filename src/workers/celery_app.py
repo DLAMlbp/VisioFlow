@@ -144,6 +144,11 @@ celery_app.conf.beat_schedule = {
         "schedule": 300,
         "options": {"queue": "openclip", "priority": 1},
     },
+    "backfill-library-group-prototypes": {
+        "task": "library.backfill_group_prototypes",
+        "schedule": 600,
+        "options": {"queue": "openclip", "priority": 1},
+    },
     "cleanup-expired-images": {
         "task": "maintenance.cleanup_expired_images",
         "schedule": settings.cleanup_interval_seconds,

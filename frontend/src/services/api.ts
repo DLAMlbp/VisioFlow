@@ -200,8 +200,8 @@ export const api = {
       getJob(jobId: string): Promise<JobProgress> {
         return request<JobProgress>(`/api/v1/image/jobs/${jobId}`);
       },
-      getHistory(): Promise<JobHistoryResponse> {
-        return request<JobHistoryResponse>("/api/v1/image/jobs?limit=30");
+      getHistory(limit = 50, offset = 0): Promise<JobHistoryResponse> {
+        return request<JobHistoryResponse>(`/api/v1/image/jobs?limit=${limit}&offset=${offset}`);
       },
       async getResults(jobId: string, limit = 50, offset = 0, filter?: string): Promise<JobResults> {
         const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });

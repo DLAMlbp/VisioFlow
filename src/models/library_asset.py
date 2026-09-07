@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.db.base import Base
@@ -33,6 +33,9 @@ class LibraryAsset(Base):
     analysis_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(512), nullable=True)
     embedding_version: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    is_group_prototype: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, index=True
+    )
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending", index=True)
     error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

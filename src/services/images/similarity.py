@@ -1,11 +1,21 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Iterable
+from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 from src.models.library_asset import LibraryAsset
 
-SCORE_VERSION = "reliability_v4"
+SCORE_VERSION = "group_reliability_v2"
+
+CORE_MODE_DISABLED = "disabled"
+CORE_MODE_EXACT = "exact"
+CORE_MODE_SUPPORTED = "supported"
+CORE_MODE_FALLBACK = "fallback"
+CORE_MODE_UNSUPPORTED = "unsupported"
+CORE_MODE_CONFLICTED = "conflicted"
+CORE_MODE_REJECTED = CORE_MODE_UNSUPPORTED
+_CONTENT_NOT_PROVIDED = object()
 
 DEFAULT_FEATURE_FIELD_WEIGHTS: dict[str, float] = {
     "scene": 0.15,
@@ -88,6 +98,21 @@ class SimilarityPolicy(Protocol):
     similarity_auto_threshold: float
     similarity_review_threshold: float
     similarity_min_margin: float
+    similarity_group_matching_enabled: bool
+    similarity_group_visual_best_weight: float
+    similarity_group_support_threshold: float
+    similarity_group_content_refine_limit: int
+    similarity_group_min_content_confidence: float
+    similarity_group_semantic_bonus: float
+    similarity_group_unsupported_auto_threshold: float
+    similarity_group_fallback_auto_enabled: bool
+    similarity_group_fallback_auto_threshold: float
+    similarity_group_fallback_min_margin: float
+    similarity_group_fallback_min_support: int
+    similarity_group_fallback_min_feature_score: float
+    similarity_group_fallback_min_feature_strength: float
+    similarity_semantic_concepts: dict[str, list[str]]
+    similarity_group_tag_rules: dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -124,6 +149,14 @@ class ScoredCandidate:
     image_weight: float = 1.0
     feature_weight: float = 0.0
     field_scores: dict[str, dict[str, object]] = field(default_factory=dict)
+    core_requirements_passed: bool = True
+    core_evidence_score: float | None = None
+    core_evidence: dict[str, object] = field(default_factory=dict)
+    core_evidence_mode: str = CORE_MODE_DISABLED
+    ranking_score: float | None = None
+    group_prototype_count: int = 1
+    group_support_count: int = 1
+    exact_match: bool = False
     score_version: str = SCORE_VERSION
 
 
@@ -283,10 +316,16 @@ def score_candidate(
     similarity_score: float,
     query_content: dict[str, object] | None,
     settings: SimilarityPolicy,
+    candidate_content: dict[str, object] | None | object = _CONTENT_NOT_PROVIDED,
 ) -> ScoredCandidate:
+    content = (
+        asset.analysis_json
+        if candidate_content is _CONTENT_NOT_PROVIDED
+        else candidate_content
+    )
     evidence = feature_similarity_evidence(
         query_content,
-        asset.analysis_json,
+        content if isinstance(content, dict) else None,
         field_weights=settings.similarity_field_weights,
     )
     if settings.similarity_dynamic_weighting_enabled:
@@ -317,6 +356,11 @@ def score_candidate(
             feature_weight=feature_weight,
         )
         score_version = "legacy_v2"
+    core_passed, core_score, core_mode, core_evidence = _group_core_evidence(
+        tags=tags,
+        query=query_content,
+        settings=settings,
+    )
     return ScoredCandidate(
         asset=asset,
         tags=tags,
@@ -328,8 +372,186 @@ def score_candidate(
         image_weight=breakdown.image_weight,
         feature_weight=breakdown.feature_weight,
         field_scores=evidence.field_scores,
+        core_requirements_passed=core_passed,
+        core_evidence_score=core_score,
+        core_evidence=core_evidence,
+        core_evidence_mode=core_mode,
+        ranking_score=_semantic_ranking_score(
+            breakdown.final_score,
+            core_mode=core_mode,
+            core_evidence_score=core_score,
+            settings=settings,
+        ),
         score_version=score_version,
     )
+
+
+def score_group_candidates(
+    *,
+    matches: list[tuple[LibraryAsset, float]],
+    query_content: dict[str, object] | None,
+    settings: SimilarityPolicy,
+) -> list[ScoredCandidate]:
+    """Collapse every group before textual scoring while keeping full visual coverage."""
+    grouped: dict[str, list[tuple[LibraryAsset, float]]] = {}
+    for asset, similarity_score in matches:
+        grouped.setdefault(asset.group_id, []).append((asset, _clamp(similarity_score)))
+
+    scored: list[ScoredCandidate] = []
+    ranked_assets: dict[str, list[tuple[LibraryAsset, float]]] = {}
+    best_weight = _clamp(
+        getattr(settings, "similarity_group_visual_best_weight", 0.65)
+    )
+    support_threshold = getattr(settings, "similarity_group_support_threshold", 0.78)
+    for group_id in sorted(grouped):
+        ranked = sorted(
+            grouped[group_id],
+            key=lambda item: (item[1], item[0].id),
+            reverse=True,
+        )
+        top = ranked[:3]
+        visual_scores = [score for _asset, score in top]
+        visual_mean = sum(visual_scores) / len(visual_scores)
+        group_visual_score = best_weight * visual_scores[0] + (
+            1.0 - best_weight
+        ) * visual_mean
+        representative = top[0][0]
+        tags = list(representative.group.tags)
+        core_passed, core_score, core_mode, core_evidence = _group_core_evidence(
+            tags=tags,
+            query=query_content,
+            settings=settings,
+        )
+        support_count = sum(score >= support_threshold for _asset, score in ranked)
+        group_fields = {
+            "_group": {
+            "prototype_count": len(ranked),
+            "content_consensus_count": 0,
+            "support_count": support_count,
+            "support_threshold": round(support_threshold, 6),
+            "best_visual_score": round(visual_scores[0], 6),
+            "top_visual_mean": round(visual_mean, 6),
+            "aggregated_visual_score": round(group_visual_score, 6),
+            }
+        }
+        scored.append(
+            ScoredCandidate(
+                asset=representative,
+                tags=tags,
+                similarity_score=group_visual_score,
+                feature_score=None,
+                final_score=group_visual_score,
+                field_scores=group_fields,
+                core_requirements_passed=core_passed,
+                core_evidence_score=core_score,
+                core_evidence=core_evidence,
+                core_evidence_mode=core_mode,
+                ranking_score=_semantic_ranking_score(
+                    group_visual_score,
+                    core_mode=core_mode,
+                    core_evidence_score=core_score,
+                    settings=settings,
+                ),
+                group_prototype_count=len(ranked),
+                group_support_count=support_count,
+            )
+        )
+        ranked_assets[group_id] = ranked
+
+    refine_limit = getattr(settings, "similarity_group_content_refine_limit", 16)
+    refine_ids: set[str] = set()
+    for mode in (CORE_MODE_SUPPORTED, CORE_MODE_FALLBACK):
+        candidates = sorted(
+            (candidate for candidate in scored if candidate.core_evidence_mode == mode),
+            key=lambda item: (item.similarity_score, item.asset.id),
+            reverse=True,
+        )
+        refine_ids.update(candidate.asset.group_id for candidate in candidates[:refine_limit])
+
+    refined: list[ScoredCandidate] = []
+    for candidate in scored:
+        if candidate.asset.group_id not in refine_ids or query_content is None:
+            refined.append(candidate)
+            continue
+        top = ranked_assets[candidate.asset.group_id][:3]
+        group_content = _merge_group_analysis(
+            [asset.analysis_json for asset, _score in top]
+        )
+        enriched = score_candidate(
+            asset=candidate.asset,
+            tags=candidate.tags,
+            similarity_score=candidate.similarity_score,
+            query_content=query_content,
+            settings=settings,
+            candidate_content=group_content,
+        )
+        group_fields = dict(enriched.field_scores)
+        group_metadata = dict(candidate.field_scores["_group"])
+        group_metadata["content_consensus_count"] = len(top)
+        group_fields["_group"] = group_metadata
+        refined.append(
+            replace(
+                enriched,
+                field_scores=group_fields,
+                group_prototype_count=candidate.group_prototype_count,
+                group_support_count=candidate.group_support_count,
+            )
+        )
+    return refined
+
+
+def _merge_group_analysis(
+    payloads: list[dict[str, object] | None],
+) -> dict[str, object] | None:
+    valid = [payload for payload in payloads if payload]
+    if not valid:
+        return None
+    merged: dict[str, object] = {}
+    for field_name in ("scene", "space", "condition", "content_type", "view"):
+        values = _unique_strings(
+            value
+            for payload in valid
+            for value in _flatten_strings(_field_value(payload, field_name))
+        )
+        if values:
+            merged[field_name] = "；".join(values)
+    for field_name in ("subjects", "objects", "ocr_text"):
+        values = _unique_strings(
+            value
+            for payload in valid
+            for value in _flatten_strings(_field_value(payload, field_name))
+        )
+        if values:
+            merged[field_name] = values
+    for field_name in ("attributes", "features"):
+        combined: dict[str, list[str]] = {}
+        for payload in valid:
+            value = _field_value(payload, field_name)
+            if not isinstance(value, dict):
+                continue
+            for key, nested in value.items():
+                if not isinstance(key, str) or not key.strip():
+                    continue
+                combined.setdefault(key, []).extend(_flatten_strings(nested))
+        if combined:
+            merged[field_name] = {
+                key: _unique_strings(values) for key, values in combined.items()
+            }
+    merged["content_confidence"] = sum(
+        _field_confidence(payload, "__group__") for payload in valid
+    ) / len(valid)
+    return merged
+
+
+def _unique_strings(values: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        normalized = value.strip().casefold()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            result.append(value.strip())
+    return result
 
 
 def decide_similarity(
@@ -340,19 +562,101 @@ def decide_similarity(
     if not candidates:
         return unmatched_decision("无法识别")
 
-    ranked, collapsed_same_image = _collapse_same_image_candidates(candidates)
-    best = ranked[0]
-    margin = best.final_score - ranked[1].final_score if len(ranked) > 1 else 1.0
-    if best.final_score >= settings.similarity_auto_threshold:
+    deduplicated, collapsed_same_image = _collapse_same_image_candidates(candidates)
+    ranked = _rank_group_candidates(deduplicated, settings=settings)
+    fallback_auto_enabled = getattr(
+        settings, "similarity_group_fallback_auto_enabled", False
+    )
+    automatic_candidates = [
+        candidate
+        for candidate in ranked
+        if candidate.core_evidence_mode != CORE_MODE_CONFLICTED
+        and (
+            candidate.core_evidence_mode != CORE_MODE_FALLBACK
+            or fallback_auto_enabled
+        )
+    ]
+    auto_candidate_available = bool(automatic_candidates)
+    best = automatic_candidates[0] if automatic_candidates else ranked[0]
+    if best.exact_match or best.core_evidence_mode == CORE_MODE_EXACT:
+        comparable = [
+            candidate
+            for candidate in automatic_candidates
+            if candidate.exact_match or candidate.core_evidence_mode == CORE_MODE_EXACT
+        ]
+    else:
+        comparable = automatic_candidates
+    margin = (
+        _candidate_ranking_score(best, settings)
+        - _candidate_ranking_score(comparable[1], settings)
+        if len(comparable) > 1
+        else 1.0
+    )
+    auto_threshold = settings.similarity_auto_threshold
+    minimum_margin = getattr(settings, "similarity_min_margin", 0.0)
+    fallback_requirements_passed = True
+    if best.core_evidence_mode == CORE_MODE_UNSUPPORTED:
+        auto_threshold = getattr(
+            settings, "similarity_group_unsupported_auto_threshold", 0.85
+        )
+    if best.core_evidence_mode == CORE_MODE_FALLBACK:
+        auto_threshold = getattr(
+            settings, "similarity_group_fallback_auto_threshold", 0.92
+        )
+        minimum_margin = getattr(
+            settings, "similarity_group_fallback_min_margin", 0.12
+        )
+        feature_strength = best.feature_reliability * best.feature_coverage
+        minimum_feature_score = getattr(
+            settings, "similarity_group_fallback_min_feature_score", 0.70
+        )
+        minimum_feature_strength = getattr(
+            settings, "similarity_group_fallback_min_feature_strength", 0.10
+        )
+        feature_requirements_passed = (
+            minimum_feature_score <= 0.0 and minimum_feature_strength <= 0.0
+        ) or (
+            best.feature_score is not None
+            and best.feature_score >= minimum_feature_score
+            and feature_strength >= minimum_feature_strength
+        )
+        fallback_requirements_passed = (
+            fallback_auto_enabled
+            and best.group_support_count
+            >= getattr(settings, "similarity_group_fallback_min_support", 2)
+            and feature_requirements_passed
+        )
+    clears_margin = margin >= minimum_margin
+    if (
+        auto_candidate_available
+        and best.final_score >= auto_threshold
+        and clears_margin
+        and fallback_requirements_passed
+    ):
         decision = "matched"
         message = (
-            "已匹配到相同素材，已采用标签范围更广的素材组"
+            "已匹配到同组中的相同素材"
             if collapsed_same_image
             else "已通过图片向量与可靠内容证据匹配到相似素材"
         )
-    elif best.final_score >= settings.similarity_review_threshold:
+    elif (
+        settings.similarity_review_threshold < settings.similarity_auto_threshold
+        and best.final_score >= settings.similarity_review_threshold
+    ):
         decision = "pending_review"
-        message = "图片与内容特征候选需要人工确认"
+        message = (
+            "候选素材组缺少核心语义证据，需要人工确认"
+            if not best.core_requirements_passed
+            else (
+                "候选素材组得分过于接近，需要人工确认"
+                if not clears_margin
+                else (
+                    "泛化素材组缺少多个代表图与内容特征共同支持，需要人工确认"
+                    if not fallback_requirements_passed
+                    else "图片与内容特征候选需要人工确认"
+                )
+            )
+        )
     else:
         decision = "unmatched"
         message = "未匹配到可信的图片与内容特征候选"
@@ -360,6 +664,7 @@ def decide_similarity(
     serialized = [
         {
             "asset_id": candidate.asset.id,
+            "group_id": candidate.asset.group_id,
             "original_filename": candidate.asset.original_filename,
             "preview_object_key": (
                 candidate.asset.thumbnail_object_key or candidate.asset.original_object_key
@@ -379,6 +684,13 @@ def decide_similarity(
             "raw_score": round(candidate.final_score, 4),
             "final_score": round(candidate.final_score, 4),
             "field_scores": candidate.field_scores,
+            "core_requirements_passed": candidate.core_requirements_passed,
+            "core_evidence_score": candidate.core_evidence_score,
+            "core_evidence": candidate.core_evidence,
+            "core_evidence_mode": candidate.core_evidence_mode,
+            "ranking_score": round(_candidate_ranking_score(candidate, settings), 4),
+            "group_prototype_count": candidate.group_prototype_count,
+            "group_support_count": candidate.group_support_count,
         }
         for candidate in ranked[:10]
     ]
@@ -424,14 +736,17 @@ def _collapse_same_image_candidates(
     grouped: dict[str, list[ScoredCandidate]] = {}
     for candidate in candidates:
         sha256 = candidate.asset.sha256
-        key = f"sha256:{sha256}" if sha256 else f"asset:{candidate.asset.id}"
+        key = (
+            f"group:{candidate.asset.group_id}:sha256:{sha256}"
+            if sha256
+            else f"asset:{candidate.asset.id}"
+        )
         grouped.setdefault(key, []).append(candidate)
 
     collapsed = [
         max(
             group,
             key=lambda item: (
-                _tag_scope_size(item.tags),
                 item.final_score,
                 item.similarity_score,
                 item.asset.id,
@@ -445,8 +760,329 @@ def _collapse_same_image_candidates(
     )
 
 
-def _tag_scope_size(tags: list[str]) -> int:
-    return len({tag.strip().casefold() for tag in tags if tag.strip()})
+def _rank_group_candidates(
+    candidates: list[ScoredCandidate], *, settings: SimilarityPolicy
+) -> list[ScoredCandidate]:
+    """Aggregate independent tag groups while retaining a representative asset."""
+    grouped: dict[str, list[ScoredCandidate]] = {}
+    for candidate in candidates:
+        grouped.setdefault(candidate.asset.group_id, []).append(candidate)
+    representatives: list[ScoredCandidate] = []
+    group_matching = getattr(settings, "similarity_group_matching_enabled", False)
+    best_weight = _clamp(
+        getattr(settings, "similarity_group_visual_best_weight", 0.65)
+    )
+    for group in grouped.values():
+        representative = max(
+            group,
+            key=lambda item: (
+                item.final_score,
+                item.similarity_score,
+                item.feature_reliability,
+                item.asset.id,
+            ),
+        )
+        if not group_matching or len(group) == 1:
+            representatives.append(representative)
+            continue
+        visual_scores = sorted(
+            (candidate.similarity_score for candidate in group), reverse=True
+        )[:3]
+        visual_mean = sum(visual_scores) / len(visual_scores)
+        group_visual_score = best_weight * visual_scores[0] + (1.0 - best_weight) * visual_mean
+        support_threshold = getattr(settings, "similarity_group_support_threshold", 0.78)
+        support_count = sum(
+            candidate.similarity_score >= support_threshold for candidate in group
+        )
+        content_candidates = [
+            candidate for candidate in group if candidate.feature_score is not None
+        ]
+        if content_candidates:
+            content_candidates.sort(
+                key=lambda item: (
+                    item.feature_score or 0.0,
+                    item.feature_reliability * item.feature_coverage,
+                ),
+                reverse=True,
+            )
+            top_content = content_candidates[:3]
+            feature_scores = [float(item.feature_score or 0.0) for item in top_content]
+            group_feature_score = 0.6 * feature_scores[0] + 0.4 * (
+                sum(feature_scores) / len(feature_scores)
+            )
+            group_feature_reliability = sum(
+                item.feature_reliability for item in top_content
+            ) / len(top_content)
+            group_feature_coverage = sum(
+                item.feature_coverage for item in top_content
+            ) / len(top_content)
+        else:
+            group_feature_score = None
+            group_feature_reliability = 0.0
+            group_feature_coverage = 0.0
+        breakdown = reliability_weighted_similarity_score(
+            similarity_score=group_visual_score,
+            feature_score=group_feature_score,
+            feature_reliability=group_feature_reliability,
+            feature_coverage=group_feature_coverage,
+            min_content_weight=getattr(settings, "similarity_min_content_weight", 0.0),
+            max_content_weight=getattr(settings, "similarity_max_content_weight", 0.30),
+        )
+        group_fields = dict(representative.field_scores)
+        group_fields["_group"] = {
+            "prototype_count": len(group),
+            "support_count": support_count,
+            "support_threshold": round(support_threshold, 6),
+            "best_visual_score": round(visual_scores[0], 6),
+            "top_visual_mean": round(visual_mean, 6),
+            "aggregated_visual_score": round(group_visual_score, 6),
+        }
+        representatives.append(
+            replace(
+                representative,
+                similarity_score=group_visual_score,
+                feature_score=group_feature_score,
+                final_score=breakdown.final_score,
+                feature_reliability=group_feature_reliability,
+                feature_coverage=group_feature_coverage,
+                image_weight=breakdown.image_weight,
+                feature_weight=breakdown.feature_weight,
+                ranking_score=_semantic_ranking_score(
+                    breakdown.final_score,
+                    core_mode=representative.core_evidence_mode,
+                    core_evidence_score=representative.core_evidence_score,
+                    settings=settings,
+                ),
+                field_scores=group_fields,
+                group_prototype_count=len(group),
+                group_support_count=support_count,
+            )
+        )
+    return sorted(
+        representatives,
+        key=lambda item: (
+            _candidate_ranking_score(item, settings),
+            item.similarity_score,
+            item.asset.id,
+        ),
+        reverse=True,
+    )
+
+
+def _group_core_evidence(
+    *,
+    tags: list[str],
+    query: dict[str, object] | None,
+    settings: SimilarityPolicy,
+) -> tuple[bool, float | None, str, dict[str, object]]:
+    if not getattr(settings, "similarity_group_matching_enabled", False):
+        return True, None, CORE_MODE_DISABLED, {}
+    rules = getattr(settings, "similarity_group_tag_rules", {}) or {}
+    expected: dict[str, list[tuple[str, object]]] = {}
+    for tag in tags:
+        rule = rules.get(tag)
+        if rule is not None:
+            expected.setdefault(str(_rule_value(rule, "dimension")), []).append((tag, rule))
+    if not expected:
+        return True, None, CORE_MODE_FALLBACK, {
+            "dimensions": {},
+            "reason": "group_has_no_core_rules",
+        }
+    if not query:
+        return False, 0.0, CORE_MODE_REJECTED, {
+            "dimensions": {},
+            "reason": "content_analysis_missing",
+        }
+
+    confidence = _field_confidence(query, "__group__")
+    minimum_confidence = getattr(
+        settings, "similarity_group_min_content_confidence", 0.60
+    )
+    dimension_results: dict[str, object] = {}
+    passed_dimensions = 0
+    dimension_scores: list[float] = []
+    hard_gate_failed = False
+    for dimension, tag_rules in expected.items():
+        matched_tags: list[str] = []
+        matched_keywords: list[str] = []
+        matched_concepts: list[str] = []
+        missing_concepts: list[str] = []
+        forbidden_concepts: list[str] = []
+        best_rule_score = 0.0
+        dimension_hard_gate = False
+        for tag, rule in tag_rules:
+            configured_hard_gate = _rule_value(rule, "hard_gate")
+            dimension_hard_gate = dimension_hard_gate or (
+                bool(configured_hard_gate)
+                if configured_hard_gate is not None
+                else dimension in {"space", "content", "subject", "event"}
+            )
+            fields = list(_rule_value(rule, "fields") or [])
+            haystack = _rule_haystack(query, fields)
+            keywords = [str(value).strip() for value in _rule_value(rule, "keywords") or []]
+            hits = [keyword for keyword in keywords if keyword and keyword.casefold() in haystack]
+            minimum_hits = int(_rule_value(rule, "minimum_keyword_hits", 1))
+            required = [
+                str(value).strip()
+                for value in _rule_value(rule, "required_concepts", []) or []
+                if str(value).strip()
+            ]
+            supporting = [
+                str(value).strip()
+                for value in _rule_value(rule, "supporting_concepts", []) or []
+                if str(value).strip()
+            ]
+            forbidden = [
+                str(value).strip()
+                for value in _rule_value(rule, "forbidden_concepts", []) or []
+                if str(value).strip()
+            ]
+            concepts = getattr(settings, "similarity_semantic_concepts", {}) or {}
+            required_hits = [
+                concept
+                for concept in required
+                if _semantic_concept_present(haystack, concept, concepts)
+            ]
+            supporting_hits = [
+                concept
+                for concept in supporting
+                if _semantic_concept_present(haystack, concept, concepts)
+            ]
+            forbidden_hits = [
+                concept
+                for concept in forbidden
+                if _semantic_concept_present(haystack, concept, concepts)
+            ]
+            direct_match = bool(keywords) and len(set(hits)) >= minimum_hits
+            required_match = bool(required) and len(required_hits) == len(required)
+            rule_passed = (direct_match or required_match) and not forbidden_hits
+            if direct_match:
+                rule_score = 1.0
+            elif required:
+                required_ratio = len(required_hits) / len(required)
+                supporting_ratio = (
+                    len(supporting_hits) / len(supporting) if supporting else 0.0
+                )
+                rule_score = required_ratio * (0.85 if supporting else 1.0)
+                if supporting:
+                    rule_score += supporting_ratio * 0.15
+            else:
+                rule_score = 0.0
+            if forbidden_hits:
+                rule_score = 0.0
+            best_rule_score = max(best_rule_score, rule_score)
+            if rule_passed:
+                matched_tags.append(tag)
+                matched_keywords.extend(hits)
+                matched_concepts.extend(required_hits + supporting_hits)
+            missing_concepts.extend(
+                concept for concept in required if concept not in required_hits
+            )
+            forbidden_concepts.extend(forbidden_hits)
+        dimension_passed = bool(matched_tags) and confidence >= minimum_confidence
+        if dimension_passed:
+            passed_dimensions += 1
+        elif dimension_hard_gate:
+            hard_gate_failed = True
+        dimension_scores.append(best_rule_score)
+        dimension_results[dimension] = {
+            "passed": dimension_passed,
+            "score": round(best_rule_score, 6),
+            "expected_tags": [tag for tag, _rule in tag_rules],
+            "matched_tags": matched_tags,
+            "matched_keywords": sorted(set(matched_keywords)),
+            "matched_concepts": sorted(set(matched_concepts)),
+            "missing_concepts": sorted(set(missing_concepts)),
+            "forbidden_concepts": sorted(set(forbidden_concepts)),
+            "hard_gate": dimension_hard_gate,
+        }
+
+    score = sum(dimension_scores) / len(dimension_scores)
+    passed = passed_dimensions == len(expected)
+    mode = (
+        CORE_MODE_SUPPORTED
+        if passed
+        else CORE_MODE_CONFLICTED
+        if hard_gate_failed
+        else CORE_MODE_UNSUPPORTED
+    )
+    return passed, score, mode, {
+        "content_confidence": round(confidence, 6),
+        "minimum_content_confidence": round(minimum_confidence, 6),
+        "dimensions": dimension_results,
+    }
+
+
+def _semantic_concept_present(
+    haystack: str,
+    concept: str,
+    concepts: dict[str, object],
+) -> bool:
+    aliases = concepts.get(concept) or []
+    return any(
+        str(alias).strip().casefold() in haystack
+        for alias in aliases
+        if str(alias).strip()
+    )
+
+
+def _semantic_ranking_score(
+    final_score: float,
+    *,
+    core_mode: str,
+    core_evidence_score: float | None,
+    settings: SimilarityPolicy,
+) -> float:
+    if core_mode != CORE_MODE_SUPPORTED:
+        return final_score
+    bonus = getattr(settings, "similarity_group_semantic_bonus", 0.06)
+    return final_score + bonus * _clamp(core_evidence_score or 0.0)
+
+
+def _candidate_ranking_score(
+    candidate: ScoredCandidate,
+    settings: SimilarityPolicy,
+) -> float:
+    if candidate.exact_match or candidate.core_evidence_mode == CORE_MODE_EXACT:
+        return 2.0
+    if candidate.ranking_score is not None:
+        return candidate.ranking_score
+    return _semantic_ranking_score(
+        candidate.final_score,
+        core_mode=candidate.core_evidence_mode,
+        core_evidence_score=candidate.core_evidence_score,
+        settings=settings,
+    )
+
+
+def _rule_value(rule: object, name: str, default: object = None) -> object:
+    if isinstance(rule, dict):
+        return rule.get(name, default)
+    return getattr(rule, name, default)
+
+
+def _rule_haystack(payload: dict[str, object], fields: list[str]) -> str:
+    values: list[str] = []
+    for field_name in fields:
+        value = _field_value(payload, field_name)
+        values.extend(_flatten_strings(value))
+    return "\n".join(values).casefold()
+
+
+def _flatten_strings(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        result: list[str] = []
+        for item in value:
+            result.extend(_flatten_strings(item))
+        return result
+    if isinstance(value, dict):
+        result = []
+        for item in value.values():
+            result.extend(_flatten_strings(item))
+        return result
+    return []
 
 
 def apply_shadow_mode(

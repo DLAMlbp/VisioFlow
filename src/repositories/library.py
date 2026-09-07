@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -153,6 +153,118 @@ class LibraryRepository:
             .limit(limit)
         )
         return [(asset, max(0.0, min(1.0, 1.0 - float(value)))) for asset, value in result]
+
+    async def find_group_prototype_assets(
+        self, embedding: list[float]
+    ) -> list[tuple[LibraryAsset, float]]:
+        """Return the small, precomputed representative set for every active group."""
+        distance = LibraryAsset.embedding.cosine_distance(embedding)
+        result = await self.session.execute(
+            select(LibraryAsset, distance.label("distance"))
+            .join(LibraryAsset.group)
+            .options(selectinload(LibraryAsset.group))
+            .where(
+                LibraryAsset.status == "active",
+                LibraryAsset.is_group_prototype.is_(True),
+                LibraryAsset.embedding.is_not(None),
+                LibraryAssetGroup.status == "active",
+            )
+            .order_by(LibraryAsset.group_id, distance)
+        )
+        return [
+            (asset, max(0.0, min(1.0, 1.0 - float(value))))
+            for asset, value in result
+        ]
+
+    async def list_group_prototype_assets(self) -> list[LibraryAsset]:
+        """Load the small representative set used to build a process-local index."""
+        result = await self.session.execute(
+            select(LibraryAsset)
+            .join(LibraryAsset.group)
+            .options(selectinload(LibraryAsset.group))
+            .where(
+                LibraryAsset.status == "active",
+                LibraryAsset.is_group_prototype.is_(True),
+                LibraryAsset.embedding.is_not(None),
+                LibraryAssetGroup.status == "active",
+            )
+            .order_by(LibraryAsset.group_id, LibraryAsset.id)
+        )
+        return list(result.scalars())
+
+    async def list_active_group_assets_with_embeddings(
+        self, group_id: str
+    ) -> list[LibraryAsset]:
+        result = await self.session.execute(
+            select(LibraryAsset)
+            .where(
+                LibraryAsset.group_id == group_id,
+                LibraryAsset.status == "active",
+                LibraryAsset.embedding.is_not(None),
+            )
+            .order_by(LibraryAsset.id)
+        )
+        return list(result.scalars())
+
+    async def replace_group_prototypes(
+        self, group_id: str, asset_ids: list[str]
+    ) -> None:
+        await self.session.execute(
+            update(LibraryAsset)
+            .where(LibraryAsset.group_id == group_id)
+            .values(is_group_prototype=False)
+        )
+        if asset_ids:
+            await self.session.execute(
+                update(LibraryAsset)
+                .where(
+                    LibraryAsset.group_id == group_id,
+                    LibraryAsset.id.in_(asset_ids),
+                )
+                .values(is_group_prototype=True)
+            )
+        await self.session.execute(
+            update(LibraryAssetGroup)
+            .where(LibraryAssetGroup.id == group_id)
+            .values(prototype_version=1)
+        )
+        await self.session.commit()
+
+    async def mark_group_prototypes_stale(self, group_ids: list[str]) -> None:
+        unique_ids = sorted(set(group_ids))
+        if not unique_ids:
+            return
+        await self.session.execute(
+            update(LibraryAssetGroup)
+            .where(LibraryAssetGroup.id.in_(unique_ids))
+            .values(prototype_version=0)
+        )
+        await self.session.commit()
+
+    async def list_groups_needing_prototype_refresh(
+        self, *, max_prototypes: int, limit: int
+    ) -> list[str]:
+        prototype_count = func.sum(
+            case((LibraryAsset.is_group_prototype.is_(True), 1), else_=0)
+        )
+        result = await self.session.execute(
+            select(LibraryAsset.group_id)
+            .join(LibraryAsset.group)
+            .where(
+                LibraryAsset.status == "active",
+                LibraryAsset.embedding.is_not(None),
+                LibraryAssetGroup.status == "active",
+            )
+            .group_by(LibraryAsset.group_id)
+            .having(
+                (func.max(LibraryAssetGroup.prototype_version) < 1)
+                | (prototype_count == 0)
+                | (prototype_count > max_prototypes)
+            )
+            .order_by(LibraryAsset.group_id)
+            .limit(limit)
+        )
+        return list(result.scalars())
 
     async def find_exact_active_assets(self, sha256: str) -> list[LibraryAsset]:
         result = await self.session.execute(

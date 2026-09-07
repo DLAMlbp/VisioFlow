@@ -61,3 +61,78 @@ def test_v1_company_api_contract_supports_callback_first_delivery() -> None:
         "ai_tags",
         "tagging_result",
     } <= image_fields.keys()
+
+
+def test_public_integration_response_fields_are_exactly_stable() -> None:
+    schemas = app.openapi()["components"]["schemas"]
+
+    assert set(schemas["IntegrationCreateResponse"]["properties"]) == {
+        "code",
+        "job_id",
+        "message",
+        "ok",
+        "status",
+        "taskId",
+        "total",
+    }
+    assert set(schemas["ImageJobProgressResponse"]["properties"]) == {
+        "failure",
+        "job_id",
+        "not_selected",
+        "processed",
+        "progress",
+        "rejected",
+        "selected",
+        "stage_counts",
+        "status",
+        "tagging",
+        "total",
+    }
+    assert set(schemas["IntegrationJobResultsResponse"]["properties"]) == {
+        "download_expires_in",
+        "images",
+        "job_id",
+        "limit",
+        "not_selected",
+        "offset",
+        "rejected",
+        "result_total",
+        "selected",
+        "total",
+    }
+    assert set(schemas["IntegrationImageResultResponse"]["properties"]) == {
+        "activation_reason",
+        "ai_tags",
+        "analysis_status",
+        "audit_dimensions",
+        "beautify",
+        "beautify_status",
+        "classification",
+        "classification_status",
+        "client_object_key",
+        "completion",
+        "decision",
+        "embedding_status",
+        "enhanced_metrics",
+        "enhanced_object_key",
+        "enhanced_preview_object_key",
+        "enhanced_url",
+        "files_expired",
+        "filter_status",
+        "image_id",
+        "library_tags",
+        "match_status",
+        "metrics",
+        "original_object_key",
+        "original_preview_object_key",
+        "original_url",
+        "pipeline_stage",
+        "processing_standard_id",
+        "processing_standard_name",
+        "reasons",
+        "reject_codes",
+        "routed_filter_profile_id",
+        "routed_filter_profile_version",
+        "score",
+        "tagging_result",
+    }

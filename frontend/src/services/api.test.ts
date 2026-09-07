@@ -39,6 +39,23 @@ describe("real API client", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/library/groups", expect.any(Object));
   });
 
+  it("loads a 50-item history page with its offset", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      total: 257,
+      limit: 50,
+      offset: 100,
+      items: []
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getHistory(50, 100);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/image/jobs?limit=50&offset=100",
+      expect.any(Object)
+    );
+  });
+
   it("loads every library asset page and reports the backend total", async () => {
     const firstPage = Array.from({ length: 200 }, (_, index) => ({
       id: `asset_${index}`,

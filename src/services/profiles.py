@@ -213,6 +213,28 @@ class SimilarityProfile(BaseModel):
     similarity_auto_threshold: float = Field(ge=0, le=1)
     similarity_review_threshold: float = Field(ge=0, le=1)
     similarity_min_margin: float = Field(ge=0, le=1)
+    similarity_group_matching_enabled: bool = False
+    similarity_group_visual_best_weight: float = Field(default=0.65, ge=0, le=1)
+    similarity_group_max_prototypes: int = Field(default=12, ge=1, le=20)
+    similarity_group_support_threshold: float = Field(default=0.78, ge=0, le=1)
+    similarity_group_content_refine_limit: int = Field(default=16, ge=1, le=100)
+    similarity_group_min_content_confidence: float = Field(default=0.60, ge=0, le=1)
+    similarity_group_semantic_bonus: float = Field(default=0.06, ge=0, le=0.25)
+    similarity_group_unsupported_auto_threshold: float = Field(
+        default=0.85, ge=0, le=1
+    )
+    similarity_group_fallback_auto_enabled: bool = False
+    similarity_group_fallback_auto_threshold: float = Field(default=0.92, ge=0, le=1)
+    similarity_group_fallback_min_margin: float = Field(default=0.12, ge=0, le=1)
+    similarity_group_fallback_min_support: int = Field(default=2, ge=1, le=12)
+    similarity_group_fallback_min_feature_score: float = Field(default=0.70, ge=0, le=1)
+    similarity_group_fallback_min_feature_strength: float = Field(
+        default=0.10, ge=0, le=1
+    )
+    similarity_semantic_concepts: dict[str, list[str]] = Field(default_factory=dict)
+    similarity_group_tag_rules: dict[str, "SimilarityGroupTagRule"] = Field(
+        default_factory=dict
+    )
 
     def model_post_init(self, __context: object, /) -> None:
         if self.similarity_min_content_weight > self.similarity_max_content_weight:
@@ -221,6 +243,38 @@ class SimilarityProfile(BaseModel):
             weight < 0 or weight > 1 for weight in self.similarity_field_weights.values()
         ):
             raise ValueError("内容特征字段权重必须是 0 到 1 之间的非空映射")
+        if any(not aliases for aliases in self.similarity_semantic_concepts.values()):
+            raise ValueError("语义概念必须至少配置一个可识别表达")
+        unknown_concepts = {
+            concept
+            for rule in self.similarity_group_tag_rules.values()
+            for concept in (
+                rule.required_concepts
+                + rule.supporting_concepts
+                + rule.forbidden_concepts
+            )
+            if concept not in self.similarity_semantic_concepts
+        }
+        if unknown_concepts:
+            raise ValueError(
+                "素材组规则引用了未定义的语义概念："
+                + "、".join(sorted(unknown_concepts))
+            )
+
+
+class SimilarityGroupTagRule(BaseModel):
+    dimension: str = Field(min_length=1, max_length=80)
+    fields: list[str] = Field(min_length=1, max_length=10)
+    keywords: list[str] = Field(default_factory=list, max_length=40)
+    minimum_keyword_hits: int = Field(default=1, ge=1, le=10)
+    required_concepts: list[str] = Field(default_factory=list, max_length=10)
+    supporting_concepts: list[str] = Field(default_factory=list, max_length=10)
+    forbidden_concepts: list[str] = Field(default_factory=list, max_length=10)
+    hard_gate: bool | None = None
+
+    def model_post_init(self, __context: object, /) -> None:
+        if not self.keywords and not self.required_concepts:
+            raise ValueError("素材组标签规则至少需要关键词或必需语义概念")
 
 
 class ProfileLoader:

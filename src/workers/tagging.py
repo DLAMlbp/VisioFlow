@@ -12,10 +12,13 @@ from src.repositories.library import LibraryRepository
 from src.schemas.jobs import ImageItemStatus
 from src.services.ai_model_config import load_ai_model_settings
 from src.services.images.embedding import ImageEmbeddingError, OpenClipImageEmbedder
+from src.services.images.group_match_index import find_cached_group_prototype_matches
 from src.services.images.similarity import (
     ScoredCandidate,
+    apply_shadow_mode,
     decide_similarity,
     score_candidate,
+    score_group_candidates,
     unmatched_decision,
 )
 from src.services.images.tagging import TaggingOutcome, get_tag_provider
@@ -79,22 +82,44 @@ async def _generate_image_tags(image_id: str) -> None:
         if outcome.status == "completed" and outcome.payload is not None:
             try:
                 embedding = await OpenClipImageEmbedder(settings).embed(image_bytes)
-                similar_assets = await library_repository.find_similar_assets(
-                    embedding,
-                    similarity_profile.similarity_candidate_limit,
-                )
-                scored: list[ScoredCandidate] = []
-                for asset, similarity_score in similar_assets:
-                    scored.append(
-                        score_candidate(
-                            asset=asset,
-                            tags=list(asset.group.tags),
-                            similarity_score=similarity_score,
-                            query_content=outcome.payload.model_dump(),
-                            settings=similarity_profile,
-                        )
+                if (
+                    similarity_profile.similarity_group_matching_enabled
+                    and hasattr(library_repository, "find_group_prototype_assets")
+                ):
+                    similar_assets = await find_cached_group_prototype_matches(
+                        library_repository,
+                        embedding,
+                        settings,
                     )
+                else:
+                    similar_assets = await library_repository.find_similar_assets(
+                        embedding,
+                        similarity_profile.similarity_candidate_limit,
+                    )
+                query_content = outcome.payload.model_dump()
+                if similarity_profile.similarity_group_matching_enabled:
+                    scored = score_group_candidates(
+                        matches=similar_assets,
+                        query_content=query_content,
+                        settings=similarity_profile,
+                    )
+                else:
+                    scored: list[ScoredCandidate] = []
+                    for asset, similarity_score in similar_assets:
+                        scored.append(
+                            score_candidate(
+                                asset=asset,
+                                tags=list(asset.group.tags),
+                                similarity_score=similarity_score,
+                                query_content=query_content,
+                                settings=similarity_profile,
+                            )
+                        )
                 match_decision = decide_similarity(candidates=scored, settings=similarity_profile)
+                match_decision = apply_shadow_mode(
+                    match_decision,
+                    enabled=getattr(settings, "library_match_shadow_mode", False),
+                )
             except ImageEmbeddingError as exc:
                 match_decision = unmatched_decision(str(exc))
             except Exception:

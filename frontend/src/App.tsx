@@ -73,6 +73,7 @@ function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const itemsRef = useRef<UploadItem[]>([]);
   const operationVersionRef = useRef(0);
+  const historyRequestVersionRef = useRef(0);
   const [items, setItems] = useState<UploadItem[]>([]);
   const [processingStandards, setProcessingStandards] = useState<ProfileOption[]>([]);
   const [globalFilterProfiles, setGlobalFilterProfiles] = useState<ProfileOption[]>([]);
@@ -91,6 +92,7 @@ function App() {
   const [resultPage, setResultPage] = useState(0);
   const [uploadPage, setUploadPage] = useState(0);
   const [history, setHistory] = useState<JobHistoryResponse | null>(null);
+  const [historyPage, setHistoryPage] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -254,7 +256,7 @@ function App() {
           await loadResultPage(nextJob.job_id, operationVersion, resultPage, resultFilter);
         }
         if (isTerminalStatus(nextJob.status)) {
-          void loadHistory(operationVersion);
+          void loadHistory(historyPage, operationVersion);
         }
       } catch (error) {
         if (!isCurrentOperation(operationVersion)) return;
@@ -263,7 +265,7 @@ function App() {
     }, delay);
 
     return () => window.clearTimeout(timer);
-  }, [job, resultFilter, resultPage]);
+  }, [historyPage, job, resultFilter, resultPage]);
 
   useEffect(() => {
     if (!job) return;
@@ -396,17 +398,27 @@ function App() {
     return operationVersion === operationVersionRef.current;
   }
 
-  async function loadHistory(operationVersion?: number) {
+  async function loadHistory(page = historyPage, operationVersion?: number) {
+    const requestVersion = ++historyRequestVersionRef.current;
     setHistoryLoading(true);
     try {
-      const nextHistory = await api.getHistory();
-      if (operationVersion !== undefined && !isCurrentOperation(operationVersion)) return;
+      const nextHistory = await api.getHistory(50, page * 50);
+      if (
+        requestVersion !== historyRequestVersionRef.current
+        || (operationVersion !== undefined && !isCurrentOperation(operationVersion))
+      ) return;
       setHistory(nextHistory);
     } catch (error) {
-      if (operationVersion !== undefined && !isCurrentOperation(operationVersion)) return;
+      if (
+        requestVersion !== historyRequestVersionRef.current
+        || (operationVersion !== undefined && !isCurrentOperation(operationVersion))
+      ) return;
       setMessage(error instanceof Error ? error.message : "加载历史记录失败");
     } finally {
-      if (operationVersion === undefined || isCurrentOperation(operationVersion)) setHistoryLoading(false);
+      if (
+        requestVersion === historyRequestVersionRef.current
+        && (operationVersion === undefined || isCurrentOperation(operationVersion))
+      ) setHistoryLoading(false);
     }
   }
 
@@ -414,9 +426,15 @@ function App() {
     const nextOpen = !historyOpen;
     setHistoryOpen(nextOpen);
     if (nextOpen) {
-      void loadHistory();
+      setHistoryPage(0);
+      void loadHistory(0);
       window.setTimeout(() => document.querySelector<HTMLElement>(".history-panel")?.scrollIntoView({ behavior: "smooth" }), 0);
     }
+  }
+
+  function changeHistoryPage(page: number) {
+    setHistoryPage(page);
+    void loadHistory(page);
   }
 
   async function openModelConfig() {
@@ -878,7 +896,7 @@ function App() {
           </aside>}
         </div>
 
-        {historyOpen && <HistoryPanel history={history} loading={historyLoading} onRefresh={() => void loadHistory()} onOpen={(entry) => void openHistoryJob(entry)} />}
+        {historyOpen && <HistoryPanel history={history} page={historyPage} loading={historyLoading} onRefresh={() => void loadHistory()} onPageChange={changeHistoryPage} onOpen={(entry) => void openHistoryJob(entry)} />}
       </> : activeWorkspace === "library" ? <LibraryWorkspace onMessage={setMessage} /> : <ProfileWorkspace onMessage={setMessage} onProfilesChanged={reloadProcessingProfiles} onConfigureAI={() => void openModelConfig()} />}
     </main>
   );
@@ -970,13 +988,17 @@ function ResultsPanel({
 
 function HistoryPanel({
   history,
+  page,
   loading,
   onRefresh,
+  onPageChange,
   onOpen
 }: {
   history: JobHistoryResponse | null;
+  page: number;
   loading: boolean;
   onRefresh: () => void;
+  onPageChange: (page: number) => void;
   onOpen: (entry: JobHistoryItem) => void;
 }) {
   return (
@@ -984,7 +1006,7 @@ function HistoryPanel({
       <div className="history-heading">
         <div>
           <h2>历史记录</h2>
-          <p>最近 {history?.total ?? 0} 个图片处理任务</p>
+          <p>共 {history?.total ?? 0} 个图片处理任务，每页 50 条</p>
         </div>
         <button className="icon-button" type="button" aria-label="刷新历史记录" onClick={onRefresh} disabled={loading}>
           <RefreshCw className={loading ? "spin" : ""} size={17} aria-hidden="true" />
@@ -1009,6 +1031,7 @@ function HistoryPanel({
           ))}
         </div>
       )}
+      <Pagination page={page} total={history?.total ?? 0} pageSize={50} onChange={onPageChange} label="历史记录" unit="个任务" />
     </section>
   );
 }
@@ -2172,12 +2195,12 @@ async function runConcurrent<T>(items: T[], concurrency: number, worker: (item: 
   await Promise.all(runners);
 }
 
-function Pagination({ page, total, pageSize, onChange, label }: { page: number; total: number; pageSize: number; onChange: (page: number) => void; label: string }) {
+function Pagination({ page, total, pageSize, onChange, label, unit = "张" }: { page: number; total: number; pageSize: number; onChange: (page: number) => void; label: string; unit?: string }) {
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   if (pageCount <= 1) return null;
   return <nav className="pagination" aria-label={`${label}分页`}>
     <button type="button" aria-label="上一页" disabled={page <= 0} onClick={() => onChange(page - 1)}><ChevronLeft size={16} aria-hidden="true" /></button>
-    <span>第 {page + 1} / {pageCount} 页 · 共 {total} 张</span>
+    <span>第 {page + 1} / {pageCount} 页 · 共 {total} {unit}</span>
     <button type="button" aria-label="下一页" disabled={page >= pageCount - 1} onClick={() => onChange(page + 1)}><ChevronRight size={16} aria-hidden="true" /></button>
   </nav>;
 }

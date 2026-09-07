@@ -27,7 +27,10 @@ from src.schemas.library import (
     TagReviewDecisionRequest,
     TagReviewResponse,
 )
-from src.services.jobs.dispatch import LibraryAssetTaskPublisher
+from src.services.jobs.dispatch import (
+    LibraryAssetTaskPublisher,
+    LibraryGroupPrototypeTaskPublisher,
+)
 from src.services.storage.factory import get_storage_provider
 from src.services.storage.interfaces import StorageProvider
 
@@ -47,11 +50,13 @@ class LibraryService:
         self,
         repository: LibraryRepository,
         task_publisher: LibraryAssetTaskPublisher | None = None,
+        prototype_task_publisher: LibraryGroupPrototypeTaskPublisher | None = None,
         storage_provider: StorageProvider | None = None,
         settings: Settings | None = None,
     ) -> None:
         self.repository = repository
         self.task_publisher = task_publisher
+        self.prototype_task_publisher = prototype_task_publisher
         self.storage_provider = storage_provider
         self.settings = settings or get_settings()
 
@@ -89,6 +94,8 @@ class LibraryService:
                 raise InvalidLibraryRequest("相同的标签组合已存在")
             values["tag_key"] = tag_key
         group = await self.repository.update_group(group, values)
+        await self._mark_prototypes_stale([group.id])
+        self._publish_prototype_rebuild(group.id)
         counts = await self.repository.group_asset_counts()
         return self._group_response(group, counts.get(group.id, 0))
 
@@ -141,6 +148,7 @@ class LibraryService:
         if asset is None:
             raise LibraryNotFound("素材不存在")
         values = payload.model_dump(exclude_none=True)
+        previous_group_id = asset.group_id
         if payload.group_id:
             await self._require_active_group(payload.group_id)
         if payload.status == "active" and (
@@ -148,6 +156,10 @@ class LibraryService:
         ):
             raise InvalidLibraryRequest("素材尚未完成图片向量和内容特征分析，不能启用")
         await self.repository.update_asset(asset, values)
+        await self._mark_prototypes_stale([previous_group_id, asset.group_id])
+        self._publish_prototype_rebuild(previous_group_id)
+        if asset.group_id != previous_group_id:
+            self._publish_prototype_rebuild(asset.group_id)
         loaded = await self.repository.get_asset(asset.id)
         return self._asset_response(loaded or asset)
 
@@ -157,10 +169,13 @@ class LibraryService:
             raise LibraryNotFound("素材不存在")
         if self.storage_provider is None:
             raise RuntimeError("素材存储服务未配置")
+        group_id = asset.group_id
         if asset.thumbnail_object_key:
             await self.storage_provider.delete(asset.thumbnail_object_key)
         await self.storage_provider.delete(asset.original_object_key)
         await self.repository.delete_asset(asset)
+        await self._mark_prototypes_stale([group_id])
+        self._publish_prototype_rebuild(group_id)
 
     async def reindex_asset(self, asset_id: str) -> LibraryAssetResponse:
         asset = await self.repository.get_asset(asset_id)
@@ -176,6 +191,8 @@ class LibraryService:
                 "embedding_version": None,
             },
         )
+        await self._mark_prototypes_stale([asset.group_id])
+        self._publish_prototype_rebuild(asset.group_id)
         if self.task_publisher:
             self.task_publisher.publish(asset.id)
         loaded = await self.repository.get_asset(asset.id)
@@ -237,6 +254,15 @@ class LibraryService:
         if group.status != "active":
             raise InvalidLibraryRequest("不能向已停用的素材组上传图片")
         return group
+
+    def _publish_prototype_rebuild(self, group_id: str) -> None:
+        if self.prototype_task_publisher:
+            self.prototype_task_publisher.publish(group_id)
+
+    async def _mark_prototypes_stale(self, group_ids: list[str]) -> None:
+        marker = getattr(self.repository, "mark_group_prototypes_stale", None)
+        if marker is not None:
+            await marker(group_ids)
 
     @staticmethod
     def _asset_response(asset: LibraryAsset) -> LibraryAssetResponse:
@@ -316,6 +342,7 @@ def get_library_service(
     return LibraryService(
         LibraryRepository(session),
         LibraryAssetTaskPublisher(),
+        LibraryGroupPrototypeTaskPublisher(),
         get_storage_provider(),
         settings,
     )

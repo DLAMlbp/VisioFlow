@@ -75,24 +75,25 @@ def test_calibration_evaluates_fixed_threshold_only_when_precision_target_is_met
     assert report["status"] == "recommended"
     assert report["recommendation"]["precision"] == 1.0
     assert report["recommendation"]["auto_matches"] == 38
-    assert report["recommendation"]["auto_threshold"] == 0.60
-    assert report["recommendation"]["review_threshold"] == 0.45
+    assert report["recommendation"]["auto_threshold"] == 0.70
+    assert report["recommendation"]["review_threshold"] == 0.70
+    assert report["recommendation"]["minimum_group_margin"] == 0.03
     assert report["recommendation"]["decision_rule"] == (
-        "top1_final_score >= auto_threshold"
+        "runtime-equivalent semantic priority, score, group margin, core evidence, "
+        "and fallback support gates"
     )
 
 
-def test_calibration_does_not_hide_wrong_automatic_matches_with_margin_gate() -> None:
+def test_calibration_excludes_ambiguous_group_matches_with_margin_gate() -> None:
     report = calibrate(
         summarize_queries(_rows(38, 2)),
         target_precision=0.97,
         min_auto_matches=30,
     )
 
-    assert report["status"] == "insufficient_evidence"
-    assert report["recommendation"] is None
-    assert report["evaluation"]["auto_matches"] == 40
-    assert report["evaluation"]["precision"] == 0.95
+    assert report["status"] == "recommended"
+    assert report["evaluation"]["auto_matches"] == 38
+    assert report["evaluation"]["precision"] == 1.0
 
 
 def test_calibration_reports_insufficient_evidence_without_fabricating_accuracy() -> None:
@@ -106,7 +107,7 @@ def test_calibration_reports_insufficient_evidence_without_fabricating_accuracy(
     assert report["recommendation"] is None
 
 
-def test_calibration_uses_final_score_as_the_only_automatic_decision_input() -> None:
+def test_calibration_requires_group_margin_and_core_evidence() -> None:
     rows = [
         {
             "query_id": "low_visual_small_margin",
@@ -130,9 +131,37 @@ def test_calibration_uses_final_score_as_the_only_automatic_decision_input() -> 
         target_review_recall=1.0,
     )
 
-    assert report["status"] == "recommended"
+    assert report["status"] == "insufficient_evidence"
+    assert report["evaluation"]["auto_matches"] == 0
+
+
+def test_calibration_accepts_group_id_columns_and_rejects_failed_core_gate() -> None:
+    rows = [
+        {
+            "query_id": "query_1",
+            "expected_group_id": "expected_group",
+            "candidate_group_id": "expected_group",
+            "similarity_score": 0.90,
+            "core_requirements_passed": False,
+        },
+        {
+            "query_id": "query_1",
+            "expected_group_id": "expected_group",
+            "candidate_group_id": "other_group",
+            "similarity_score": 0.80,
+            "core_requirements_passed": True,
+        },
+    ]
+
+    report = calibrate(
+        summarize_queries(rows),
+        min_auto_matches=1,
+        target_review_recall=1.0,
+    )
+
+    assert report["status"] == "insufficient_evidence"
     assert report["evaluation"]["auto_matches"] == 1
-    assert report["evaluation"]["precision"] == 1.0
+    assert report["evaluation"]["precision"] == 0.0
 
 
 def test_calibration_recomputes_v4_score_from_reliability_and_coverage() -> None:

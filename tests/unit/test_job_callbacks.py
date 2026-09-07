@@ -14,6 +14,7 @@ from src.services.jobs.callback_security import (
 from src.services.jobs.callbacks import (
     CallbackDeliveryError,
     CustomerCallbackPayload,
+    CustomerCallbackResult,
     ImageJobCallbackPayload,
     build_job_callback_payload,
     post_job_callback,
@@ -186,6 +187,24 @@ async def test_customer_callback_uses_object_key_and_customer_field_names() -> N
             }
         ],
         "errorMessage": "",
+    }
+
+
+def test_customer_callback_contract_field_names_are_exactly_stable() -> None:
+    assert set(CustomerCallbackPayload.model_fields) == {
+        "event_id",
+        "event",
+        "results",
+        "error_message",
+        "failure",
+    }
+    assert set(CustomerCallbackResult.model_fields) == {
+        "object_key",
+        "decision",
+        "score",
+        "enhanced_url",
+        "enhanced_md5",
+        "ai_tags",
     }
 
 

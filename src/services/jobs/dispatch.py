@@ -207,6 +207,16 @@ class LibraryAssetTaskPublisher:
         )
 
 
+class LibraryGroupPrototypeTaskPublisher:
+    def publish(self, group_id: str) -> None:
+        celery_app.send_task(
+            "library.rebuild_group_prototypes",
+            args=[group_id],
+            queue="openclip",
+            priority=1,
+        )
+
+
 class EnhancementTaskPublisher:
     def publish(self, image_id: str) -> None:
         _publish_pipeline_task(type(self).__name__, image_id, "image.enhance", queue="enhance")

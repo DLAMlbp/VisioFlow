@@ -10,11 +10,15 @@ from src.repositories.jobs import ImageJobRepository
 from src.repositories.library import LibraryRepository
 from src.services.ai_model_config import load_ai_model_settings
 from src.services.images.embedding import ImageEmbeddingError, OpenClipImageEmbedder
+from src.services.images.group_match_index import find_cached_group_prototype_matches
 from src.services.images.similarity import (
+    CORE_MODE_EXACT,
     SCORE_VERSION,
     ScoredCandidate,
+    apply_shadow_mode,
     decide_similarity,
     score_candidate,
+    score_group_candidates,
 )
 from src.services.jobs.dispatch import EmbeddingTaskPublisher, MatchTaskPublisher
 from src.services.profiles import ProfileLoader
@@ -188,27 +192,52 @@ async def _match_image_library(image_id: str) -> None:
                             final_score=1.0,
                             feature_reliability=1.0,
                             feature_coverage=1.0,
+                            core_evidence_mode=CORE_MODE_EXACT,
+                            exact_match=True,
                             score_version=SCORE_VERSION,
                         )
                         for asset in exact_assets
                     )
                 else:
-                    similar_assets = await library_repository.find_similar_assets(
-                        list(item.embedding),
-                        similarity_profile.similarity_candidate_limit,
-                    )
-                    for asset, similarity_score in similar_assets:
-                        scored.append(
-                            score_candidate(
-                                asset=asset,
-                                tags=list(asset.group.tags),
-                                similarity_score=similarity_score,
+                    if (
+                        similarity_profile.similarity_group_matching_enabled
+                        and hasattr(library_repository, "find_group_prototype_assets")
+                    ):
+                        similar_assets = await find_cached_group_prototype_matches(
+                            library_repository,
+                            list(item.embedding),
+                            settings,
+                        )
+                    else:
+                        similar_assets = await library_repository.find_similar_assets(
+                            list(item.embedding),
+                            similarity_profile.similarity_candidate_limit,
+                        )
+                    if similarity_profile.similarity_group_matching_enabled:
+                        scored.extend(
+                            score_group_candidates(
+                                matches=similar_assets,
                                 query_content=query_content,
                                 settings=similarity_profile,
                             )
                         )
+                    else:
+                        for asset, similarity_score in similar_assets:
+                            scored.append(
+                                score_candidate(
+                                    asset=asset,
+                                    tags=list(asset.group.tags),
+                                    similarity_score=similarity_score,
+                                    query_content=query_content,
+                                    settings=similarity_profile,
+                                )
+                            )
                 decision = decide_similarity(
                     candidates=scored, settings=similarity_profile
+                )
+                decision = apply_shadow_mode(
+                    decision,
+                    enabled=getattr(settings, "library_match_shadow_mode", False),
                 )
             except Exception as exc:
                 logger.exception("Unable to match image against material library")

@@ -118,6 +118,10 @@ class Settings(BaseSettings):
     library_image_only_matching_enabled: bool = True
     library_only_tags_enabled: bool = True
     library_match_shadow_mode: bool = False
+    library_group_index_max_age_seconds: int = Field(default=300, ge=10, le=3600)
+    library_group_index_version_check_seconds: float = Field(
+        default=2.0, ge=0.25, le=60.0
+    )
     cleanup_interval_seconds: int = 3600
     cleanup_batch_size: int = Field(default=1000, ge=1, le=10000)
     pipeline_recovery_interval_seconds: int = Field(default=30, ge=5, le=60)

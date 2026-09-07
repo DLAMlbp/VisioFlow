@@ -14,6 +14,8 @@ from src.db.session import AsyncSessionLocal
 from src.repositories.library import LibraryRepository
 from src.services.ai_model_config import load_ai_model_settings
 from src.services.images.embedding import ImageEmbeddingError, OpenClipImageEmbedder
+from src.services.images.group_match_index import invalidate_group_prototype_index
+from src.services.images.group_prototypes import select_diverse_group_prototypes
 from src.services.images.metadata import (
     build_perceptual_hash,
     detect_image_content_type,
@@ -28,6 +30,7 @@ from src.services.images.tagging import (
 )
 from src.services.storage.factory import get_storage_provider
 from src.services.storage.keys import build_library_thumbnail_object_key
+from src.services.profiles import ProfileLoader
 from src.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -114,6 +117,7 @@ async def _process_library_asset(asset_id: str) -> None:
                     "error_message": None,
                 },
             )
+            await _rebuild_group_prototypes(repository, asset.group_id)
         except (ImageEmbeddingError, OSError, UnidentifiedImageError, ValueError) as exc:
             emit_metric(
                 logger,
@@ -158,6 +162,26 @@ def backfill_library_content_features() -> None:
     asyncio.run(_backfill_library_content_features())
 
 
+@celery_app.task(
+    name="library.rebuild_group_prototypes",
+    queue="openclip",
+    priority=1,
+    max_retries=0,
+)
+def rebuild_library_group_prototypes(group_id: str) -> None:
+    asyncio.run(_rebuild_library_group_prototypes(group_id))
+
+
+@celery_app.task(
+    name="library.backfill_group_prototypes",
+    queue="openclip",
+    priority=1,
+    max_retries=0,
+)
+def backfill_library_group_prototypes() -> None:
+    asyncio.run(_backfill_library_group_prototypes())
+
+
 async def _backfill_library_content_features() -> None:
     async with AsyncSessionLocal() as session:
         repository = LibraryRepository(session)
@@ -169,6 +193,46 @@ async def _backfill_library_content_features() -> None:
             queue="openclip",
             priority=1,
         )
+
+
+async def _rebuild_library_group_prototypes(group_id: str) -> None:
+    async with AsyncSessionLocal() as session:
+        await _rebuild_group_prototypes(LibraryRepository(session), group_id)
+
+
+async def _backfill_library_group_prototypes() -> None:
+    settings = load_ai_model_settings(get_settings())
+    profile = ProfileLoader(settings).get_similarity_profile(
+        settings.default_similarity_profile
+    )
+    async with AsyncSessionLocal() as session:
+        repository = LibraryRepository(session)
+        group_ids = await repository.list_groups_needing_prototype_refresh(
+            max_prototypes=profile.similarity_group_max_prototypes,
+            limit=100,
+        )
+        for group_id in group_ids:
+            await _rebuild_group_prototypes(repository, group_id, profile=profile)
+
+
+async def _rebuild_group_prototypes(
+    repository: LibraryRepository,
+    group_id: str,
+    *,
+    profile=None,
+) -> None:
+    settings = load_ai_model_settings(get_settings())
+    if profile is None:
+        profile = ProfileLoader(settings).get_similarity_profile(
+            settings.default_similarity_profile
+        )
+    assets = await repository.list_active_group_assets_with_embeddings(group_id)
+    prototype_ids = select_diverse_group_prototypes(
+        assets,
+        limit=profile.similarity_group_max_prototypes,
+    )
+    await repository.replace_group_prototypes(group_id, prototype_ids)
+    invalidate_group_prototype_index(settings)
 
 
 def _prepare_library_image(image_bytes: bytes) -> PreparedLibraryImage:

@@ -1,6 +1,6 @@
 id: library_similarity_v2
-version: 9
-description: reliability_v4；原图向量保持稳定，内容权重按覆盖率和真实置信度在 0%-30% 内变化，综合分达到 60% 即自动继承素材组标签。
+version: 13
+description: group_reliability_v2；核心语义与综合匹配度达到 70%、候选组间差距达到 3% 后继承完整素材组标签，其他结果直接淘汰。
 
 similarity_candidate_limit: 20
 similarity_image_weight: 0.70
@@ -19,6 +19,217 @@ similarity_field_weights:
   ocr_text: 0.12
   attributes: 0.05
   features: 0.05
-similarity_auto_threshold: 0.60
-similarity_review_threshold: 0.45
-similarity_min_margin: 0.00
+similarity_auto_threshold: 0.70
+similarity_review_threshold: 0.70
+similarity_min_margin: 0.03
+similarity_group_matching_enabled: true
+similarity_group_visual_best_weight: 0.65
+similarity_group_max_prototypes: 12
+similarity_group_support_threshold: 0.78
+similarity_group_content_refine_limit: 16
+similarity_group_min_content_confidence: 0.60
+similarity_group_semantic_bonus: 0.06
+similarity_group_unsupported_auto_threshold: 0.70
+similarity_group_fallback_auto_enabled: false
+similarity_group_fallback_auto_threshold: 0.92
+similarity_group_fallback_min_margin: 0.12
+similarity_group_fallback_min_support: 2
+similarity_group_fallback_min_feature_score: 0.70
+similarity_group_fallback_min_feature_strength: 0.10
+
+# 这些概念只参与组的准入判断，不会拆分、改写或生成业务标签。
+similarity_semantic_concepts:
+  living_room: [客厅, 起居室, 客餐厅, 沙发区, 电视背景墙]
+  dining_room: [餐厅, 用餐区, 客餐厅, 餐桌, 餐椅]
+  kitchen: [厨房, 灶台, 油烟机, 厨房水槽, 橱柜操作台]
+  bathroom: [卫生间, 浴室, 洗手间, 马桶, 坐便器, 淋浴区, 浴缸, 浴室柜]
+  bedroom: [卧室, 睡眠区, 床头, 衣柜与床]
+  balcony: [阳台, 露台, 晾晒区]
+  hallway: [过道, 走廊, 楼道, 楼梯间]
+  room_door: [房门, 入户门, 室内门, 木门, 门套, 门框]
+  residential_entrance: [小区门头, 小区入口, 小区名称, 小区外立面, 住宅区入口]
+  quotation_document: [手写报价, 报价单, 预算表, 工程预算, 价格表, 手写金额]
+  schedule_document: [行程安排, 日程, 排期, 时间表, 行程表]
+  positive_review: [业主好评, 业主评价, 感谢, 锦旗, 好评截图, 聊天好评]
+  selfie: [自拍, 自拍照, 人物近照, 手持手机自拍, 镜面自拍]
+  commencement_ceremony: [开工大吉, 开工仪式, 开工庆祝, 开工活动, 开工锤, 红色横幅]
+  demolition: [拆除, 打拆, 凿除, 墙体拆除, 瓷砖拆除, 墙地砖铲除, 建筑垃圾]
+  water_electric: [水电, 电线, 电缆, 线管, 电管, 水管, 给排水管, 开槽布管, 强弱电箱]
+  woodwork: [木工, 木作, 木饰面, 木板, 板材, 石膏板, 龙骨, 吊顶, 柜体, 封板, 护墙板]
+  masonry: [泥工, 瓦工, 泥瓦, 砌砖, 贴砖, 瓷砖铺贴, 防水层, 找平层]
+  painting: [油漆, 墙漆, 乳胶漆, 腻子, 涂刷, 喷漆, 墙面漆]
+  materials: [材料进场, 建材, 板材堆放, 瓷砖箱, 水泥袋, 电线卷, 管材, 材料验收]
+  main_installation: [主材安装, 洁具安装, 灯具安装, 木门安装, 地板安装, 橱柜安装, 五金安装]
+  cabinet_installation: [打柜子, 柜体施工, 定制柜, 柜子安装, 柜体安装, 现场木作柜]
+  inspection: [验收, 检查施工, 测量检查, 检测仪, 验收记录, 现场核验]
+  completed_state: [完工, 完成, 已完成, 已安装, 已铺设, 已封板, 已成型, 竣工, 收尾]
+  pre_renovation: [装修前, 改造前, 原始状态, 原始房屋, 未装修, 待改造]
+  old_house: [老房, 旧房, 老旧住宅, 老旧室内, 陈旧房屋, 陈旧室内, 老化痕迹, 老房改造]
+  new_house: [新房, 新房毛坯, 毛坯新房, 新建住宅]
+  completed_case: [完工案例, 竣工实景, 装修完成, 改造完成, 成品空间]
+  in_progress: [施工中, 正在施工, 正在拆除, 拆除中, 未完成, 尚未, 未收尾, 进行中, 管线外露, 电线外露]
+
+similarity_group_tag_rules:
+  客厅:
+    dimension: space
+    fields: [space, scene, subjects]
+    keywords: [客厅, 起居室, 客餐厅]
+    required_concepts: [living_room]
+  餐厅:
+    dimension: space
+    fields: [space, scene, subjects]
+    keywords: [餐厅, 用餐区, 客餐厅]
+    required_concepts: [dining_room]
+  客餐厅:
+    dimension: space
+    fields: [space, scene, subjects]
+    keywords: [客餐厅, 客厅餐厅一体, 客厅与餐厅]
+    required_concepts: [living_room, dining_room]
+  厨房:
+    dimension: space
+    fields: [space, scene, subjects, objects]
+    keywords: [厨房, 橱柜, 灶台, 油烟机]
+    required_concepts: [kitchen]
+  卫生间:
+    dimension: space
+    fields: [space, scene, subjects, objects]
+    keywords: [卫生间, 浴室, 洗手间, 马桶, 坐便器, 淋浴区, 浴缸]
+    required_concepts: [bathroom]
+  卧室:
+    dimension: space
+    fields: [space, scene, subjects]
+    keywords: [卧室, 睡眠区]
+    required_concepts: [bedroom]
+  阳台:
+    dimension: space
+    fields: [space, scene, subjects]
+    keywords: [阳台, 露台]
+    required_concepts: [balcony]
+  老房子过道:
+    dimension: space
+    fields: [space, scene, subjects]
+    keywords: [过道, 走廊, 楼道, 楼梯]
+    required_concepts: [old_house, hallway]
+  老房子房门:
+    dimension: subject
+    fields: [scene, subjects, objects]
+    keywords: [房门, 入户门, 木门, 门框]
+    required_concepts: [room_door]
+  小区门头照:
+    dimension: subject
+    fields: [scene, subjects, objects, ocr_text]
+    keywords: [小区门头, 小区入口, 小区名称, 建筑外观, 小区外立面]
+    required_concepts: [residential_entrance]
+  手写报价:
+    dimension: content
+    fields: [content_type, scene, subjects, objects, ocr_text]
+    keywords: [手写报价, 报价单, 预算表, 工程预算, 价格表]
+    required_concepts: [quotation_document]
+  行程安排:
+    dimension: content
+    fields: [content_type, scene, subjects, objects, ocr_text]
+    keywords: [行程安排, 日程, 排期, 时间表]
+    required_concepts: [schedule_document]
+  业主好评:
+    dimension: content
+    fields: [content_type, scene, subjects, objects, ocr_text]
+    keywords: [业主好评, 业主评价, 感谢, 锦旗]
+    required_concepts: [positive_review]
+  自拍照:
+    dimension: content
+    fields: [content_type, scene, subjects, objects]
+    keywords: [自拍, 自拍照, 人物近照]
+    required_concepts: [selfie]
+  开工大吉:
+    dimension: event
+    fields: [scene, condition, subjects, objects, ocr_text]
+    keywords: [开工大吉, 开工仪式, 开工庆祝, 开工活动]
+    required_concepts: [commencement_ceremony]
+  拆除:
+    dimension: stage
+    fields: [scene, condition, subjects, objects, features]
+    keywords: [拆除, 打拆, 凿除, 墙体拆除, 瓷砖拆除]
+    required_concepts: [demolition]
+  拆除完工:
+    dimension: stage
+    fields: [scene, condition, subjects, objects, features]
+    keywords: [拆除完成, 拆除完工, 打拆完成, 打拆完工]
+    required_concepts: [demolition]
+    supporting_concepts: [completed_state]
+  水电完工:
+    dimension: stage
+    fields: [scene, condition, subjects, objects, features]
+    keywords: [水电完工, 水电完成, 水电施工完成]
+    required_concepts: [water_electric]
+    supporting_concepts: [completed_state]
+  水电验收:
+    dimension: stage
+    fields: [scene, condition, subjects, objects, features]
+    keywords: [水电验收, 验收水电]
+    required_concepts: [water_electric, inspection]
+  木工:
+    dimension: stage
+    fields: [scene, condition, subjects, objects, features]
+    keywords: [木工施工, 木作施工, 木工]
+    required_concepts: [woodwork]
+    forbidden_concepts: [cabinet_installation]
+  木工完工:
+    dimension: stage
+    fields: [scene, condition, subjects, objects, features]
+    keywords: [木工完工, 木工完成, 木作完工]
+    required_concepts: [woodwork]
+    supporting_concepts: [completed_state]
+    forbidden_concepts: [cabinet_installation]
+  木工验收:
+    dimension: stage
+    fields: [scene, condition, subjects, objects, features]
+    keywords: [木工验收, 木作验收]
+    required_concepts: [woodwork, inspection]
+  泥工验收:
+    dimension: stage
+    fields: [scene, condition, subjects, objects, features]
+    keywords: [泥工验收, 瓦工验收, 泥瓦验收]
+    required_concepts: [masonry, inspection]
+  油漆完工:
+    dimension: stage
+    fields: [scene, condition, subjects, objects, features]
+    keywords: [油漆完工, 涂刷完成, 墙漆完成]
+    required_concepts: [painting]
+    supporting_concepts: [completed_state]
+  材料验收:
+    dimension: stage
+    fields: [scene, condition, subjects, objects, features, ocr_text]
+    keywords: [材料验收, 材料进场, 建材验收]
+    required_concepts: [materials]
+    supporting_concepts: [inspection]
+  主材安装验收:
+    dimension: stage
+    fields: [scene, condition, subjects, objects, features]
+    keywords: [主材安装, 安装验收, 主材验收]
+    required_concepts: [main_installation]
+    supporting_concepts: [inspection]
+  打柜子:
+    dimension: stage
+    fields: [scene, condition, subjects, objects, features]
+    keywords: [打柜子, 柜体施工, 定制柜安装, 柜子安装]
+    required_concepts: [cabinet_installation, in_progress]
+  装修前:
+    dimension: stage
+    fields: [scene, condition, subjects, objects, features]
+    keywords: [装修前, 改造前, 原始状态]
+    required_concepts: [pre_renovation]
+  老房子装修前:
+    dimension: stage
+    fields: [scene, condition, subjects, objects, features]
+    keywords: [老房装修前, 旧房装修前, 老房改造前, 旧房改造前, 原始老房]
+    required_concepts: [old_house, pre_renovation]
+  新房装修前:
+    dimension: stage
+    fields: [scene, condition, subjects, objects, features]
+    keywords: [新房装修前, 新房原始状态, 新房毛坯]
+    required_concepts: [new_house, pre_renovation]
+  完工案例:
+    dimension: stage
+    fields: [scene, condition, subjects, objects, features]
+    keywords: [完工, 竣工, 装修完成, 改造完成]
+    required_concepts: [completed_case]
