@@ -312,12 +312,19 @@ class NaturalBeautifyService:
         if not np.any(glare_mask):
             return image, False
 
+        del hsv, candidate_mask, labels, stats
         alpha = cv2.GaussianBlur(glare_mask, (0, 0), sigmaX=5).astype(np.float32) / 255
         alpha *= profile.glare_reduction_strength
-        lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
-        compressed_lightness = 215 + (lab[:, :, 0] - 215) * 0.45
-        lab[:, :, 0] = lab[:, :, 0] * (1 - alpha) + compressed_lightness * alpha
-        corrected = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
+        lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)
+        # Only lightness changes; keep the two color channels in their byte form.
+        lightness = lab[:, :, 0].astype(np.float32)
+        compressed_lightness = 215 + (lightness - 215) * 0.45
+        lightness *= 1 - alpha
+        compressed_lightness *= alpha
+        lightness += compressed_lightness
+        np.clip(lightness, 0, 255, out=lightness)
+        lab[:, :, 0] = lightness.astype(np.uint8)
+        corrected = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
         return Image.fromarray(corrected), True
 
     @staticmethod
@@ -330,13 +337,28 @@ class NaturalBeautifyService:
         gradient_x = cv2.Sobel(grayscale, cv2.CV_32F, 1, 0, ksize=3)
         gradient_y = cv2.Sobel(grayscale, cv2.CV_32F, 0, 1, ksize=3)
         gradient = cv2.magnitude(gradient_x, gradient_y)
-        edge_mask = np.clip((gradient - 28) / 90, 0, 1)
-        edge_mask = cv2.GaussianBlur(edge_mask, (0, 0), sigmaX=1.2)
+        del grayscale, gradient_x, gradient_y
+        gradient -= 28
+        gradient /= 90
+        np.clip(gradient, 0, 1, out=gradient)
+        edge_mask = cv2.GaussianBlur(gradient, (0, 0), sigmaX=1.2)
+        del gradient
         blurred = cv2.GaussianBlur(rgb, (0, 0), sigmaX=1.1)
         detailed = cv2.addWeighted(rgb, 1.35, blurred, -0.35, 0)
-        alpha = (edge_mask * profile.local_clarity_strength)[:, :, None]
-        enhanced = rgb.astype(np.float32) * (1 - alpha) + detailed.astype(np.float32) * alpha
-        return Image.fromarray(np.clip(enhanced, 0, 255).astype(np.uint8)), True
+        del blurred
+        edge_mask *= profile.local_clarity_strength
+        inverse_alpha = 1 - edge_mask
+        enhanced = np.empty_like(rgb)
+        # Blend one channel at a time instead of keeping several full RGB floats.
+        for channel in range(3):
+            source = rgb[:, :, channel].astype(np.float32)
+            detail = detailed[:, :, channel].astype(np.float32)
+            source *= inverse_alpha
+            detail *= edge_mask
+            source += detail
+            np.clip(source, 0, 255, out=source)
+            enhanced[:, :, channel] = source.astype(np.uint8)
+        return Image.fromarray(enhanced), True
 
     @staticmethod
     def _apply_output_sharpness(
@@ -349,10 +371,16 @@ class NaturalBeautifyService:
             return ImageEnhance.Sharpness(image).enhance(profile.sharpness), True
 
         rgb = np.asarray(image).astype(np.float32)
-        blurred = cv2.GaussianBlur(rgb, (0, 0), sigmaX=1.0)
-        detail = rgb - blurred
-        edge_strength = np.max(np.abs(detail), axis=2)
+        detail = cv2.GaussianBlur(rgb, (0, 0), sigmaX=1.0)
+        np.subtract(rgb, detail, out=detail)
+        edge_strength = np.abs(detail[:, :, 0])
+        for channel in (1, 2):
+            np.maximum(edge_strength, np.abs(detail[:, :, channel]), out=edge_strength)
         mask = cv2.GaussianBlur((edge_strength >= 6).astype(np.float32), (0, 0), sigmaX=0.8)
+        del edge_strength
         amount = min(1.5, (profile.sharpness - 1.0) * 1.5)
-        sharpened = rgb + detail * amount * mask[:, :, None]
-        return Image.fromarray(np.clip(sharpened, 0, 255).astype(np.uint8)), True
+        detail *= amount
+        detail *= mask[:, :, None]
+        rgb += detail
+        np.clip(rgb, 0, 255, out=rgb)
+        return Image.fromarray(rgb.astype(np.uint8)), True

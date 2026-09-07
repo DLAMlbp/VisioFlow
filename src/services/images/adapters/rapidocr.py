@@ -6,6 +6,8 @@ from threading import Lock
 
 import numpy as np
 
+from src.core.config import get_settings
+
 
 @dataclass(frozen=True)
 class OcrTextLine:
@@ -27,6 +29,10 @@ def _engine() -> tuple[object, Lock]:
         "Det.engine_type": EngineType.OPENVINO,
         "Cls.engine_type": EngineType.OPENVINO,
         "Rec.engine_type": EngineType.OPENVINO,
+        # Calls are serialized by the lock; extra streams only reserve more memory.
+        "EngineConfig.openvino.inference_num_threads": get_settings().redaction_onnx_threads,
+        "EngineConfig.openvino.num_streams": 1,
+        "EngineConfig.openvino.performance_num_requests": 1,
     }
     return RapidOCR(params=params), Lock()
 

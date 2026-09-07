@@ -1,9 +1,63 @@
 from io import BytesIO
 
+import cv2
+import numpy as np
 from PIL import Image, ImageDraw
 
 from src.services.images.beautify import NaturalBeautifyService
 from src.services.profiles import BeautifyProfile
+
+
+def test_memory_bounded_blending_preserves_original_vectorized_pixels() -> None:
+    """Use the original formulas as an oracle for the buffer reuse optimization."""
+    rgb = np.random.default_rng(42).integers(0, 256, (151, 201, 3), dtype=np.uint8)
+    image = Image.fromarray(rgb)
+    profile = BeautifyProfile(
+        id="compatibility", version=1, description="test", brightness=1,
+        contrast=1, color=1, sharpness=1.08, jpeg_quality=90,
+        local_clarity_strength=0.14,
+    )
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    gradient = cv2.magnitude(
+        cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3),
+        cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3),
+    )
+    edge = cv2.GaussianBlur(np.clip((gradient - 28) / 90, 0, 1), (0, 0), sigmaX=1.2)
+    detailed = cv2.addWeighted(rgb, 1.35, cv2.GaussianBlur(rgb, (0, 0), sigmaX=1.1), -0.35, 0)
+    alpha = (edge * profile.local_clarity_strength)[:, :, None]
+    expected = rgb.astype(np.float32) * (1 - alpha) + detailed.astype(np.float32) * alpha
+    actual, applied = NaturalBeautifyService._enhance_local_clarity(image, profile)
+    assert applied
+    np.testing.assert_array_equal(np.asarray(actual), np.clip(expected, 0, 255).astype(np.uint8))
+
+    floats = rgb.astype(np.float32)
+    detail = floats - cv2.GaussianBlur(floats, (0, 0), sigmaX=1.0)
+    edge_strength = np.max(np.abs(detail), axis=2)
+    mask = cv2.GaussianBlur((edge_strength >= 6).astype(np.float32), (0, 0), sigmaX=0.8)
+    expected = floats + detail * min(1.5, (profile.sharpness - 1) * 1.5) * mask[:, :, None]
+    actual, applied = NaturalBeautifyService._apply_output_sharpness(image, profile)
+    assert applied
+    np.testing.assert_array_equal(np.asarray(actual), np.clip(expected, 0, 255).astype(np.uint8))
+
+
+def test_lightness_only_glare_blending_preserves_color_channels_and_pixels() -> None:
+    rgb = np.full((151, 201, 3), 128, dtype=np.uint8)
+    rgb[60:76, 90:106] = 255
+    profile = BeautifyProfile(
+        id="compatibility", version=1, description="test", brightness=1,
+        contrast=1, color=1, sharpness=1, jpeg_quality=90, glare_reduction_strength=0.2,
+    )
+    mask = np.zeros(rgb.shape[:2], dtype=np.uint8)
+    mask[60:76, 90:106] = 255
+    alpha = cv2.GaussianBlur(mask, (0, 0), sigmaX=5).astype(np.float32) / 255
+    alpha *= profile.glare_reduction_strength
+    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+    compressed = 215 + (lab[:, :, 0] - 215) * 0.45
+    lab[:, :, 0] = lab[:, :, 0] * (1 - alpha) + compressed * alpha
+    expected = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
+    actual, applied = NaturalBeautifyService._reduce_glare(Image.fromarray(rgb), profile)
+    assert applied
+    np.testing.assert_array_equal(np.asarray(actual), expected)
 
 
 def test_natural_beautify_returns_a_2k_jpeg_for_smaller_source_images() -> None:
