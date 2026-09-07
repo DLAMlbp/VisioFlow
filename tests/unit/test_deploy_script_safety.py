@@ -15,7 +15,9 @@ def test_production_compose_uses_the_consolidated_worker_topology() -> None:
     assert "worker-library:" not in compose
     assert "worker-filter:" not in compose
     assert "worker-vision:" not in compose
-    assert "-Q classification,filtering -l info --concurrency=4" in compose
+    assert "-Q classification,filtering -l info --concurrency=8" in compose
+    assert "-Q beautify_plan -l info --concurrency=4" in compose
+    assert "-Q analysis -l info --concurrency=4" in compose
 
 
 def test_worker_healthcheck_does_not_use_celery_pidbox_or_reload_models() -> None:

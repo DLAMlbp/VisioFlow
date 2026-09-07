@@ -134,6 +134,8 @@ class CallbackJob:
 
 
 class ImageJobRepository:
+    # Requests can keep a transaction open while waiting for AI or storage.
+    # Transition timestamps must reflect the write, not transaction-start now().
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
@@ -224,7 +226,7 @@ class ImageJobRepository:
         await self.session.execute(
             update(ImageItem)
             .where(ImageItem.id.in_(image_ids), ImageItem.preprocess_dispatched_at.is_(None))
-            .values(preprocess_dispatched_at=func.now())
+            .values(preprocess_dispatched_at=func.clock_timestamp())
         )
         await self.session.commit()
 
@@ -245,7 +247,7 @@ class ImageJobRepository:
         row = await self.session.execute(
             update(ImageItem)
             .where(ImageItem.id == image_id, ImageItem.status == "queued")
-            .values(status="analyzing", preprocess_started_at=func.now())
+            .values(status="analyzing", preprocess_started_at=func.clock_timestamp())
             .returning(ImageItem.job_id)
         )
         job_id = row.scalar_one_or_none()
@@ -255,7 +257,7 @@ class ImageJobRepository:
         await self.session.execute(
             update(ImageJob)
             .where(ImageJob.id == job_id, ImageJob.cancel_requested_at.is_(None))
-            .values(status="processing", started_at=func.coalesce(ImageJob.started_at, func.now()))
+            .values(status="processing", started_at=func.coalesce(ImageJob.started_at, func.clock_timestamp()))
         )
         await self.session.commit()
         return await self.get_item(image_id)
@@ -270,9 +272,9 @@ class ImageJobRepository:
             )
             .values(
                 status="enhancing",
-                enhance_started_at=func.now(),
+                enhance_started_at=func.clock_timestamp(),
                 enhancement_stage="redaction",
-                enhancement_stage_started_at=func.now(),
+                enhancement_stage_started_at=func.clock_timestamp(),
                 enhancement_recovery_attempts=0,
             )
             .returning(ImageItem.id)
@@ -296,7 +298,7 @@ class ImageJobRepository:
                 ImageItem.enhancement_stage == expected_stage,
                 ImageItem.enhancement_stage_started_at.is_(None),
             )
-            .values(enhancement_stage_started_at=func.now())
+            .values(enhancement_stage_started_at=func.clock_timestamp())
             .returning(ImageItem.id)
         )
         if row.scalar_one_or_none() is None:
@@ -456,7 +458,7 @@ class ImageJobRepository:
             .values(
                 status="beautify_planning",
                 beautify_plan_status="processing",
-                beautify_plan_started_at=func.now(),
+                beautify_plan_started_at=func.clock_timestamp(),
             )
             .returning(ImageItem.id)
         )
@@ -485,7 +487,7 @@ class ImageJobRepository:
             "beautify_plan_json": dict(payload) if payload is not None else None,
             "beautify_plan_error": error_message,
             "beautify_plan_completed_at": (
-                func.now() if status in {"completed", "failed"} else None
+                func.clock_timestamp() if status in {"completed", "failed"} else None
             ),
         }
         if status == "completed":
@@ -512,7 +514,9 @@ class ImageJobRepository:
             )
             .values(
                 completion_status="pending",
-                preprocess_completed_at=func.now(),
+                preprocess_completed_at=func.coalesce(
+                    ImageItem.preprocess_completed_at, func.clock_timestamp()
+                ),
             )
         )
         await self.session.commit()
@@ -529,7 +533,7 @@ class ImageJobRepository:
                 ImageItem.status == "analyzing",
                 ImageItem.completion_status == "pending",
             )
-            .values(completion_status="processing", completion_started_at=func.now())
+            .values(completion_status="processing", completion_started_at=func.clock_timestamp())
             .returning(ImageItem.id)
         )
         if result.scalar_one_or_none() is None:
@@ -568,7 +572,7 @@ class ImageJobRepository:
             "review_required": review_required,
             "routed_filter_profile_id": routed_filter_profile_id,
             "routed_filter_profile_version": routed_filter_profile_version,
-            "completion_completed_at": func.now(),
+            "completion_completed_at": func.clock_timestamp(),
         }
         if status == "completed" and routed_filter_profile_id:
             values["ai_processing_status"] = "pending"
@@ -653,7 +657,7 @@ class ImageJobRepository:
                 completion_label=completion_label,
                 completion_confidence=confidence,
                 review_required=review_required,
-                completion_completed_at=func.now(),
+                completion_completed_at=func.clock_timestamp(),
                 routed_filter_profile_id=routed_filter_profile_id,
                 routed_filter_profile_version=routed_filter_profile_version,
                 ai_processing_status="completed",
@@ -669,8 +673,10 @@ class ImageJobRepository:
                     ImageItem.ai_processing_started_at,
                     ImageItem.completion_started_at,
                 ),
-                ai_processing_completed_at=func.now(),
-                preprocess_completed_at=func.now(),
+                ai_processing_completed_at=func.clock_timestamp(),
+                preprocess_completed_at=func.coalesce(
+                    ImageItem.preprocess_completed_at, func.clock_timestamp()
+                ),
                 reject_codes=None if passed else list(reject_codes or []),
             )
         )
@@ -733,7 +739,7 @@ class ImageJobRepository:
                 completion_prompt_version=completion_prompt_version,
                 completion_duration_ms=duration_ms,
                 completion_error=error_message,
-                completion_completed_at=func.now(),
+                completion_completed_at=func.clock_timestamp(),
                 ai_processing_status="failed",
                 ai_processing_diagnostic_json=(
                     dict(diagnostic_json) if diagnostic_json is not None else None
@@ -746,8 +752,10 @@ class ImageJobRepository:
                     ImageItem.ai_processing_started_at,
                     ImageItem.completion_started_at,
                 ),
-                ai_processing_completed_at=func.now(),
-                preprocess_completed_at=func.now(),
+                ai_processing_completed_at=func.clock_timestamp(),
+                preprocess_completed_at=func.coalesce(
+                    ImageItem.preprocess_completed_at, func.clock_timestamp()
+                ),
             )
         )
         if result.rowcount != 1:
@@ -780,7 +788,7 @@ class ImageJobRepository:
             )
             .values(
                 ai_processing_status="processing",
-                ai_processing_started_at=func.now(),
+                ai_processing_started_at=func.clock_timestamp(),
             )
             .returning(ImageItem.id)
         )
@@ -798,7 +806,7 @@ class ImageJobRepository:
                 ImageItem.status.in_(_POST_FILTER_ACTIVE_STATUSES),
                 ImageItem.analysis_status == "pending",
             )
-            .values(analysis_status="processing", analysis_started_at=func.now())
+            .values(analysis_status="processing", analysis_started_at=func.clock_timestamp())
             .returning(ImageItem.id)
         )
         if result.scalar_one_or_none() is None:
@@ -826,7 +834,7 @@ class ImageJobRepository:
         result = await self.session.execute(
             update(ImageItem)
             .where(ImageItem.id.in_(candidates))
-            .values(analysis_status="processing", analysis_started_at=func.now())
+            .values(analysis_status="processing", analysis_started_at=func.clock_timestamp())
             .returning(ImageItem.id)
         )
         claimed_ids = list(result.scalars())
@@ -839,7 +847,7 @@ class ImageJobRepository:
             .where(ImageItem.id == image_id, ImageItem.analysis_status == "processing")
             .values(
                 analysis_status="completed" if succeeded else "failed",
-                analysis_completed_at=func.now(),
+                analysis_completed_at=func.clock_timestamp(),
             )
         )
         await self.session.commit()
@@ -852,7 +860,7 @@ class ImageJobRepository:
                 ImageItem.status.in_(_POST_FILTER_ACTIVE_STATUSES),
                 ImageItem.embedding_status == "pending",
             )
-            .values(embedding_status="processing", embedding_started_at=func.now())
+            .values(embedding_status="processing", embedding_started_at=func.clock_timestamp())
             .returning(ImageItem.id)
         )
         if result.scalar_one_or_none() is None:
@@ -927,7 +935,7 @@ class ImageJobRepository:
                 embedding=embedding,
                 embedding_version=embedding_version,
                 embedding_status=completed_status,
-                embedding_completed_at=func.now(),
+                embedding_completed_at=func.clock_timestamp(),
             )
         )
         await self.session.commit()
@@ -976,7 +984,7 @@ class ImageJobRepository:
                 ImageItem.status.in_(_POST_FILTER_ACTIVE_STATUSES),
                 ImageItem.match_status == "queued",
             )
-            .values(match_status="processing", match_started_at=func.now())
+            .values(match_status="processing", match_started_at=func.clock_timestamp())
             .returning(ImageItem.id)
         )
         if result.scalar_one_or_none() is None:
@@ -989,7 +997,7 @@ class ImageJobRepository:
         await self.session.execute(
             update(ImageItem)
             .where(ImageItem.id == image_id, ImageItem.match_status == "processing")
-            .values(match_status="completed", match_completed_at=func.now())
+            .values(match_status="completed", match_completed_at=func.clock_timestamp())
         )
         await self.session.commit()
 
@@ -1169,7 +1177,7 @@ class ImageJobRepository:
                 rejected_count=ImageJob.rejected_count + 1,
             )
         )
-        item.preprocess_completed_at = item.preprocess_completed_at or func.now()
+        item.preprocess_completed_at = item.preprocess_completed_at or func.clock_timestamp()
         await self.session.commit()
         await self.complete_job_if_finished(item.job_id)
 
@@ -1199,7 +1207,7 @@ class ImageJobRepository:
                 ai_processing_duration_ms=duration_ms,
                 ai_processing_error=error_message,
                 ai_processing_completed_at=(
-                    func.now() if status in {"completed", "failed"} else None
+                    func.clock_timestamp() if status in {"completed", "failed"} else None
                 ),
             )
         )
@@ -1227,39 +1235,43 @@ class ImageJobRepository:
         """Fail one image without cancelling healthy siblings in the same job."""
         failure_node = node or _failure_node_for_item(item)
         safe_reason = _safe_failure_message(reason)
-        stage_values: dict[str, object] = {"preprocess_completed_at": func.now()}
+        stage_values: dict[str, object] = {
+            "preprocess_completed_at": func.coalesce(
+                ImageItem.preprocess_completed_at, func.clock_timestamp()
+            )
+        }
         if failure_node in {"classification", "classification_and_filtering"}:
             stage_values.update(
                 completion_status="failed",
                 completion_error=safe_reason,
-                completion_completed_at=func.now(),
+                completion_completed_at=func.clock_timestamp(),
             )
         if failure_node in {"filtering", "classification_and_filtering"}:
             stage_values.update(
                 ai_processing_status="failed",
                 ai_processing_error=safe_reason,
-                ai_processing_completed_at=func.now(),
+                ai_processing_completed_at=func.clock_timestamp(),
             )
         if failure_node == "beautify_planning":
             stage_values.update(
                 beautify_plan_status="failed",
                 beautify_plan_error=safe_reason,
-                beautify_plan_completed_at=func.now(),
+                beautify_plan_completed_at=func.clock_timestamp(),
             )
         if failure_node == "content_analysis":
             stage_values.update(
                 analysis_status="failed",
-                analysis_completed_at=func.now(),
+                analysis_completed_at=func.clock_timestamp(),
             )
         if failure_node == "embedding":
             stage_values.update(
                 embedding_status="failed",
-                embedding_completed_at=func.now(),
+                embedding_completed_at=func.clock_timestamp(),
             )
         if failure_node == "matching":
             stage_values.update(
                 match_status="failed",
-                match_completed_at=func.now(),
+                match_completed_at=func.clock_timestamp(),
             )
 
         if not await self._transition_to_terminal(item, "failed", stage_values):
@@ -1321,7 +1333,7 @@ class ImageJobRepository:
                 failed_image_id=item.id,
                 failure_duration_ms=duration_ms,
                 upstream_status_code=upstream_status_code,
-                failed_at=func.now(),
+                failed_at=func.clock_timestamp(),
             )
         )
         await self.session.commit()
@@ -1360,15 +1372,15 @@ class ImageJobRepository:
             .values(
                 status="failed",
                 processed_count=ImageJob.total_count,
-                cancel_requested_at=func.now(),
-                completed_at=func.now(),
+                cancel_requested_at=func.clock_timestamp(),
+                completed_at=func.clock_timestamp(),
                 failed_node=node[:64],
                 failure_code=code[:64],
                 failure_message=safe_reason,
                 failed_image_id=image_id,
                 failure_duration_ms=duration_ms,
                 upstream_status_code=upstream_status_code,
-                failed_at=func.now(),
+                failed_at=func.clock_timestamp(),
             )
         )
         if transitioned.rowcount != 1:
@@ -1418,7 +1430,12 @@ class ImageJobRepository:
         transitioned = await self.session.execute(
             update(ImageItem)
             .where(ImageItem.id == item.id, ImageItem.status == "analyzing")
-            .values(status="filtered", preprocess_completed_at=func.now())
+            .values(
+                status="filtered",
+                preprocess_completed_at=func.coalesce(
+                    ImageItem.preprocess_completed_at, func.clock_timestamp()
+                ),
+            )
         )
         if transitioned.rowcount != 1:
             return False
@@ -1508,7 +1525,7 @@ class ImageJobRepository:
             .values(
                 status="enhanced",
                 analysis_object_key=analysis_object_key,
-                enhance_completed_at=func.now(),
+                enhance_completed_at=func.clock_timestamp(),
                 enhancement_stage="completed",
                 enhancement_stage_started_at=None,
                 enhancement_recovery_attempts=0,
@@ -1953,7 +1970,11 @@ class ImageJobRepository:
                 ImageJob.id == job_id,
                 ImageJob.status.not_in(("completed", "partial_failed", "failed", "cancelled")),
             )
-            .values(status="cancelled", cancel_requested_at=func.now(), completed_at=func.now())
+            .values(
+                status="cancelled",
+                cancel_requested_at=func.clock_timestamp(),
+                completed_at=func.clock_timestamp(),
+            )
         )
         if job_result.rowcount != 1:
             await self.session.rollback()
@@ -2065,7 +2086,7 @@ class ImageJobRepository:
                 callback_last_attempt_at=None,
                 callback_delivered_at=None,
                 callback_last_error=None,
-                deadline_at=func.now() + timedelta(minutes=30),
+                deadline_at=func.clock_timestamp() + timedelta(minutes=30),
                 failed_node=None,
                 failure_code=None,
                 failure_message=None,
@@ -2151,7 +2172,7 @@ class ImageJobRepository:
             )
             .values(
                 status=final_status,
-                completed_at=func.now(),
+                completed_at=func.clock_timestamp(),
             )
         )
         if result.rowcount == 1:
@@ -2271,7 +2292,7 @@ class ImageJobRepository:
             .values(
                 callback_status="delivered",
                 callback_next_attempt_at=None,
-                callback_delivered_at=func.now(),
+                callback_delivered_at=func.clock_timestamp(),
                 callback_last_error=None,
             )
         )
@@ -2306,7 +2327,7 @@ class ImageJobRepository:
             .values(
                 callback_status="pending",
                 callback_attempts=0,
-                callback_next_attempt_at=func.now(),
+                callback_next_attempt_at=func.clock_timestamp(),
                 callback_last_attempt_at=None,
                 callback_delivered_at=None,
                 callback_last_error=None,
