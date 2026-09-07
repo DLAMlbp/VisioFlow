@@ -8,8 +8,8 @@ from src.core.metrics import emit_metric
 from src.db.session import AsyncSessionLocal
 from src.repositories.jobs import ImageJobRepository
 from src.services.ai_model_config import load_ai_model_settings
-from src.services.images.hard_filter import RejectCode
 from src.services.images.cover_score import COVER_SCORE_VERSION, calculate_cover_score
+from src.services.images.hard_filter import RejectCode
 from src.services.images.processing_vision import (
     PROCESSING_PROMPT_VERSION,
     ProcessingVisionService,

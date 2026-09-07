@@ -33,7 +33,7 @@ Content-Type: application/json
 X-API-Key: <INTEGRATION_API_KEY>
 ```
 
-创建请求必须包含 `notifyUrl` 和 `images[].objectKey/imageUrl`。图片服务下载 URL 图片并保存客户 `objectKey`，任务进入终态后由 `control` Worker 按客户协议回调完整结果。
+创建请求必须包含 `notifyUrl` 和 `images[].objectKey/imageUrl`。图片服务下载 URL 图片并保存客户 `objectKey`，任务进入终态后由 `callback` Worker 按客户协议回调完整结果。
 
 正式模式固定执行“下载 URL 图片 -> 本地预检 -> 一次视觉 AI 完成分类与对应标准过滤 -> 过滤通过后并行执行美化、内容分析和 OpenCLIP 预向量 -> 从最终交付图刷新权威向量 -> 素材匹配与增强结果汇合 -> 继承素材组人工标签”。预向量不会触发最终匹配，客户不需要传内部处理标准，服务端使用已配置的正式标准。
 
@@ -63,7 +63,9 @@ X-Callback-Timestamp: <Unix 秒时间戳>
 X-Callback-Signature: sha256=<HMAC 十六进制摘要>
 ```
 
-回调体包含客户原始 `objectKey`、判定、0～100 质量分、美化图临时地址和标签。签名原文为 UTF-8 字节串 `<timestamp>.<raw_request_body>`，使用双方共享密钥计算 HMAC-SHA256。接收方返回任意 HTTP 2xx 即视为成功；非 2xx、连接失败或超时会指数退避重试，默认最多 5 次。接收方应按 `X-Callback-Id` 幂等处理。
+回调体包含客户原始 `objectKey`、判定、0～100 质量分、美化图临时地址和标签。签名原文为 UTF-8 字节串 `<timestamp>.<raw_request_body>`，使用双方共享密钥计算 HMAC-SHA256。接收方返回任意 HTTP 2xx 即视为成功；非 2xx、连接失败或超时会指数退避重试，当前默认最多投递 3 次（含首次）。接收方应按 `X-Callback-Id` 幂等处理，在结果持久化成功后返回 2xx。
+
+2026-09-07 核对的线上配置为：单次回调超时 15 秒，失败后重试等待基数 5 秒，补偿扫描间隔 5 秒，投递租约 120 秒。正常失败后的两次等待分别为 5 秒、10 秒，实际投递还包含扫描和排队时间；进程中断后还可能需要等待租约到期。不要把这些间隔相加当作回调送达时限。
 
 ```json
 {
@@ -106,9 +108,18 @@ curl "https://<service-host>/api/v1/integration/jobs/job_xxx/results?limit=50&of
 - `401`：集成密钥缺失或错误。
 - `404`：任务不存在。
 - `413`：整个上传请求超过 512 MB。
+- `429`：入口额度不足或队列繁忙；按响应的 `Retry-After` 秒数等待后再提交。
 - `503`：部署方尚未配置 `INTEGRATION_API_KEY`，或依赖服务未就绪。
 
 健康检查无需密钥：`GET /health`、`GET /health/ready`。
+
+## 自动化调用注意事项
+
+收到 HTTP 201 后立即持久化 `job_id` / `taskId` 与客户业务批次的对应关系，随后等待回调；回调延迟时用已有任务 ID 补偿查询。结果分页读取时遍历全部页面，并在签名下载地址过期后重新查询获取新地址。
+
+当前创建接口没有跨请求的 `Idempotency-Key` 保证。单次请求内的 `objectKey` 去重和队列消息去重，不代表重复 POST 会返回同一任务。网络超时或连接中断导致创建响应丢失时，不应无限重发创建请求；需先核实原任务是否已创建。尚未具备这一核实机制的客户端不能宣称响应丢失场景已实现无人值守恢复。
+
+`/health` 返回 200 只说明 API 存活；自动化处理还需 `/health/ready` 返回 200、处理 Worker 和回调 Worker 正常，以及真实任务与回调链路验证通过。
 
 ## API 稳定性约定
 

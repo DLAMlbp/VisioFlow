@@ -40,6 +40,10 @@ def _settings(**updates) -> Settings:
     )
 
 
+def test_fair_scheduler_is_opt_in() -> None:
+    assert _settings().ai_fair_scheduler_enabled is False
+
+
 @pytest.mark.asyncio
 async def test_run_vision_request_acquires_and_releases_global_slot(monkeypatch) -> None:
     redis = FakeRedis()

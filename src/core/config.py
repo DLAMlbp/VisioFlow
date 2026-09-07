@@ -99,6 +99,7 @@ class Settings(BaseSettings):
     ai_tagging_capacity_recovery_seconds: int = Field(default=60, ge=10, le=600)
     ai_beautify_timeout_seconds: int = Field(default=90, ge=30, le=90)
     ai_global_scheduler_enabled: bool = True
+    ai_fair_scheduler_enabled: bool = False
     ai_tagging_store_raw_response: bool = False
     ai_config_encryption_key: str = ""
     completion_review_confidence: float = Field(default=0.8, ge=0, le=1)

@@ -5,7 +5,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-
 COVER_SCORE_VERSION = "cover_score_v1"
 
 CoverRiskCode = Literal[

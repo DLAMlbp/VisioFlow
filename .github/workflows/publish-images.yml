@@ -37,6 +37,15 @@ permissions:
 jobs:
   api:
     runs-on: ubuntu-latest
+    services:
+      scheduler-redis:
+        image: redis:7.4.5-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --memory 64m --cpus 0.25
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
     steps:
       - uses: actions/checkout@v5
       - name: Validate migration graph and production Compose
@@ -60,7 +69,8 @@ jobs:
           cache-to: type=gha,mode=max,scope=api
       - name: Run backend tests in the image
         run: |
-          docker run --rm --user 0 \
+          docker run --rm --user 0 --network host \
+            -e TIME_OPT_TEST_REDIS_URL=redis://127.0.0.1:6379/0 \
             -v "$GITHUB_WORKSPACE/tests:/app/tests:ro" \
             -v "$GITHUB_WORKSPACE/frontend:/app/frontend:ro" \
             -v "$GITHUB_WORKSPACE/scripts:/app/scripts:ro" \
