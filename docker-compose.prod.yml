@@ -105,7 +105,7 @@ services:
   worker-classification:
     <<: *worker
     image: ${CLASSIFICATION_IMAGE:-${API_IMAGE:?API_IMAGE must be a versioned image reference}}
-    command: celery -A src.workers.celery_app worker -Q classification,filtering -l info --concurrency=4 --without-mingle --without-gossip
+    command: celery -A src.workers.celery_app worker -Q classification,filtering -l info --concurrency=8 --without-mingle --without-gossip
     stop_grace_period: 360s
     environment:
       WORKER_ROLE: classification
@@ -114,7 +114,8 @@ services:
 
   worker-beautify-plan:
     <<: *worker
-    command: celery -A src.workers.celery_app worker -Q beautify_plan -l info --concurrency=2 --without-mingle --without-gossip
+    command: celery -A src.workers.celery_app worker -Q beautify_plan -l info --concurrency=4 --without-mingle --without-gossip
+    stop_grace_period: 360s
     environment:
       WORKER_ROLE: beautify_plan
     mem_limit: 768m
@@ -122,7 +123,7 @@ services:
 
   worker-redaction:
     <<: *worker
-    command: celery -A src.workers.celery_app worker -Q redaction -l info --concurrency=1 --without-mingle --without-gossip
+    command: celery -A src.workers.celery_app worker -Q redaction -l info --concurrency=1 --max-tasks-per-child=5 --without-mingle --without-gossip
     environment:
       WORKER_ROLE: redaction
     mem_limit: 1536m
@@ -138,7 +139,7 @@ services:
 
   worker-enhance:
     <<: *worker
-    command: celery -A src.workers.celery_app worker -Q enhance -l info --concurrency=2 --without-mingle --without-gossip
+    command: celery -A src.workers.celery_app worker -Q enhance -l info --concurrency=1 --max-tasks-per-child=5 --without-mingle --without-gossip
     environment:
       WORKER_ROLE: enhance
     mem_limit: 1280m
@@ -156,11 +157,12 @@ services:
 
   worker-analysis:
     <<: *worker
-    command: celery -A src.workers.celery_app worker -Q analysis -l info --concurrency=2 --without-mingle --without-gossip
+    command: celery -A src.workers.celery_app worker -Q analysis -l info --concurrency=4 --without-mingle --without-gossip
+    stop_grace_period: 360s
     environment:
       WORKER_ROLE: analysis
     mem_limit: 768m
-    cpus: 1.0
+    cpus: 2.0
 
   worker-openclip:
     <<: *worker
@@ -271,7 +273,7 @@ services:
       retries: 12
     networks:
       - app
-    mem_limit: 384m
+    mem_limit: 512m
     cpus: 0.5
     logging:
       driver: json-file
