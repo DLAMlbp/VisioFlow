@@ -564,102 +564,26 @@ def decide_similarity(
 
     deduplicated, collapsed_same_image = _collapse_same_image_candidates(candidates)
     ranked = _rank_group_candidates(deduplicated, settings=settings)
-    fallback_auto_enabled = getattr(
-        settings, "similarity_group_fallback_auto_enabled", False
-    )
-    automatic_candidates = [
-        candidate
-        for candidate in ranked
-        if candidate.core_evidence_mode != CORE_MODE_CONFLICTED
-        and (
-            candidate.core_evidence_mode != CORE_MODE_FALLBACK
-            or fallback_auto_enabled
-        )
-    ]
-    auto_candidate_available = bool(automatic_candidates)
-    best = automatic_candidates[0] if automatic_candidates else ranked[0]
-    if best.exact_match or best.core_evidence_mode == CORE_MODE_EXACT:
-        comparable = [
-            candidate
-            for candidate in automatic_candidates
-            if candidate.exact_match or candidate.core_evidence_mode == CORE_MODE_EXACT
-        ]
-    else:
-        comparable = automatic_candidates
+    # The displayed final score is the sole adoption criterion. Semantic
+    # evidence still contributes to scoring, but is not a separate veto.
+    ranked.sort(key=lambda item: (-item.final_score, -item.similarity_score, item.asset.id))
+    best = ranked[0]
     margin = (
-        _candidate_ranking_score(best, settings)
-        - _candidate_ranking_score(comparable[1], settings)
-        if len(comparable) > 1
+        best.final_score - ranked[1].final_score
+        if len(ranked) > 1
         else 1.0
     )
     auto_threshold = settings.similarity_auto_threshold
-    minimum_margin = getattr(settings, "similarity_min_margin", 0.0)
-    fallback_requirements_passed = True
-    if best.core_evidence_mode == CORE_MODE_UNSUPPORTED:
-        auto_threshold = getattr(
-            settings, "similarity_group_unsupported_auto_threshold", 0.85
-        )
-    if best.core_evidence_mode == CORE_MODE_FALLBACK:
-        auto_threshold = getattr(
-            settings, "similarity_group_fallback_auto_threshold", 0.92
-        )
-        minimum_margin = getattr(
-            settings, "similarity_group_fallback_min_margin", 0.12
-        )
-        feature_strength = best.feature_reliability * best.feature_coverage
-        minimum_feature_score = getattr(
-            settings, "similarity_group_fallback_min_feature_score", 0.70
-        )
-        minimum_feature_strength = getattr(
-            settings, "similarity_group_fallback_min_feature_strength", 0.10
-        )
-        feature_requirements_passed = (
-            minimum_feature_score <= 0.0 and minimum_feature_strength <= 0.0
-        ) or (
-            best.feature_score is not None
-            and best.feature_score >= minimum_feature_score
-            and feature_strength >= minimum_feature_strength
-        )
-        fallback_requirements_passed = (
-            fallback_auto_enabled
-            and best.group_support_count
-            >= getattr(settings, "similarity_group_fallback_min_support", 2)
-            and feature_requirements_passed
-        )
-    clears_margin = margin >= minimum_margin
-    if (
-        auto_candidate_available
-        and best.final_score >= auto_threshold
-        and clears_margin
-        and fallback_requirements_passed
-    ):
+    if best.final_score >= auto_threshold:
         decision = "matched"
         message = (
             "已匹配到同组中的相同素材"
             if collapsed_same_image
-            else "已通过图片向量与可靠内容证据匹配到相似素材"
-        )
-    elif (
-        settings.similarity_review_threshold < settings.similarity_auto_threshold
-        and best.final_score >= settings.similarity_review_threshold
-    ):
-        decision = "pending_review"
-        message = (
-            "候选素材组缺少核心语义证据，需要人工确认"
-            if not best.core_requirements_passed
-            else (
-                "候选素材组得分过于接近，需要人工确认"
-                if not clears_margin
-                else (
-                    "泛化素材组缺少多个代表图与内容特征共同支持，需要人工确认"
-                    if not fallback_requirements_passed
-                    else "图片与内容特征候选需要人工确认"
-                )
-            )
+            else "综合匹配分已达标，已采用最高分素材组的完整标签"
         )
     else:
         decision = "unmatched"
-        message = "未匹配到可信的图片与内容特征候选"
+        message = "最高综合匹配分未达到自动采用线，未继承素材组标签"
 
     serialized = [
         {
@@ -688,7 +612,7 @@ def decide_similarity(
             "core_evidence_score": candidate.core_evidence_score,
             "core_evidence": candidate.core_evidence,
             "core_evidence_mode": candidate.core_evidence_mode,
-            "ranking_score": round(_candidate_ranking_score(candidate, settings), 4),
+            "ranking_score": round(candidate.final_score, 4),
             "group_prototype_count": candidate.group_prototype_count,
             "group_support_count": candidate.group_support_count,
         }

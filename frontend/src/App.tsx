@@ -2136,7 +2136,7 @@ function MatchScoreComposition({ result }: { result: SimilarityTaggingResult }) 
   if (result.similarity != null) scores.push(["图片向量", result.similarity]);
   if (result.feature_score != null) scores.push(["内容特征", result.feature_score]);
   if (result.final_score != null) scores.push(["综合匹配", result.final_score]);
-  if (result.auto_threshold != null) scores.push(["自动采用线", result.auto_threshold]);
+  if (result.auto_threshold != null) scores.push(["综合分采用线", result.auto_threshold]);
   if (!scores.length) return null;
   return <div className="score-composition" aria-label="匹配分数组成">{scores.map(([label, value]) => <span key={label}><small>{label}</small><strong>{formatSimilarityScore(value)}</strong></span>)}</div>;
 }

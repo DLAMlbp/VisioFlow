@@ -1,6 +1,6 @@
 id: library_similarity_v2
-version: 13
-description: group_reliability_v2；核心语义与综合匹配度达到 70%、候选组间差距达到 3% 后继承完整素材组标签，其他结果直接淘汰。
+version: 14
+description: 选择综合匹配分最高的素材组，达到 70% 即继承完整组标签；不以候选差距或额外语义门槛阻止采用，低于分数线则不打标签。
 
 similarity_candidate_limit: 20
 similarity_image_weight: 0.70
@@ -21,7 +21,8 @@ similarity_field_weights:
   features: 0.05
 similarity_auto_threshold: 0.70
 similarity_review_threshold: 0.70
-similarity_min_margin: 0.03
+# Legacy compatibility field; candidate margin is diagnostic only.
+similarity_min_margin: 0.00
 similarity_group_matching_enabled: true
 similarity_group_visual_best_weight: 0.65
 similarity_group_max_prototypes: 12

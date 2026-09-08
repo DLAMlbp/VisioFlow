@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Protocol, Sequence
+from typing import Protocol
 
 import numpy as np
 from redis import Redis
@@ -103,9 +104,9 @@ class GroupPrototypeSnapshot:
                     thumbnail_object_key=asset.thumbnail_object_key,
                     original_object_key=asset.original_object_key,
                     group=CachedGroup(
-                        id=str(getattr(group, "id")),
-                        tags=list(getattr(group, "tags")),
-                        status=str(getattr(group, "status")),
+                        id=str(group.id),
+                        tags=list(group.tags),
+                        status=str(group.status),
                     ),
                 )
             )
@@ -214,7 +215,7 @@ async def find_cached_group_prototype_matches(
     settings: Settings,
 ) -> list[tuple[CachedPrototypeAsset, float]]:
     if not hasattr(repository, "list_group_prototype_assets"):
-        legacy = getattr(repository, "find_group_prototype_assets")
+        legacy = repository.find_group_prototype_assets
         return await legacy(list(embedding))
     return await _group_prototype_index.find_matches(repository, embedding, settings)
 

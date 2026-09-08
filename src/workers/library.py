@@ -28,9 +28,9 @@ from src.services.images.tagging import (
     get_tag_provider,
     matching_content_payload,
 )
+from src.services.profiles import ProfileLoader
 from src.services.storage.factory import get_storage_provider
 from src.services.storage.keys import build_library_thumbnail_object_key
-from src.services.profiles import ProfileLoader
 from src.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)

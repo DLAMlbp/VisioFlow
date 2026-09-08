@@ -1,3 +1,4 @@
+from dataclasses import replace
 from io import BytesIO
 
 import pytest
@@ -41,19 +42,19 @@ def test_hybrid_match_combines_image_and_content_scores() -> None:
     assert result.feature_score == 0.80
 
 
-def test_close_candidate_groups_require_review_even_above_auto_threshold() -> None:
+def test_close_candidate_groups_adopt_highest_score_above_threshold() -> None:
     result = decide_similarity(candidates=[
         _candidate("ast_1", ["完工", "厨房"], 0.90, 0.90),
         _candidate("ast_2", ["完工", "客厅"], 0.88, 0.88)],
         settings=_policy().model_copy(update={"similarity_min_margin": 0.05}))
-    assert result.decision == "pending_review"
-    assert result.tags == []
-    assert "得分过于接近" in result.message
+    assert result.decision == "matched"
+    assert result.tags == ["完工", "厨房"]
+    assert result.matched_asset_id == "ast_1"
     assert result.candidates[0]["tags"] == ["完工", "厨房"]
     assert result.candidates[0]["preview_object_key"] == "uploads/ast_1.jpg"
 
 
-def test_same_reference_image_in_different_groups_requires_review() -> None:
+def test_same_reference_image_in_different_groups_adopts_highest_score() -> None:
     result = decide_similarity(
         candidates=[
             _candidate("ast_narrow", ["日常", "新房"], 0.91, 0.90, sha256="same-image"),
@@ -68,8 +69,8 @@ def test_same_reference_image_in_different_groups_requires_review() -> None:
         settings=_policy().model_copy(update={"similarity_min_margin": 0.05}),
     )
 
-    assert result.decision == "pending_review"
-    assert result.tags == []
+    assert result.decision == "matched"
+    assert result.tags == ["日常", "新房"]
     assert result.candidate_margin == pytest.approx(0.01)
 
 
@@ -89,7 +90,7 @@ def test_low_content_score_prevents_automatic_match() -> None:
         candidates=[_candidate("ast_1", ["施工", "水电"], 0.80, 0.10)],
         settings=_policy(),
     )
-    assert result.decision == "pending_review"
+    assert result.decision == "unmatched"
     assert result.final_score == 0.59
 
 
@@ -305,7 +306,7 @@ def test_similarity_score_is_always_clamped_to_valid_range() -> None:
     assert low.final_score == 0.0
 
 
-def test_candidate_margin_vetoes_automatic_group_match() -> None:
+def test_candidate_margin_is_diagnostic_and_cannot_veto_match() -> None:
     result = decide_similarity(
         candidates=[
             _candidate("ast_1", ["厨房"], 0.80, 0.80),
@@ -314,7 +315,8 @@ def test_candidate_margin_vetoes_automatic_group_match() -> None:
         settings=_policy().model_copy(update={"similarity_min_margin": 0.05}),
     )
 
-    assert result.decision == "pending_review"
+    assert result.decision == "matched"
+    assert result.tags == ["厨房"]
     assert round(result.candidate_margin or 0, 6) == 0.04
     assert "candidate_margin" not in result.candidates[0]
 
@@ -360,7 +362,7 @@ def test_same_candidates_produce_identical_result_twenty_times() -> None:
     assert {result.decision for result in results} == {"matched"}
 
 
-def test_specific_group_requires_evidence_from_structured_content() -> None:
+def test_specific_group_adoption_uses_final_score_without_extra_evidence_gate() -> None:
     policy = _policy().model_copy(
         update={
             "similarity_group_matching_enabled": True,
@@ -406,8 +408,8 @@ def test_specific_group_requires_evidence_from_structured_content() -> None:
     result = decide_similarity(candidates=[candidate], settings=policy)
 
     assert candidate.core_requirements_passed is False
-    assert result.decision == "pending_review"
-    assert result.tags == []
+    assert result.decision == "matched"
+    assert result.tags == group.tags
 
 
 def test_specific_group_keeps_complete_tag_set_when_core_evidence_passes() -> None:
@@ -516,7 +518,7 @@ def test_canonical_concepts_support_non_literal_construction_stage_evidence() ->
     assert result.tags == tags
 
 
-def test_semantically_supported_group_outranks_higher_scoring_generic_group() -> None:
+def test_highest_final_score_wins_over_semantically_supported_group() -> None:
     supported = _candidate("specific", ["木工完工"], 0.82, 0.82)
     supported = ScoredCandidate(
         **{
@@ -545,11 +547,11 @@ def test_semantically_supported_group_outranks_higher_scoring_generic_group() ->
     result = decide_similarity(candidates=[fallback, supported], settings=policy)
 
     assert result.decision == "matched"
-    assert result.matched_asset_id == "specific"
-    assert result.tags == ["木工完工"]
+    assert result.matched_asset_id == "generic"
+    assert result.tags == ["日常", "巡查工地"]
 
 
-def test_generic_group_requires_multiple_prototypes_and_strong_content_support() -> None:
+def test_generic_group_adopts_by_score_without_additional_support_threshold() -> None:
     fallback = _candidate("generic", ["日常", "巡查工地"], 0.96, 0.94)
     fallback = ScoredCandidate(
         **{
@@ -572,9 +574,56 @@ def test_generic_group_requires_multiple_prototypes_and_strong_content_support()
 
     result = decide_similarity(candidates=[fallback], settings=policy)
 
-    assert result.decision == "pending_review"
+    assert result.decision == "matched"
+    assert result.tags == ["日常", "巡查工地"]
+
+
+def test_screenshot_regression_adopts_7566_percent_despite_close_semantic_rank() -> None:
+    first = replace(
+        _candidate("paint", ["日常", "油漆完工"], 0.7566063980261485, None),
+        core_evidence_mode=CORE_MODE_UNSUPPORTED,
+        core_requirements_passed=False,
+    )
+    second = replace(
+        _candidate("wood", ["木工完工"], 0.7048, None),
+        final_score=0.6800918544264238,
+        ranking_score=0.7310918544264238,
+        core_evidence_mode=CORE_MODE_SUPPORTED,
+    )
+    policy = _policy().model_copy(update={
+        "similarity_auto_threshold": 0.70,
+        "similarity_min_margin": 0.03,
+        "similarity_group_unsupported_auto_threshold": 0.85,
+    })
+    result = decide_similarity(candidates=[second, first], settings=policy)
+    assert result.decision == "matched"
+    assert result.matched_asset_id == "paint"
+    assert result.tags == ["日常", "油漆完工"]
+    assert result.candidates[0]["ranking_score"] == 0.7566
+
+
+def test_semantic_bonus_cannot_choose_a_lower_final_score() -> None:
+    high = _candidate("high", ["油漆完工"], 0.75, None)
+    low = replace(_candidate("low", ["木工完工"], 0.72, None), ranking_score=0.78)
+    result = decide_similarity(candidates=[low, high], settings=_policy())
+    assert result.matched_asset_id == "high"
+
+
+def test_tied_scores_match_deterministically_regardless_of_input_order() -> None:
+    first = _candidate("a", ["厨房"], 0.70, None)
+    second = _candidate("b", ["客厅"], 0.70, None)
+    policy = _policy().model_copy(update={"similarity_auto_threshold": 0.70})
+    for candidates in ([first, second], [second, first]):
+        result = decide_similarity(candidates=candidates, settings=policy)
+        assert result.decision == "matched"
+        assert result.matched_asset_id == "a"
+        assert result.candidate_margin == 0
+
+
+def test_empty_candidates_do_not_invent_tags() -> None:
+    result = decide_similarity(candidates=[], settings=_policy())
+    assert result.decision == "unmatched"
     assert result.tags == []
-    assert "多个代表图" in result.message
 
 
 def _candidate(
