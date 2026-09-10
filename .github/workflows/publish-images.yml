@@ -27,6 +27,7 @@ on:
       - "THIRD_PARTY_NOTICES.md"
       - ".dockerignore"
       - "frontend/**"
+      - "docker-compose.yml"
       - "docker-compose.prod.yml"
       - ".github/workflows/publish-images.yml"
 
@@ -87,6 +88,7 @@ jobs:
             -v "$GITHUB_WORKSPACE/frontend:/app/frontend:ro" \
             -v "$GITHUB_WORKSPACE/scripts:/app/scripts:ro" \
             -v "$GITHUB_WORKSPACE/training:/app/training:ro" \
+            -v "$GITHUB_WORKSPACE/docker-compose.yml:/app/docker-compose.yml:ro" \
             -v "$GITHUB_WORKSPACE/docker-compose.prod.yml:/app/docker-compose.prod.yml:ro" \
             -v "$GITHUB_WORKSPACE/Dockerfile:/app/Dockerfile:ro" \
             ghcr.io/${{ github.repository_owner }}/tuxiangshibie-api:${{ github.sha }} \
