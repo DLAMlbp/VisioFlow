@@ -8,6 +8,8 @@ from src.models.library_asset import LibraryAsset
 from src.models.library_asset_group import LibraryAssetGroup
 from src.models.processing_profile import ProcessingProfile
 from src.models.upload_batch import UploadBatch, UploadBatchItem
+from src.models.user_account import UserAccount
+from src.models.user_session import UserSession
 
 __all__ = [
     "ImageAITag",
@@ -21,4 +23,6 @@ __all__ = [
     "ProcessingProfile",
     "UploadBatch",
     "UploadBatchItem",
+    "UserAccount",
+    "UserSession",
 ]

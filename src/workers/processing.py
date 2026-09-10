@@ -60,7 +60,9 @@ async def _apply_routed_processing(image_id: str) -> None:
             getattr(job, "redaction_profile_snapshot", None),
             legacy_beautify_snapshot=getattr(job, "beautify_profile_snapshot", None),
         )
-        image_bytes = await get_storage_provider().download(item.object_key)
+        image_bytes = await get_storage_provider().download(
+            getattr(item, "processing_object_key", None) or item.object_key
+        )
         emit_metric(
             logger,
             "routed_filter_requests_total",

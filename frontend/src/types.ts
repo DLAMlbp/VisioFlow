@@ -1,5 +1,23 @@
 export type UploadStatus = "ready" | "presigning" | "uploading" | "uploaded" | "failed";
 
+export type UserRole = "admin" | "operator";
+
+export interface AuthUser {
+  id: string;
+  username: string;
+  display_name: string;
+  role: UserRole;
+  is_active: boolean;
+  last_login_at: string | null;
+  created_at: string;
+}
+
+export interface AuthSession {
+  user: AuthUser;
+  csrf_token: string;
+  expires_at: string;
+}
+
 export type JobStatus =
   | "created"
   | "uploading"
@@ -164,14 +182,13 @@ export interface AIImageTags {
 }
 
 export interface SimilarityTaggingResult {
-  decision: "matched" | "pending_review" | "unmatched";
+  decision: "matched" | "unmatched";
   tags: string[];
   matched_asset_id?: string | null;
   similarity?: number | null;
   feature_score?: number | null;
   final_score?: number | null;
   auto_threshold?: number | null;
-  review_threshold?: number | null;
   message: string;
 }
 
@@ -220,29 +237,6 @@ export interface LogoRedactionUpdate {
   image_size: [number, number];
   detections: number;
   source: "manual_review";
-}
-
-export interface SimilarityCandidate {
-  asset_id: string;
-  original_filename?: string | null;
-  preview_object_key?: string | null;
-  preview_url?: string;
-  tags: string[];
-  similarity_score: number;
-  feature_score: number | null;
-  final_score: number;
-}
-
-export interface TagReview {
-  image_id: string;
-  matched_asset_id?: string | null;
-  tags: string[];
-  similarity_score?: number | null;
-  feature_score?: number | null;
-  final_score?: number | null;
-  decision: SimilarityTaggingResult["decision"];
-  message: string;
-  candidates: SimilarityCandidate[];
 }
 
 export interface ClassificationContentAnalysis {

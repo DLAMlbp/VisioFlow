@@ -12,6 +12,7 @@ def _production_settings(**updates) -> Settings:
         "app_env": "production",
         "api_key": "a" * 32,
         "integration_api_key": "b" * 32,
+        "auth_session_secret": "e" * 32,
         "callback_signing_secret": "d" * 32,
         "callback_allowed_hosts": "client.example.com",
         "ai_tagging_api_key": "model-key",
@@ -33,11 +34,21 @@ def test_production_configuration_accepts_explicit_secrets() -> None:
     assert settings.pipeline_enhancement_max_recovery_attempts == 0
 
 
+def test_image_decode_limit_must_cover_processing_limit() -> None:
+    with pytest.raises(ValidationError, match="MAX_IMAGE_DECODE_PIXELS"):
+        Settings(
+            max_image_pixels=2_000_000,
+            max_image_decode_pixels=1_000_000,
+            _env_file=None,
+        )
+
+
 @pytest.mark.parametrize(
     ("updates", "message"),
     [
         ({"api_key": "short"}, "API_KEY"),
         ({"integration_api_key": ""}, "INTEGRATION_API_KEY"),
+        ({"auth_session_secret": "development-only-change-this-auth-secret"}, "AUTH_SESSION_SECRET"),
         ({"callback_signing_secret": "short"}, "CALLBACK_SIGNING_SECRET"),
         ({"callback_allowed_hosts": "*"}, "CALLBACK_ALLOWED_HOSTS"),
         ({"ai_tagging_api_key": ""}, "AI_TAGGING_API_KEY"),

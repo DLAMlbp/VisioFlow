@@ -48,3 +48,10 @@ def test_reindex_failed_library_assets_returns_queued_count() -> None:
     assert response.status_code == 200
     assert response.json() == {"queued_count": 3}
     assert service.reindexed_group_id == "grp_test"
+
+
+def test_manual_tag_review_routes_are_not_exposed() -> None:
+    paths = app.openapi()["paths"]
+
+    assert "/api/v1/tag-reviews" not in paths
+    assert "/api/v1/tag-reviews/{image_id}/decision" not in paths

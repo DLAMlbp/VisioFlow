@@ -250,9 +250,6 @@ def evaluate(
         "correct_automatic_matches": correct,
         "automatic_precision": round(precision, 6) if precision is not None else None,
         "automatic_coverage": round(coverage, 6),
-        "pending_review": sum(
-            outcome["decision"] == "pending_review" for outcome in outcomes
-        ),
         "unmatched": sum(outcome["decision"] == "unmatched" for outcome in outcomes),
         "target_precision": target_precision,
         "minimum_auto_matches": min_auto_matches,

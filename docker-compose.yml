@@ -20,8 +20,6 @@ services:
   web:
     image: image-intelligence-web:${IMAGE_VERSION:-development}
     build: ./frontend
-    env_file:
-      - .env
     restart: unless-stopped
     ports:
       - "5174:80"

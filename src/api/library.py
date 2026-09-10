@@ -11,8 +11,6 @@ from src.schemas.library import (
     LibraryAssetResponse,
     LibraryAssetUpdate,
     LibraryFailedAssetReindexResponse,
-    TagReviewDecisionRequest,
-    TagReviewResponse,
 )
 from src.services.library import (
     InvalidLibraryRequest,
@@ -22,7 +20,6 @@ from src.services.library import (
 )
 
 router = APIRouter()
-review_router = APIRouter()
 LibraryServiceDep = Annotated[LibraryService, Depends(get_library_service)]
 
 
@@ -124,25 +121,6 @@ async def reindex_failed_library_assets(
 ) -> LibraryFailedAssetReindexResponse:
     try:
         return await service.reindex_failed_assets(group_id=group_id)
-    except (InvalidLibraryRequest, LibraryNotFound) as exc:
-        raise _http_error(exc) from exc
-
-
-@review_router.get("/tag-reviews", response_model=list[TagReviewResponse])
-async def list_tag_reviews(
-    service: LibraryServiceDep,
-    limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
-) -> list[TagReviewResponse]:
-    return await service.list_reviews(limit, offset)
-
-
-@review_router.post("/tag-reviews/{image_id}/decision", response_model=TagReviewResponse)
-async def decide_tag_review(
-    image_id: str, payload: TagReviewDecisionRequest, service: LibraryServiceDep
-) -> TagReviewResponse:
-    try:
-        return await service.decide_review(image_id, payload)
     except (InvalidLibraryRequest, LibraryNotFound) as exc:
         raise _http_error(exc) from exc
 

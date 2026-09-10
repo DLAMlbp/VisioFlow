@@ -4,7 +4,7 @@ import pytest
 
 from src.models.library_asset import LibraryAsset
 from src.models.library_asset_group import LibraryAssetGroup
-from src.schemas.library import LibraryAssetGroupCreate, TagReviewDecisionRequest
+from src.schemas.library import LibraryAssetGroupCreate
 from src.services.library import InvalidLibraryRequest, LibraryNotFound, LibraryService
 
 
@@ -119,47 +119,3 @@ async def test_reindex_failed_assets_rejects_unknown_group() -> None:
         await LibraryService(repository).reindex_failed_assets(group_id="grp_missing")
 
     repository.reset_failed_assets.assert_not_awaited()
-
-
-def _match(decision: str, asset_id: str | None = None):
-    return type(
-        "Match",
-        (),
-        {
-            "image_id": "img_test",
-            "matched_asset_id": asset_id,
-            "matched_tags_snapshot": ["客厅"] if decision == "matched" else [],
-            "similarity_score": 0.9,
-            "feature_score": None,
-            "final_score": 0.9,
-            "decision": decision,
-            "message": "已确认",
-            "candidate_json": [],
-        },
-    )()
-
-
-async def test_review_exact_duplicate_is_idempotent() -> None:
-    repository = AsyncMock()
-    repository.get_match.return_value = _match("matched", "ast_test")
-
-    response = await LibraryService(repository).decide_review(
-        "img_test",
-        TagReviewDecisionRequest(decision="matched", matched_asset_id="ast_test"),
-    )
-
-    assert response.decision == "matched"
-    repository.upsert_match.assert_not_awaited()
-
-
-async def test_review_conflicting_final_decision_is_rejected() -> None:
-    repository = AsyncMock()
-    repository.get_match.return_value = _match("unmatched")
-
-    with pytest.raises(InvalidLibraryRequest, match="已经确认"):
-        await LibraryService(repository).decide_review(
-            "img_test",
-            TagReviewDecisionRequest(decision="matched", matched_asset_id="ast_test"),
-        )
-
-    repository.upsert_match.assert_not_awaited()

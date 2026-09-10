@@ -77,28 +77,6 @@ class LibraryFailedAssetReindexResponse(BaseModel):
     queued_count: int
 
 
-class TagReviewResponse(BaseModel):
-    image_id: str
-    matched_asset_id: str | None
-    tags: list[str]
-    similarity_score: float | None
-    feature_score: float | None
-    final_score: float | None
-    score_version: str
-    feature_reliability: float | None
-    feature_coverage: float | None
-    candidate_margin: float | None
-    field_scores: dict[str, dict[str, object]]
-    decision: str
-    message: str
-    candidates: list[dict[str, object]]
-
-
-class TagReviewDecisionRequest(BaseModel):
-    decision: Literal["matched", "unmatched"]
-    matched_asset_id: str | None = Field(default=None, max_length=40)
-
-
 def _normalize_tags(tags: list[str]) -> list[str]:
     normalized: list[str] = []
     seen: set[str] = set()

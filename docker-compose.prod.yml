@@ -42,8 +42,6 @@ x-worker: &worker
 services:
   web:
     image: ${WEB_IMAGE:?WEB_IMAGE must be a versioned image reference}
-    env_file:
-      - .env.production
     restart: unless-stopped
     ports:
       - "${WEB_PORT:-8088}:80"

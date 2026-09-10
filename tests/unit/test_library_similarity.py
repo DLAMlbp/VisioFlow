@@ -11,7 +11,6 @@ from src.services.images.similarity import (
     CORE_MODE_SUPPORTED,
     CORE_MODE_UNSUPPORTED,
     ScoredCandidate,
-    apply_shadow_mode,
     combined_similarity_score,
     decide_similarity,
     feature_similarity,
@@ -94,7 +93,7 @@ def test_low_content_score_prevents_automatic_match() -> None:
     assert result.final_score == 0.59
 
 
-def test_below_review_threshold_is_unmatched() -> None:
+def test_below_auto_threshold_is_unmatched() -> None:
     result = decide_similarity(
         candidates=[_candidate("ast_1", ["施工", "水电"], 0.40, 0.20)],
         settings=_policy(),
@@ -164,35 +163,6 @@ def test_unsupported_candidate_matches_at_seventy_with_three_percent_margin() ->
     assert result.decision == "matched"
     assert result.tags == ["泥工验收"]
     assert result.candidate_margin == pytest.approx(0.041)
-
-
-def test_shadow_mode_converts_automatic_match_to_review_without_tags() -> None:
-    automatic = decide_similarity(
-        candidates=[
-            _candidate("ast_1", ["完工", "厨房"], 0.91, 0.90),
-            _candidate("ast_2", ["完工", "客厅"], 0.80, 0.70),
-        ],
-        settings=_policy(),
-    )
-
-    result = apply_shadow_mode(automatic, enabled=True)
-
-    assert result.decision == "pending_review"
-    assert result.tags == []
-    assert result.matched_asset_id == "ast_1"
-    assert result.similarity_score == 0.91
-    assert result.feature_score == 0.90
-    assert "Shadow" in result.message
-
-
-def test_shadow_mode_does_not_change_review_or_unmatched_decisions() -> None:
-    unmatched = decide_similarity(
-        candidates=[_candidate("ast_1", ["施工", "水电"], 0.40, None)],
-        settings=_policy(),
-    )
-
-    assert apply_shadow_mode(unmatched, enabled=True) is unmatched
-    assert apply_shadow_mode(unmatched, enabled=False) is unmatched
 
 
 def test_structured_content_feature_similarity() -> None:

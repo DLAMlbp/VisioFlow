@@ -5,14 +5,11 @@ from typing import Annotated
 from uuid import uuid4
 
 from fastapi import Depends
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.config import Settings, get_settings
 from src.core.exceptions import AppError
 from src.core.metrics import emit_metric
 from src.db.session import get_db_session
-from src.models.image_ai_tag import ImageAITag
 from src.models.library_asset import LibraryAsset
 from src.models.library_asset_group import LibraryAssetGroup
 from src.repositories.library import LibraryRepository
@@ -25,8 +22,6 @@ from src.schemas.library import (
     LibraryAssetResponse,
     LibraryAssetUpdate,
     LibraryFailedAssetReindexResponse,
-    TagReviewDecisionRequest,
-    TagReviewResponse,
 )
 from src.services.jobs.dispatch import (
     LibraryAssetTaskPublisher,
@@ -53,13 +48,11 @@ class LibraryService:
         task_publisher: LibraryAssetTaskPublisher | None = None,
         prototype_task_publisher: LibraryGroupPrototypeTaskPublisher | None = None,
         storage_provider: StorageProvider | None = None,
-        settings: Settings | None = None,
     ) -> None:
         self.repository = repository
         self.task_publisher = task_publisher
         self.prototype_task_publisher = prototype_task_publisher
         self.storage_provider = storage_provider
-        self.settings = settings or get_settings()
 
     async def get_groups(self) -> list[LibraryAssetGroupResponse]:
         groups = await self.repository.list_groups()
@@ -220,55 +213,6 @@ class LibraryService:
         )
         return LibraryFailedAssetReindexResponse(queued_count=len(reset_assets))
 
-    async def list_reviews(self, limit: int, offset: int) -> list[TagReviewResponse]:
-        matches = await self.repository.list_pending_reviews(limit, offset)
-        return [self._review_response(match) for match in matches]
-
-    async def decide_review(
-        self, image_id: str, payload: TagReviewDecisionRequest
-    ) -> TagReviewResponse:
-        if not self.settings.library_only_tags_enabled:
-            raise InvalidLibraryRequest("仅继承素材库人工标签功能已关闭，复核写入已暂停")
-        match = await self.repository.get_match(image_id)
-        if match is None:
-            raise LibraryNotFound("匹配记录不存在")
-        requested_asset_id = payload.matched_asset_id or match.matched_asset_id
-        if match.decision != "pending_review":
-            duplicate = payload.decision == match.decision and (
-                payload.decision == "unmatched" or requested_asset_id == match.matched_asset_id
-            )
-            if duplicate:
-                return self._review_response(match)
-            raise InvalidLibraryRequest("该复核结论已经确认，不能再次修改")
-        if payload.decision == "unmatched":
-            values = {
-                "matched_asset_id": None,
-                "matched_tags_snapshot": [],
-                "decision": "unmatched",
-                "message": "未识别到相似的图片素材",
-            }
-        else:
-            asset_id = requested_asset_id
-            if not asset_id:
-                raise InvalidLibraryRequest("请选择要确认的素材")
-            asset = await self.repository.get_asset(asset_id)
-            if asset is None or asset.status != "active" or asset.group.status != "active":
-                raise InvalidLibraryRequest("所选素材或素材组不存在、未完成分析或已停用")
-            values = {
-                "matched_asset_id": asset.id,
-                "matched_tags_snapshot": list(asset.group.tags),
-                "decision": "matched",
-                "message": "已匹配到相似图片素材",
-            }
-        updated = await self.repository.upsert_match(image_id, values)
-        await self._sync_ai_tag(image_id, updated.decision, updated.matched_tags_snapshot)
-        emit_metric(
-            logger,
-            "library_tags_written_total",
-            labels={"decision": updated.decision, "source": "manual_review"},
-        )
-        return self._review_response(updated)
-
     async def _require_active_group(self, group_id: str) -> LibraryAssetGroup:
         group = await self.repository.get_group(group_id)
         if group is None:
@@ -304,23 +248,6 @@ class LibraryService:
             created_at=asset.created_at,
         )
 
-    async def _sync_ai_tag(self, image_id: str, decision: str, tags: list[str]) -> None:
-        tag = await self.repository.session.scalar(
-            select(ImageAITag).where(ImageAITag.image_id == image_id)
-        )
-        if tag is None:
-            return
-        current = dict(tag.tag_json or {})
-        current.update(
-            {
-                "tags": tags if decision == "matched" else [],
-                "categories": {"素材库标签": tags} if decision == "matched" else {},
-                "candidate_tags": [],
-            }
-        )
-        tag.tag_json = current
-        await self.repository.session.commit()
-
     @staticmethod
     def _tag_key(tags: list[str]) -> str:
         return "\x1f".join(tag.casefold() for tag in tags)
@@ -337,34 +264,12 @@ class LibraryService:
             asset_count=asset_count,
         )
 
-    @staticmethod
-    def _review_response(match) -> TagReviewResponse:
-        return TagReviewResponse(
-            image_id=match.image_id,
-            matched_asset_id=match.matched_asset_id,
-            tags=match.matched_tags_snapshot or [],
-            similarity_score=match.similarity_score,
-            feature_score=match.feature_score,
-            final_score=match.final_score,
-            score_version=getattr(match, "score_version", "legacy_v2"),
-            feature_reliability=getattr(match, "feature_reliability", None),
-            feature_coverage=getattr(match, "feature_coverage", None),
-            candidate_margin=getattr(match, "candidate_margin", None),
-            field_scores=getattr(match, "field_scores", None) or {},
-            decision=match.decision,
-            message=match.message,
-            candidates=match.candidate_json or [],
-        )
-
-
 def get_library_service(
     session: Annotated[AsyncSession, Depends(get_db_session)],
-    settings: Annotated[Settings, Depends(get_settings)],
 ) -> LibraryService:
     return LibraryService(
         LibraryRepository(session),
         LibraryAssetTaskPublisher(),
         LibraryGroupPrototypeTaskPublisher(),
         get_storage_provider(),
-        settings,
     )

@@ -46,6 +46,12 @@ def build_thumbnail_object_key(job_id: str, image_id: str) -> str:
     return f"thumbnails/{job_id}/{image_id}.jpg"
 
 
+def build_processing_source_object_key(job_id: str, image_id: str) -> str:
+    """Return the normalized, bounded-resolution copy used by pipeline workers."""
+
+    return f"processing-sources/{job_id}/{image_id}.jpg"
+
+
 def build_enhanced_object_key(job_id: str, image_id: str) -> str:
     return f"enhanced/{job_id}/{image_id}.jpg"
 

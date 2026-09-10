@@ -162,6 +162,7 @@ async def _cleanup_expired_images(
 def _task_object_keys(item: ImageItem) -> list[str]:
     keys = [
         item.object_key,
+        getattr(item, "processing_object_key", None),
         item.thumbnail_object_key,
         item.analysis_object_key,
         build_redaction_base_object_key(item.job_id, item.id),

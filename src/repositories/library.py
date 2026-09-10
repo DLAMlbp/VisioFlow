@@ -330,22 +330,3 @@ class LibraryRepository:
         await self.session.commit()
         await self.session.refresh(match)
         return match
-
-    async def get_match(self, image_id: str) -> ImageSimilarityMatch | None:
-        result = await self.session.execute(
-            select(ImageSimilarityMatch)
-            .options(selectinload(ImageSimilarityMatch.matched_asset))
-            .where(ImageSimilarityMatch.image_id == image_id)
-        )
-        return result.scalar_one_or_none()
-
-    async def list_pending_reviews(self, limit: int, offset: int) -> list[ImageSimilarityMatch]:
-        result = await self.session.execute(
-            select(ImageSimilarityMatch)
-            .options(selectinload(ImageSimilarityMatch.matched_asset))
-            .where(ImageSimilarityMatch.decision == "pending_review")
-            .order_by(ImageSimilarityMatch.created_at)
-            .limit(limit)
-            .offset(offset)
-        )
-        return list(result.scalars())

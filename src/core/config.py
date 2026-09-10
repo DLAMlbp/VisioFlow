@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     trusted_hosts: str = "127.0.0.1,localhost,testserver"
     api_key: str = ""
     integration_api_key: str = ""
+    auth_session_secret: str = "development-only-change-this-auth-secret"
+    auth_session_cookie_name: str = "visioflow_session"
+    auth_session_ttl_hours: int = Field(default=12, ge=1, le=168)
+    auth_failed_login_limit: int = Field(default=5, ge=3, le=20)
+    auth_lockout_minutes: int = Field(default=15, ge=1, le=1440)
+    auth_registration_rate_limit_per_minute: int = Field(default=5, ge=1, le=100)
     integration_max_files: int = 50
     integration_url_download_timeout_seconds: int = Field(default=30, ge=1, le=30)
     integration_url_download_concurrency: int = 4
@@ -59,6 +65,9 @@ class Settings(BaseSettings):
     job_dispatch_chunk_size: int = 25
     max_image_size_mb: int = 25
     max_image_pixels: int = Field(default=12_000_000, ge=1_000_000, le=100_000_000)
+    max_image_decode_pixels: int = Field(
+        default=25_000_000, ge=1_000_000, le=100_000_000
+    )
     allowed_image_content_types: set[str] = Field(
         default_factory=lambda: {"image/jpeg", "image/png", "image/webp"}
     )
@@ -117,7 +126,6 @@ class Settings(BaseSettings):
     early_semantic_branch_enabled: bool = True
     library_image_only_matching_enabled: bool = True
     library_only_tags_enabled: bool = True
-    library_match_shadow_mode: bool = False
     library_group_index_max_age_seconds: int = Field(default=300, ge=10, le=3600)
     library_group_index_version_check_seconds: float = Field(
         default=2.0, ge=0.25, le=60.0
@@ -144,6 +152,12 @@ class Settings(BaseSettings):
         return values
 
     @model_validator(mode="after")
+    def validate_image_pixel_limits(self):
+        if self.max_image_decode_pixels < self.max_image_pixels:
+            raise ValueError("MAX_IMAGE_DECODE_PIXELS 不能小于 MAX_IMAGE_PIXELS")
+        return self
+
+    @model_validator(mode="after")
     def validate_production_configuration(self):
         if self.app_env != "production":
             return self
@@ -152,6 +166,10 @@ class Settings(BaseSettings):
             problems.append("API_KEY 必须至少 32 个字符")
         if len(self.integration_api_key) < 32:
             problems.append("INTEGRATION_API_KEY 必须至少 32 个字符")
+        if len(self.auth_session_secret) < 32 or self.auth_session_secret.startswith(
+            "development-only"
+        ):
+            problems.append("AUTH_SESSION_SECRET 必须配置为至少 32 个字符的随机密钥")
         if len(self.callback_signing_secret) < 32:
             problems.append("CALLBACK_SIGNING_SECRET 必须至少 32 个字符")
         callback_hosts = {

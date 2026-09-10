@@ -62,7 +62,9 @@ async def _classify_completion(image_id: str) -> None:
         if job is None or job.cancel_requested_at is not None:
             return
         settings = load_ai_model_settings(get_settings())
-        image_bytes = await get_storage_provider().download(item.object_key)
+        image_bytes = await get_storage_provider().download(
+            getattr(item, "processing_object_key", None) or item.object_key
+        )
         if job.routing_mode in {"standards", "streaming_v2"}:
             await _classify_filter_standard(
                 repository, item, job, settings, image_bytes

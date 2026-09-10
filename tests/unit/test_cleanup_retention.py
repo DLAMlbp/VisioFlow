@@ -47,6 +47,7 @@ def test_task_object_keys_include_all_task_artifacts() -> None:
         id="img_1",
         job_id="job_1",
         object_key="uploads/original.jpg",
+        processing_object_key="processing-sources/job_1/img_1.jpg",
         thumbnail_object_key="thumbnails/job_1/img_1.jpg",
         analysis_object_key="analysis/job_1/img_1.jpg",
         result=SimpleNamespace(enhanced_object_key="enhanced/job_1/img_1.jpg"),
@@ -56,6 +57,7 @@ def test_task_object_keys_include_all_task_artifacts() -> None:
     keys = _task_object_keys(item)
 
     assert "uploads/original.jpg" in keys
+    assert "processing-sources/job_1/img_1.jpg" in keys
     assert "thumbnails/job_1/img_1.jpg" in keys
     assert "analysis/job_1/img_1.jpg" in keys
     assert "enhanced/job_1/img_1.jpg" in keys

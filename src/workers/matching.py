@@ -15,7 +15,6 @@ from src.services.images.similarity import (
     CORE_MODE_EXACT,
     SCORE_VERSION,
     ScoredCandidate,
-    apply_shadow_mode,
     decide_similarity,
     score_candidate,
     score_group_candidates,
@@ -234,10 +233,6 @@ async def _match_image_library(image_id: str) -> None:
                             )
                 decision = decide_similarity(
                     candidates=scored, settings=similarity_profile
-                )
-                decision = apply_shadow_mode(
-                    decision,
-                    enabled=getattr(settings, "library_match_shadow_mode", False),
                 )
             except Exception as exc:
                 logger.exception("Unable to match image against material library")

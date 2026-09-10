@@ -5,15 +5,16 @@ from src.api.health import router as health_router
 from src.api.integration import partner_router
 from src.api.integration import router as integration_router
 from src.api.jobs import router as jobs_router
-from src.api.library import review_router
 from src.api.library import router as library_router
 from src.api.model_config import router as model_config_router
 from src.api.profiles import router as profiles_router
 from src.api.upload_batches import router as upload_batches_router
 from src.api.uploads import router as uploads_router
+from src.api.user_auth import router as user_auth_router
 
 api_router = APIRouter()
 api_router.include_router(health_router)
+api_router.include_router(user_auth_router)
 api_router.include_router(
     jobs_router,
     prefix="/api/v1/image/jobs",
@@ -48,12 +49,6 @@ api_router.include_router(
     library_router,
     prefix="/api/v1/library",
     tags=["material library"],
-    dependencies=[Depends(require_api_key)],
-)
-api_router.include_router(
-    review_router,
-    prefix="/api/v1",
-    tags=["material library reviews"],
     dependencies=[Depends(require_api_key)],
 )
 api_router.include_router(

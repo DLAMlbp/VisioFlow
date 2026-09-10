@@ -584,8 +584,8 @@ async def test_get_results_returns_decision_metrics_and_enhanced_key() -> None:
         similarity_score=0.75,
         feature_score=0.18,
         final_score=0.579,
-        decision="pending_review",
-        message="图片与内容特征候选需要人工确认",
+        decision="unmatched",
+        message="未识别到相似的图片素材",
         candidate_json=[],
     )
     item.ai_tag = ImageAITag(
@@ -609,8 +609,8 @@ async def test_get_results_returns_decision_metrics_and_enhanced_key() -> None:
             "attributes": {"材质": ["砖", "水泥"]},
             "features": {"施工": ["墙体砌筑"]},
             "ocr_text": [],
-            "tags": ["施工", "客厅"],
-            "categories": {"素材库标签": ["施工", "客厅"]},
+            "tags": [],
+            "categories": {},
             "candidate_tags": [],
             "confidence": 0.86,
             "content_confidence": 0.94,
@@ -671,7 +671,6 @@ async def test_get_results_returns_decision_metrics_and_enhanced_key() -> None:
     assert response.images[0].enhanced_metrics is not None
     assert response.images[0].tagging_result is not None
     assert response.images[0].tagging_result.auto_threshold == 0.7
-    assert response.images[0].tagging_result.review_threshold == 0.7
     assert response.images[0].ai_tags is not None
     assert response.images[0].ai_tags.scene == "未完成装修的室内施工现场"
     assert response.images[0].ai_tags.subjects == ["施工人员"]

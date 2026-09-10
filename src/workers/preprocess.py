@@ -121,7 +121,7 @@ async def _preprocess_image_metadata(image_id: str) -> None:
         beautify_service = NaturalBeautifyService()
         neutral_beautify_profile = neutralize_beautify_profile(beautify_profile)
         orientation_result = beautify_service.normalize_orientation(
-            metadata.original_bytes,
+            metadata.processing_bytes,
             neutral_beautify_profile,
         )
         with Image.open(BytesIO(orientation_result.image_bytes)) as normalized_image:
@@ -136,6 +136,7 @@ async def _preprocess_image_metadata(image_id: str) -> None:
             {
                 "content_type": metadata.content_type,
                 "file_size": metadata.file_size,
+                "processing_object_key": metadata.processing_object_key,
                 "width": normalized_width,
                 "height": normalized_height,
                 "aspect_ratio": round(normalized_width / normalized_height, 4),
@@ -152,6 +153,11 @@ async def _preprocess_image_metadata(image_id: str) -> None:
             return
 
         warnings: list[str] = []
+        if metadata.downscaled:
+            warnings.append(
+                "原图像素超过处理预算，已自动按比例缩放至 "
+                f"{metadata.processing_width}×{metadata.processing_height} 后继续处理"
+            )
         if similar is not None:
             warnings.append("与同批次照片构图相似，已保留，请按需确认是否重复")
 

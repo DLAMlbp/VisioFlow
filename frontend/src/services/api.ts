@@ -1,5 +1,7 @@
 import type {
   AIModelConfig,
+  AuthSession,
+  AuthUser,
   Decision,
   CreateJobRequest,
   CreateJobResponse,
@@ -19,15 +21,62 @@ import type {
   LibraryAssetGroup,
   LibraryAssetList,
   LogoRedactionUpdate,
-  TagReview,
   UpdateAIModelConfig,
-  UploadBatchRegistration
+  UploadBatchRegistration,
+  UserRole
 } from "../types";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 const REQUEST_TIMEOUT_MS = 30_000;
 const DOWNLOAD_REQUEST_TIMEOUT_MS = 5 * 60_000;
 const LIBRARY_ASSET_PAGE_SIZE = 200;
+let csrfToken: string | null = null;
+let authenticationRequired: (() => void) | null = null;
+
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+export function setAuthenticationRequiredHandler(handler: (() => void) | null): void {
+  authenticationRequired = handler;
+}
+
+export function clearAuthenticationSession(): void {
+  csrfToken = null;
+}
+
+function rememberSession(session: AuthSession | null): void {
+  csrfToken = session?.csrf_token ?? null;
+}
+
+function authenticatedHeaders(init?: RequestInit): Headers {
+  const headers = new Headers(init?.headers);
+  if (init?.body) headers.set("Content-Type", "application/json");
+  const method = (init?.method ?? "GET").toUpperCase();
+  if (csrfToken && !["GET", "HEAD", "OPTIONS"].includes(method)) {
+    headers.set("X-CSRF-Token", csrfToken);
+  }
+  return headers;
+}
+
+async function responseError(response: Response, path: string): Promise<never> {
+  const raw = await response.text();
+  let detail = raw;
+  try {
+    const payload = JSON.parse(raw) as { detail?: string; message?: string };
+    detail = payload.detail ?? payload.message ?? raw;
+  } catch {
+    // Keep the plain-text response when the server did not return JSON.
+  }
+  if (response.status === 401 && path !== "/api/v1/auth/login") {
+    rememberSession(null);
+    authenticationRequired?.();
+  }
+  throw new ApiError(detail || `请求失败：${response.status}`, response.status);
+}
 
 interface BackendResultImage {
   image_id: string;
@@ -81,8 +130,7 @@ interface BackendJobResults {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  if (init?.body) headers.set("Content-Type", "application/json");
+  const headers = authenticatedHeaders(init);
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   let response: Response;
@@ -90,6 +138,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     response = await fetch(`${API_BASE_URL}${path}`, {
       ...init,
       headers,
+      credentials: "include",
       signal: controller.signal
     });
   } catch (error) {
@@ -102,15 +151,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    const raw = await response.text();
-    let detail = raw;
-    try {
-      const payload = JSON.parse(raw) as { detail?: string; message?: string };
-      detail = payload.detail ?? payload.message ?? raw;
-    } catch {
-      // Keep the plain-text response when the server did not return JSON.
-    }
-    throw new Error(detail || `请求失败：${response.status}`);
+    return responseError(response, path);
   }
 
   if (response.status === 204) return undefined as T;
@@ -118,8 +159,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 async function requestBlob(path: string, init?: RequestInit): Promise<Blob> {
-  const headers = new Headers(init?.headers);
-  if (init?.body) headers.set("Content-Type", "application/json");
+  const headers = authenticatedHeaders(init);
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), DOWNLOAD_REQUEST_TIMEOUT_MS);
   let response: Response;
@@ -127,6 +167,7 @@ async function requestBlob(path: string, init?: RequestInit): Promise<Blob> {
     response = await fetch(`${API_BASE_URL}${path}`, {
       ...init,
       headers,
+      credentials: "include",
       signal: controller.signal
     });
   } catch (error) {
@@ -139,21 +180,72 @@ async function requestBlob(path: string, init?: RequestInit): Promise<Blob> {
   }
 
   if (!response.ok) {
-    const raw = await response.text();
-    let detail = raw;
-    try {
-      const payload = JSON.parse(raw) as { detail?: string; message?: string };
-      detail = payload.detail ?? payload.message ?? raw;
-    } catch {
-      // Keep the plain-text response when the server did not return JSON.
-    }
-    throw new Error(detail || `请求失败：${response.status}`);
+    return responseError(response, path);
   }
 
   return response.blob();
 }
 
 export const api = {
+      async login(username: string, password: string): Promise<AuthSession> {
+        const session = await request<AuthSession>("/api/v1/auth/login", {
+          method: "POST",
+          body: JSON.stringify({ username, password })
+        });
+        rememberSession(session);
+        return session;
+      },
+      async register(payload: {
+        username: string;
+        display_name: string;
+        password: string;
+      }): Promise<AuthSession> {
+        const session = await request<AuthSession>("/api/v1/auth/register", {
+          method: "POST",
+          body: JSON.stringify(payload)
+        });
+        rememberSession(session);
+        return session;
+      },
+      async getCurrentSession(): Promise<AuthSession> {
+        const session = await request<AuthSession>("/api/v1/auth/me");
+        rememberSession(session);
+        return session;
+      },
+      async logout(): Promise<void> {
+        await request<void>("/api/v1/auth/logout", { method: "POST" });
+        rememberSession(null);
+      },
+      listUsers(): Promise<AuthUser[]> {
+        return request<AuthUser[]>("/api/v1/auth/users");
+      },
+      createUser(payload: {
+        username: string;
+        display_name: string;
+        password: string;
+        role: UserRole;
+      }): Promise<AuthUser> {
+        return request<AuthUser>("/api/v1/auth/users", {
+          method: "POST",
+          body: JSON.stringify(payload)
+        });
+      },
+      updateUser(userId: string, payload: {
+        display_name?: string;
+        role?: UserRole;
+        is_active?: boolean;
+      }): Promise<AuthUser> {
+        return request<AuthUser>(`/api/v1/auth/users/${userId}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload)
+        });
+      },
+      resetUserPassword(userId: string, password: string): Promise<void> {
+        return request<void>(`/api/v1/auth/users/${userId}/reset-password`, {
+          method: "POST",
+          body: JSON.stringify({ password })
+        });
+      },
       presignUpload(payload: PresignRequest): Promise<PresignResponse> {
         return request<PresignResponse>("/api/v1/uploads/presign", {
           method: "POST",
@@ -438,28 +530,6 @@ export const api = {
         const params = groupId ? `?${new URLSearchParams({ group_id: groupId })}` : "";
         return request<{ queued_count: number }>(`/api/v1/library/assets/reindex-failed${params}`, {
           method: "POST"
-        });
-      },
-      async getTagReviews(): Promise<TagReview[]> {
-        const reviews = await request<TagReview[]>("/api/v1/tag-reviews?limit=200");
-        const previewKeys = reviews.flatMap((review) => (
-          review.candidates.flatMap((candidate) => candidate.preview_object_key ? [candidate.preview_object_key] : [])
-        ));
-        const previewUrls = await getDownloadUrlsSafely(previewKeys);
-        return reviews.map((review) => ({
-          ...review,
-          candidates: review.candidates.map((candidate) => ({
-            ...candidate,
-            preview_url: candidate.preview_object_key
-              ? previewUrls.get(candidate.preview_object_key)
-              : undefined
-          }))
-        }));
-      },
-      decideTagReview(imageId: string, payload: { decision: "matched" | "unmatched"; matched_asset_id?: string | null }): Promise<TagReview> {
-        return request<TagReview>(`/api/v1/tag-reviews/${imageId}/decision`, {
-          method: "POST",
-          body: JSON.stringify(payload)
         });
       }
     };

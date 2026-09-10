@@ -2,6 +2,11 @@ resolver 127.0.0.11 valid=5s ipv6=off;
 limit_req_zone $binary_remote_addr zone=integration_api:10m rate=10r/s;
 limit_conn_zone $binary_remote_addr zone=integration_connections:10m;
 
+map $http_x_forwarded_proto $upstream_forwarded_proto {
+    default $scheme;
+    ~*^https(?:,|$) https;
+}
+
 upstream api_backend {
     zone api_backend 64k;
     server api:8000 resolve;
@@ -25,7 +30,7 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto $upstream_forwarded_proto;
         proxy_set_header X-API-Key $http_x_api_key;
         proxy_read_timeout 300s;
     }
@@ -39,7 +44,7 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto $upstream_forwarded_proto;
         proxy_set_header X-API-Key $http_x_api_key;
         proxy_read_timeout 300s;
     }
@@ -50,8 +55,7 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-API-Key "${API_KEY}";
+        proxy_set_header X-Forwarded-Proto $upstream_forwarded_proto;
         proxy_read_timeout 300s;
     }
 

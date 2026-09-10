@@ -73,6 +73,7 @@ sudoedit /opt/image-intelligence/.env.production
 ```dotenv
 API_KEY=独立随机值
 INTEGRATION_API_KEY=独立随机值
+AUTH_SESSION_SECRET=独立随机值
 AI_TAGGING_API_KEY=AI服务密钥
 AI_CONFIG_ENCRYPTION_KEY=独立随机值
 CALLBACK_SIGNING_SECRET=独立随机值
@@ -157,6 +158,17 @@ docker compose --env-file .env.production \
   api worker-control worker-callback
 ```
 
+首次启动且数据库迁移完成后，使用服务端 `API_KEY` 创建第一个管理员。该接口仅在系统尚无管理员时允许执行，密码至少 10 位：
+
+```bash
+curl --fail --request POST http://127.0.0.1:8088/api/v1/auth/bootstrap \
+  --header "X-API-Key: 替换为服务端API_KEY" \
+  --header "Content-Type: application/json" \
+  --data '{"username":"admin","display_name":"系统管理员","password":"替换为高强度初始密码","role":"admin"}'
+```
+
+用户也可以在登录页使用用户名或邮箱自助注册，注册成功后会以“操作员”角色直接登录，不能自行取得管理员权限。注册按来源 IP 限制为默认每分钟 5 次，可通过 `AUTH_REGISTRATION_RATE_LIMIT_PER_MINUTE` 调整。管理员仍可在“账号管理”中创建、停用和调整其他账号。
+
 `/health/ready` 必须返回 `ready`，其中数据库迁移、Redis、对象存储和关键配置均应为 `ok`。随后用少量测试图片完成一次端到端任务，不要直接放入生产全量流量。
 
 ### 5. 更新到新版本
@@ -218,6 +230,15 @@ curl --fail --silent http://127.0.0.1:8088/health/ready
 ```text
 GET  /health
 GET  /health/ready
+POST /api/v1/auth/login
+POST /api/v1/auth/register
+POST /api/v1/auth/bootstrap
+GET  /api/v1/auth/me
+POST /api/v1/auth/logout
+GET  /api/v1/auth/users
+POST /api/v1/auth/users
+PATCH /api/v1/auth/users/{user_id}
+POST /api/v1/auth/users/{user_id}/reset-password
 POST /api/v1/uploads/presign
 POST /api/v1/uploads/presign-download
 POST /api/v1/uploads/presign-download-batch
@@ -281,8 +302,6 @@ POST  /api/v1/library/assets
 GET   /api/v1/library/assets
 PATCH /api/v1/library/assets/{asset_id}
 POST  /api/v1/library/assets/{asset_id}/reindex
-GET   /api/v1/tag-reviews
-POST  /api/v1/tag-reviews/{image_id}/decision
 ```
 
 当前匹配权重和阈值位于 `profiles/tags/library_similarity_v2.yaml`；`v1` 保留为初始基线。后续校准应继续新增配置版本，不直接覆盖历史版本。
@@ -314,11 +333,11 @@ npm run dev -- --port 5174 --strictPort
 
 服务器部署时通过环境变量调整 Worker 数量和 `INFERENCE_DEVICE=auto`。CPU 服务器保持单个 `openclip` Worker 且并发为 1；GPU 服务器可让 OpenCLIP 自动使用 CUDA。视觉 AI 默认全局限制为 24 次/分钟、4 并发，遇到 429、超时和 5xx 会自动退避。`COMBINED_CLASSIFY_FILTER_ENABLED` 和 `EARLY_SEMANTIC_BRANCH_ENABLED` 默认开启，紧急回滚时可分别恢复旧的两次AI调用和增强后语义链路。
 
-所有 `/api/v1/*` 接口均需要 `X-API-Key` 请求头。请在本地 `.env` 或部署环境中设置高强度的 `API_KEY`，并仅由调用平台的服务端保存和发送该密钥。不要设置 `VITE_API_KEY` 或将服务密钥发送到浏览器。`/health` 提供存活检查；`/health/ready` 同时检查数据库连接、Alembic 版本、Redis、对象存储和关键配置，两者均不需要鉴权。
+Web 工作台使用 HttpOnly 会话 Cookie 登录，写操作同时校验 CSRF；管理员负责创建、停用账号、切换角色和重置密码。服务端调用仍可对业务接口发送 `X-API-Key`，但该密钥具有管理员级权限，只能由受信任的服务端保存和发送，不能配置为 `VITE_API_KEY` 或暴露给浏览器。第三方集成接口继续单独使用 `INTEGRATION_API_KEY`。`/health` 提供存活检查；`/health/ready` 同时检查数据库连接、Alembic 版本、Redis、对象存储和关键配置，两者均不需要鉴权。
 
-`COMPLETION_ROUTING_ENABLED`、`BATCH_FILTER_BARRIER_ENABLED`、`POST_FILTER_BEAUTIFY_PLAN_ENABLED`、`LIBRARY_IMAGE_ONLY_MATCHING_ENABLED`、`LIBRARY_ONLY_TAGS_ENABLED` 是强制工作流开关，正式运行必须全部为 `true`。`LIBRARY_IMAGE_ONLY_MATCHING_ENABLED` 是历史环境变量名，现在控制混合匹配主链路。任一开关关闭后，新任务会被拒绝，正在等待对应阶段的任务会暂停，系统不会回退旧流水线。`LIBRARY_MATCH_SHADOW_MODE=true` 只把自动匹配降为待人工复核，不改变素材组人工标签约束。
+`COMPLETION_ROUTING_ENABLED`、`BATCH_FILTER_BARRIER_ENABLED`、`POST_FILTER_BEAUTIFY_PLAN_ENABLED`、`LIBRARY_IMAGE_ONLY_MATCHING_ENABLED`、`LIBRARY_ONLY_TAGS_ENABLED` 是强制工作流开关，正式运行必须全部为 `true`。`LIBRARY_IMAGE_ONLY_MATCHING_ENABLED` 是历史环境变量名，现在控制混合匹配主链路。任一开关关闭后，新任务会被拒绝，正在等待对应阶段的任务会暂停，系统不会回退旧流水线。素材匹配只做二元自动判定：综合分达到采用线时继承素材组标签，否则不打标签，不提供 Shadow 或人工改判路径。
 
-对象存储上传完成后，Worker 会读取对象实际大小；大于 `MAX_IMAGE_SIZE_MB` 的文件会在下载和解码前被拒绝。解码元数据超过 `MAX_IMAGE_PIXELS`（默认 12,000,000 像素）的图片也会在 OCR、LaMa 或其他高内存处理前拒绝，防止压缩率极高的图片耗尽 Worker 内存。
+对象存储上传完成后，Worker 会读取对象实际大小；大于 `MAX_IMAGE_SIZE_MB` 的文件会在下载和解码前被拒绝。超过 `MAX_IMAGE_PIXELS`（默认 12,000,000 像素）但未超过 `MAX_IMAGE_DECODE_PIXELS`（默认 25,000,000 像素）的正常大图会生成按比例缩小的内部处理副本，原图保持不变；只有超过硬解码上限的异常大图才会在 OCR、LaMa 或其他高内存处理前拒绝。
 
 API 文档：
 

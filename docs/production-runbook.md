@@ -4,7 +4,7 @@
 
 ## 发布前准备
 
-`.env.production` 至少需要设置强随机值：`API_KEY`、`INTEGRATION_API_KEY`、`AI_TAGGING_API_KEY`、`AI_CONFIG_ENCRYPTION_KEY`、`CALLBACK_SIGNING_SECRET`、PostgreSQL/MinIO 密码；并显式配置 `TRUSTED_HOSTS`、`CALLBACK_ALLOWED_HOSTS`、`API_IMAGE`、`API_GATEWAY_IMAGE`、`WEB_IMAGE`。镜像必须使用 Git SHA、版本号或 digest，禁止使用 `latest`。
+`.env.production` 至少需要设置强随机值：`API_KEY`、`INTEGRATION_API_KEY`、`AUTH_SESSION_SECRET`、`AI_TAGGING_API_KEY`、`AI_CONFIG_ENCRYPTION_KEY`、`CALLBACK_SIGNING_SECRET`、PostgreSQL/MinIO 密码；并显式配置 `TRUSTED_HOSTS`、`CALLBACK_ALLOWED_HOSTS`、`API_IMAGE`、`API_GATEWAY_IMAGE`、`WEB_IMAGE`。镜像必须使用 Git SHA、版本号或 digest，禁止使用 `latest`。
 
 以下强制工作流开关必须全部为 `true`：
 
@@ -18,7 +18,7 @@ COMBINED_CLASSIFY_FILTER_ENABLED=true
 EARLY_SEMANTIC_BRANCH_ENABLED=true
 ```
 
-任一开关关闭时 `/health/ready` 返回失败，新任务会被拒绝，不能以关闭开关的方式跳过阶段。首次灰度建议保留 `LIBRARY_MATCH_SHADOW_MODE=true`，完成足量人工复核和离线阈值校准后再单独审批关闭。
+任一开关关闭时 `/health/ready` 返回失败，新任务会被拒绝，不能以关闭开关的方式跳过阶段。素材匹配只保留自动二元判定；上线前必须用离线标注集校准采用线，线上不提供 Shadow 或人工改判路径。
 
 分支过滤响应约束建议保持以下默认值：
 
@@ -68,6 +68,7 @@ curl --fail --silent https://<service-host>/health/ready
 
 ## 发布验证
 
+- 确认 Web 未向浏览器注入 `API_KEY`，登录后会话 Cookie 为 HttpOnly；自助注册账号固定为操作员，管理员可以维护多账号，操作员无法进入账号管理。
 - 确认启用中的过滤标准恰好有一条兜底分类，再创建仅含测试图片的正式任务。
 - 核对新任务自动冻结全部启用标准，`routing_mode` 为 `streaming_v2`，且不会产生 `not_selected`。
 - 确认一次视觉 AI 请求同时返回完整分类评估和命中标准的过滤结果，未再产生第二次分支过滤请求。

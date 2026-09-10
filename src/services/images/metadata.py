@@ -3,12 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 from io import BytesIO
+from math import floor, sqrt
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from src.core.config import Settings
 from src.services.storage.interfaces import StorageProvider
-from src.services.storage.keys import build_thumbnail_object_key
+from src.services.storage.keys import (
+    build_processing_source_object_key,
+    build_thumbnail_object_key,
+)
 
 MAGIC_BYTES_CONTENT_TYPES = {
     b"\xff\xd8\xff": "image/jpeg",
@@ -34,6 +38,11 @@ class ImageMetadata:
     phash: str
     thumbnail_object_key: str
     thumbnail_bytes: bytes
+    processing_object_key: str | None
+    processing_width: int
+    processing_height: int
+    downscaled: bool
+    processing_bytes: bytes
     original_bytes: bytes
 
 
@@ -70,19 +79,41 @@ class ImageMetadataService:
 
                 orientation = image.getexif().get(274)
                 width, height = image.size
-                if width * height > self.settings.max_image_pixels:
+                decoded_pixels = width * height
+                if decoded_pixels > self.settings.max_image_decode_pixels:
                     raise ImageMetadataError(
-                        "图片解码像素超过安全上限"
-                        f"（最大 {self.settings.max_image_pixels:,} 像素）",
+                        "图片解码像素超过硬安全上限"
+                        f"（实际 {width}×{height}，共 {decoded_pixels:,} 像素；"
+                        f"最大 {self.settings.max_image_decode_pixels:,} 像素）",
                         reject_code="IMAGE_TOO_LARGE",
                     )
-                thumbnail = make_thumbnail(image, self.settings.thumbnail_long_side)
+                normalized = ImageOps.exif_transpose(image)
+                processing_image = resize_for_processing(
+                    normalized,
+                    max_pixels=self.settings.max_image_pixels,
+                    max_width=self.settings.hard_filter_max_width,
+                    max_height=self.settings.hard_filter_max_height,
+                )
+                processing_width, processing_height = processing_image.size
+                downscaled = processing_image.size != normalized.size
+                processing_bytes = (
+                    encode_jpeg(processing_image, quality=95) if downscaled else image_bytes
+                )
+                thumbnail = make_thumbnail(processing_image, self.settings.thumbnail_long_side)
         except (Image.DecompressionBombError, OSError, UnidentifiedImageError) as exc:
             raise ImageMetadataError("图片无法解码或已损坏") from exc
 
         thumbnail_object_key = build_thumbnail_object_key(job_id, image_id)
         thumbnail_bytes = encode_jpeg(thumbnail)
         await self.storage.upload(thumbnail_object_key, thumbnail_bytes, "image/jpeg")
+        processing_object_key = None
+        if downscaled:
+            processing_object_key = build_processing_source_object_key(job_id, image_id)
+            await self.storage.upload(
+                processing_object_key,
+                processing_bytes,
+                "image/jpeg",
+            )
 
         return ImageMetadata(
             content_type=content_type,
@@ -95,6 +126,11 @@ class ImageMetadataService:
             phash=build_perceptual_hash(thumbnail),
             thumbnail_object_key=thumbnail_object_key,
             thumbnail_bytes=thumbnail_bytes,
+            processing_object_key=processing_object_key,
+            processing_width=processing_width,
+            processing_height=processing_height,
+            downscaled=downscaled,
+            processing_bytes=processing_bytes,
             original_bytes=image_bytes,
         )
 
@@ -116,6 +152,31 @@ def pillow_format_to_content_type(image_format: str | None) -> str | None:
     return {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}.get(image_format)
 
 
+def resize_for_processing(
+    image: Image.Image,
+    *,
+    max_pixels: int,
+    max_width: int,
+    max_height: int,
+) -> Image.Image:
+    """Return a copy bounded by both the processing pixel and dimension budgets."""
+
+    width, height = image.size
+    scale = min(
+        1.0,
+        sqrt(max_pixels / (width * height)),
+        max_width / width,
+        max_height / height,
+    )
+    if scale >= 1:
+        return image.copy()
+    target_size = (
+        max(1, floor(width * scale)),
+        max(1, floor(height * scale)),
+    )
+    return image.resize(target_size, Image.Resampling.LANCZOS)
+
+
 def make_thumbnail(image: Image.Image, long_side: int) -> Image.Image:
     thumbnail = ImageOps.exif_transpose(image).copy()
     thumbnail.thumbnail((long_side, long_side), Image.Resampling.LANCZOS)
@@ -129,9 +190,16 @@ def make_thumbnail(image: Image.Image, long_side: int) -> Image.Image:
     return thumbnail
 
 
-def encode_jpeg(image: Image.Image) -> bytes:
+def encode_jpeg(image: Image.Image, *, quality: int = 85) -> bytes:
+    if image.mode not in {"RGB", "L"}:
+        if image.mode == "RGBA":
+            background = Image.new("RGB", image.size, "white")
+            background.paste(image, mask=image.getchannel("A"))
+            image = background
+        else:
+            image = image.convert("RGB")
     output = BytesIO()
-    image.save(output, format="JPEG", quality=85, optimize=True)
+    image.save(output, format="JPEG", quality=quality, optimize=True)
     return output.getvalue()
 
 

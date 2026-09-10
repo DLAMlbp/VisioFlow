@@ -96,7 +96,6 @@ class SimilarityPolicy(Protocol):
     similarity_max_content_weight: float
     similarity_field_weights: dict[str, float]
     similarity_auto_threshold: float
-    similarity_review_threshold: float
     similarity_min_margin: float
     similarity_group_matching_enabled: bool
     similarity_group_visual_best_weight: float
@@ -1007,29 +1006,6 @@ def _flatten_strings(value: object) -> list[str]:
             result.extend(_flatten_strings(item))
         return result
     return []
-
-
-def apply_shadow_mode(
-    decision: SimilarityDecision, *, enabled: bool
-) -> SimilarityDecision:
-    """Keep an automatic match review-only while preserving its audit scores."""
-    if not enabled or decision.decision != "matched":
-        return decision
-    return SimilarityDecision(
-        decision="pending_review",
-        message="Shadow 模式：自动匹配结果等待人工确认",
-        matched_asset_id=decision.matched_asset_id,
-        tags=[],
-        similarity_score=decision.similarity_score,
-        feature_score=decision.feature_score,
-        final_score=decision.final_score,
-        feature_reliability=decision.feature_reliability,
-        feature_coverage=decision.feature_coverage,
-        candidate_margin=decision.candidate_margin,
-        field_scores=decision.field_scores,
-        score_version=decision.score_version,
-        candidates=decision.candidates,
-    )
 
 
 def _field_value(payload: dict[str, object], field_name: str) -> object:

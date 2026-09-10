@@ -100,7 +100,9 @@ async def _detect_redaction(image_id: str) -> None:
                     else:
                         EnhancementTaskPublisher().publish(item.id)
                 return
-        original_bytes = await storage.download(item.object_key)
+        original_bytes = await storage.download(
+            getattr(item, "processing_object_key", None) or item.object_key
+        )
         neutral_profile = neutralize_beautify_profile(beautify_profile)
         orientation_result = NaturalBeautifyService().normalize_orientation(
             original_bytes, neutral_profile

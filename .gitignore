@@ -1,6 +1,7 @@
 .venv/
 .env
 .env.production
+.docker-local/
 __pycache__/
 .pytest_cache/
 .ruff_cache/

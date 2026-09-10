@@ -72,6 +72,9 @@ async def test_process_extracts_metadata_and_uploads_thumbnail() -> None:
     assert metadata.sha256 == sha256(source).hexdigest()
     assert len(metadata.phash) == 64
     assert metadata.thumbnail_object_key == "thumbnails/job_test/img_test.jpg"
+    assert metadata.processing_object_key is None
+    assert metadata.downscaled is False
+    assert metadata.processing_bytes == source
     thumbnail_bytes, content_type = storage.uploads[metadata.thumbnail_object_key]
     assert content_type == "image/jpeg"
     with Image.open(BytesIO(thumbnail_bytes)) as thumbnail:
@@ -121,18 +124,68 @@ async def test_process_rejects_object_larger_than_limit_before_download() -> Non
 
 
 @pytest.mark.asyncio
-async def test_process_rejects_decoded_pixels_above_memory_budget() -> None:
+async def test_process_downscales_decoded_pixels_above_processing_budget() -> None:
     source = image_bytes("JPEG", (1200, 1000))
     storage = MemoryStorage({"uploads/too-many-pixels.jpg": source})
-    service = ImageMetadataService(storage, Settings(max_image_pixels=1_000_000))
+    service = ImageMetadataService(
+        storage,
+        Settings(max_image_pixels=1_000_000, max_image_decode_pixels=2_000_000),
+    )
 
-    with pytest.raises(ImageMetadataError, match="解码像素超过安全上限") as error:
+    metadata = await service.process(
+        job_id="job_test",
+        image_id="img_test",
+        object_key="uploads/too-many-pixels.jpg",
+    )
+
+    assert metadata.downscaled is True
+    assert metadata.processing_width * metadata.processing_height <= 1_000_000
+    assert metadata.processing_object_key == "processing-sources/job_test/img_test.jpg"
+    processing_bytes, content_type = storage.uploads[metadata.processing_object_key]
+    assert content_type == "image/jpeg"
+    assert processing_bytes == metadata.processing_bytes
+    assert metadata.original_bytes == source
+    with Image.open(BytesIO(processing_bytes)) as processing_image:
+        assert processing_image.size == (
+            metadata.processing_width,
+            metadata.processing_height,
+        )
+
+
+@pytest.mark.asyncio
+async def test_process_accepts_and_downscales_common_4032_by_3024_photo() -> None:
+    source = image_bytes("JPEG", (4032, 3024))
+    storage = MemoryStorage({"uploads/phone-photo.jpg": source})
+
+    metadata = await ImageMetadataService(storage, Settings()).process(
+        job_id="job_phone",
+        image_id="img_phone",
+        object_key="uploads/phone-photo.jpg",
+    )
+
+    assert metadata.downscaled is True
+    assert (metadata.processing_width, metadata.processing_height) == (4000, 3000)
+    assert metadata.processing_width * metadata.processing_height == 12_000_000
+    assert metadata.processing_object_key == "processing-sources/job_phone/img_phone.jpg"
+
+
+@pytest.mark.asyncio
+async def test_process_rejects_decoded_pixels_above_hard_safety_limit() -> None:
+    source = image_bytes("JPEG", (1200, 1000))
+    storage = MemoryStorage({"uploads/unsafe.jpg": source})
+    service = ImageMetadataService(
+        storage,
+        Settings(max_image_pixels=1_000_000, max_image_decode_pixels=1_100_000),
+    )
+
+    with pytest.raises(ImageMetadataError, match="实际 1200×1000") as error:
         await service.process(
             job_id="job_test",
             image_id="img_test",
-            object_key="uploads/too-many-pixels.jpg",
+            object_key="uploads/unsafe.jpg",
         )
     assert error.value.reject_code == "IMAGE_TOO_LARGE"
+    assert storage.uploads == {}
 
 
 def test_perceptual_hash_is_stable_for_the_same_image() -> None:

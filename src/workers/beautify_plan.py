@@ -50,7 +50,9 @@ async def _plan_beautify(image_id: str) -> None:
         profile = beautify_from_snapshot(
             job.beautify_profile_snapshot, job.beautify_profile_id, settings
         )
-        image_bytes = await get_storage_provider().download(item.object_key)
+        image_bytes = await get_storage_provider().download(
+            getattr(item, "processing_object_key", None) or item.object_key
+        )
         emit_metric(
             logger,
             "beautify_plan_requests_total",

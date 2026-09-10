@@ -16,6 +16,7 @@
 - 保留、美化、淘汰与失败结果分组
 - 原图 / 美化图查看
 - 评分、原因、警告、淘汰码展示
+- 多用户登录与管理员账号管理
 
 ## 启动
 
@@ -32,7 +33,7 @@ http://127.0.0.1:5174
 
 ## API 连接
 
-前端固定使用真实后端。Vite 开发服务器会将 `/api` 请求代理至 `http://127.0.0.1:18000`，并在服务器端读取项目根目录 `.env` 的 `API_KEY`。不要在任何 `VITE_*` 变量中配置 API Key。
+前端固定使用真实后端。Vite 开发服务器会将 `/api` 请求代理至 `http://127.0.0.1:18000`；浏览器通过 HttpOnly 会话 Cookie 登录，不读取或注入项目根目录的 `API_KEY`。不要在任何 `VITE_*` 变量中配置 API Key。
 
 ## 验证
 
@@ -47,6 +48,9 @@ npm audit --audit-level=moderate
 前端按开发方案对接以下接口：
 
 ```text
+POST /api/v1/auth/login
+GET  /api/v1/auth/me
+POST /api/v1/auth/logout
 POST /api/v1/uploads/presign
 POST /api/v1/image/jobs
 GET  /api/v1/image/jobs/{job_id}

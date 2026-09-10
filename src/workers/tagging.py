@@ -15,7 +15,6 @@ from src.services.images.embedding import ImageEmbeddingError, OpenClipImageEmbe
 from src.services.images.group_match_index import find_cached_group_prototype_matches
 from src.services.images.similarity import (
     ScoredCandidate,
-    apply_shadow_mode,
     decide_similarity,
     score_candidate,
     score_group_candidates,
@@ -116,10 +115,6 @@ async def _generate_image_tags(image_id: str) -> None:
                             )
                         )
                 match_decision = decide_similarity(candidates=scored, settings=similarity_profile)
-                match_decision = apply_shadow_mode(
-                    match_decision,
-                    enabled=getattr(settings, "library_match_shadow_mode", False),
-                )
             except ImageEmbeddingError as exc:
                 match_decision = unmatched_decision(str(exc))
             except Exception:
@@ -158,9 +153,7 @@ async def _generate_image_tags(image_id: str) -> None:
                 if match_decision.decision == "matched"
                 else {}
             )
-            tag_json["candidate_tags"] = (
-                match_decision.tags if match_decision.decision == "pending_review" else []
-            )
+            tag_json["candidate_tags"] = []
 
         await repository.upsert_ai_tag(
             image_id=item.id,

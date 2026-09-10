@@ -24,6 +24,7 @@ class ImageItem(Base):
     job_id: Mapped[str] = mapped_column(ForeignKey("image_jobs.id", ondelete="CASCADE"), index=True)
 
     object_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    processing_object_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     thumbnail_object_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     analysis_object_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 

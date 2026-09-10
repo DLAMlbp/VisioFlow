@@ -14,8 +14,7 @@ export default defineConfig(({ mode }) => {
       proxy: {
         "/api": {
           target: env.LOCAL_API_PROXY_TARGET ?? "http://127.0.0.1:18000",
-          changeOrigin: true,
-          headers: env.API_KEY ? { "X-API-Key": env.API_KEY } : {}
+          changeOrigin: true
         }
       }
     },
