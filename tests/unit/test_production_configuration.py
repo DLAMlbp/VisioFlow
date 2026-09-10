@@ -83,3 +83,13 @@ def test_production_enhancement_workers_have_isolated_resource_budgets() -> None
     assert "--max-tasks-per-child=3" in services["worker-render"]["command"]
     assert services["worker-classification"]["stop_grace_period"] == "360s"
     assert services["worker-render"]["stop_grace_period"] == "360s"
+
+
+def test_library_worker_has_an_isolated_queue_and_safe_shutdown_window() -> None:
+    compose_path = Path(__file__).resolve().parents[2] / "docker-compose.prod.yml"
+    compose = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+    worker = compose["services"]["worker-library"]
+
+    assert "-Q library" in worker["command"]
+    assert worker["environment"]["WORKER_ROLE"] == "library"
+    assert worker["stop_grace_period"] == "360s"

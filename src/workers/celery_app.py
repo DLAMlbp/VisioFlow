@@ -47,8 +47,8 @@ _ROLE_TASK_IMPORTS: dict[str, tuple[str, ...]] = {
     "enhance": ("src.workers.enhance",),
     "render": ("src.workers.render",),
     "analysis": ("src.workers.analysis",),
-    # Both task modules share one process and therefore one resident OpenCLIP model.
-    "openclip": ("src.workers.matching", "src.workers.library"),
+    "openclip": ("src.workers.matching",),
+    "library": ("src.workers.library",),
     "matching": ("src.workers.matching",),
     "cleanup": ("src.workers.cleanup",),
     "beat": (),
@@ -74,9 +74,8 @@ celery_app.conf.update(
     task_queue_max_priority=9,
     task_default_priority=5,
     broker_transport_options={
-        # Redis implements priority with separate physical lists. Keeping all
-        # OpenCLIP work on one logical queue makes online-vs-backfill ordering
-        # deterministic between individual tasks.
+        # Redis implements priority with separate physical lists. Keep every
+        # priority explicit so operational queue-depth checks see the same layout.
         "priority_steps": list(range(10)),
         "sep": ":",
     },
@@ -142,12 +141,12 @@ celery_app.conf.beat_schedule = {
     "backfill-library-content-features": {
         "task": "library.backfill_content_features",
         "schedule": 300,
-        "options": {"queue": "openclip", "priority": 1},
+        "options": {"queue": "library"},
     },
     "backfill-library-group-prototypes": {
         "task": "library.backfill_group_prototypes",
         "schedule": 600,
-        "options": {"queue": "openclip", "priority": 1},
+        "options": {"queue": "library"},
     },
     "cleanup-expired-images": {
         "task": "maintenance.cleanup_expired_images",
@@ -168,7 +167,7 @@ celery_app.conf.beat_schedule = {
 
 
 def _prewarm_embedding_model() -> None:
-    if os.getenv("WORKER_ROLE") != "openclip":
+    if os.getenv("WORKER_ROLE") not in {"openclip", "library"}:
         return
     try:
         from src.services.images.embedding import _load_model

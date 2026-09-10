@@ -1,4 +1,4 @@
-from src.workers.celery_app import _ALL_TASK_IMPORTS, _task_imports
+from src.workers.celery_app import _ALL_TASK_IMPORTS, _task_imports, celery_app
 
 
 def test_control_worker_only_imports_control_tasks() -> None:
@@ -29,11 +29,16 @@ def test_processing_workers_only_import_their_task_modules() -> None:
     assert _task_imports("cleanup") == ("src.workers.cleanup",)
 
 
-def test_openclip_worker_registers_job_and_library_embedding_tasks() -> None:
-    assert _task_imports("openclip") == (
-        "src.workers.matching",
-        "src.workers.library",
-    )
+def test_openclip_and_library_workers_have_isolated_task_registries() -> None:
+    assert _task_imports("openclip") == ("src.workers.matching",)
+    assert _task_imports("library") == ("src.workers.library",)
+
+
+def test_library_maintenance_is_scheduled_on_the_dedicated_queue() -> None:
+    schedule = celery_app.conf.beat_schedule
+
+    assert schedule["backfill-library-content-features"]["options"]["queue"] == "library"
+    assert schedule["backfill-library-group-prototypes"]["options"]["queue"] == "library"
 
 
 def test_unknown_worker_role_keeps_complete_registry_for_compatibility() -> None:

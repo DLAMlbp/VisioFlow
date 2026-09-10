@@ -82,6 +82,23 @@ def test_admission_counts_kombu_and_legacy_priority_lists() -> None:
     assert snapshot.queue_depth == 7
 
 
+def test_admission_counts_all_openclip_work_and_ignores_isolated_library_queue() -> None:
+    client = FakeRedis(
+        queue_lengths={
+            "library": 100,
+            "library:5": 100,
+            "openclip\x06\x161": 1,
+            "openclip:1": 1,
+            "openclip:5": 2,
+            "openclip:9": 3,
+        }
+    )
+
+    snapshot = enforce_integration_admission(settings(), 1, client=client)
+
+    assert snapshot.queue_depth == 7
+
+
 def test_admission_returns_token_bucket_retry_delay() -> None:
     client = FakeRedis(token_result=(0, 125000, 3))
 

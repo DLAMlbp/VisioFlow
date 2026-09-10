@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from sqlalchemy import case, func, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -301,13 +301,18 @@ class LibraryRepository:
         )
         return list(result.scalars())
 
-    async def list_active_assets_missing_analysis(self, *, limit: int) -> list[str]:
+    async def list_assets_needing_analysis(self, *, limit: int) -> list[str]:
         result = await self.session.execute(
             select(LibraryAsset.id)
             .where(
-                LibraryAsset.status == "active",
-                LibraryAsset.embedding.is_not(None),
-                LibraryAsset.analysis_json.is_(None),
+                or_(
+                    LibraryAsset.status == "pending",
+                    and_(
+                        LibraryAsset.status == "active",
+                        LibraryAsset.embedding.is_not(None),
+                        LibraryAsset.analysis_json.is_(None),
+                    ),
+                )
             )
             .order_by(LibraryAsset.created_at)
             .limit(limit)

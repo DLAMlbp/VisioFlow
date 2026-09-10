@@ -66,6 +66,13 @@ def terminal_job_status(*, total_count: int, failed_count: int) -> str:
     return "completed"
 
 
+def _publish_callback_task(job_id: str) -> None:
+    # Import lazily so repository imports do not initialize Celery during API startup.
+    from src.services.jobs.dispatch import CallbackTaskPublisher
+
+    CallbackTaskPublisher().publish(job_id)
+
+
 @dataclass(frozen=True)
 class JobConfig:
     id: str
@@ -2175,9 +2182,20 @@ class ImageJobRepository:
                 completed_at=func.clock_timestamp(),
             )
         )
+        callback_pending = False
         if result.rowcount == 1:
-            await self._mark_callback_pending(job_id)
+            callback_pending = await self._mark_callback_pending(job_id)
         await self.session.commit()
+        if callback_pending:
+            try:
+                _publish_callback_task(job_id)
+            except Exception:
+                # The committed pending row is the durable fallback. Celery Beat's
+                # recovery task will publish it again when the broker is available.
+                logger.exception(
+                    "Unable to publish callback immediately; recovery will retry job_id=%s",
+                    job_id,
+                )
         return result.rowcount == 1
 
     async def list_callback_jobs_due(
@@ -2316,8 +2334,8 @@ class ImageJobRepository:
         )
         await self.session.commit()
 
-    async def _mark_callback_pending(self, job_id: str) -> None:
-        await self.session.execute(
+    async def _mark_callback_pending(self, job_id: str) -> bool:
+        result = await self.session.execute(
             update(ImageJob)
             .where(
                 ImageJob.id == job_id,
@@ -2333,3 +2351,4 @@ class ImageJobRepository:
                 callback_last_error=None,
             )
         )
+        return result.rowcount == 1

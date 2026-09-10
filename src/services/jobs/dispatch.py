@@ -25,6 +25,8 @@ _RECOVERY_TASK_PUBLISHERS = {
     "image.generate_embedding": "EmbeddingTaskPublisher",
     "image.match_library": "MatchTaskPublisher",
     "image.deliver_callback": "CallbackTaskPublisher",
+    "library.process_asset": "LibraryAssetTaskPublisher",
+    "library.rebuild_group_prototypes": "LibraryGroupPrototypeTaskPublisher",
 }
 
 
@@ -199,21 +201,21 @@ class MatchTaskPublisher:
 
 class LibraryAssetTaskPublisher:
     def publish(self, asset_id: str) -> None:
-        celery_app.send_task(
+        _publish_pipeline_task(
+            type(self).__name__,
+            asset_id,
             "library.process_asset",
-            args=[asset_id],
-            queue="openclip",
-            priority=1,
+            queue="library",
         )
 
 
 class LibraryGroupPrototypeTaskPublisher:
     def publish(self, group_id: str) -> None:
-        celery_app.send_task(
+        _publish_pipeline_task(
+            type(self).__name__,
+            group_id,
             "library.rebuild_group_prototypes",
-            args=[group_id],
-            queue="openclip",
-            priority=1,
+            queue="library",
         )
 
 

@@ -8,11 +8,12 @@ def test_production_compose_uses_the_consolidated_worker_topology() -> None:
 
     assert "worker-openclip:" in compose
     assert "-Q openclip" in compose
+    assert "worker-library:" in compose
+    assert "-Q library" in compose
     assert "-Q classification,filtering" in compose
     assert "CLASSIFICATION_IMAGE" in compose
     assert "RENDER_IMAGE" in compose
     assert "worker-embedding:" not in compose
-    assert "worker-library:" not in compose
     assert "worker-filter:" not in compose
     assert "worker-vision:" not in compose
     assert "-Q classification,filtering -l info --concurrency=8" in compose
@@ -28,7 +29,7 @@ def test_worker_healthcheck_does_not_use_celery_pidbox_or_reload_models() -> Non
     assert "inspect ping" not in compose
     assert "redis.Redis.from_url" in compose
     assert "os.environ['REDIS_URL']" in compose
-    assert compose.count("--without-mingle --without-gossip") == 13
+    assert compose.count("--without-mingle --without-gossip") == 14
 
 
 def test_deploy_script_versions_and_rolls_back_the_compose_file() -> None:

@@ -170,6 +170,15 @@ services:
     mem_limit: 2048m
     cpus: 1.5
 
+  worker-library:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q library -l info --pool=solo --concurrency=1 --without-mingle --without-gossip
+    stop_grace_period: 360s
+    environment:
+      WORKER_ROLE: library
+    mem_limit: 2048m
+    cpus: 1.5
+
   worker-matching:
     <<: *worker
     command: celery -A src.workers.celery_app worker -Q matching -l info --concurrency=2 --without-mingle --without-gossip

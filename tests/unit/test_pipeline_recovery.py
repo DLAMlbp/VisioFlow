@@ -124,13 +124,12 @@ def test_pipeline_publishers_use_independent_stage_queues(monkeypatch) -> None:
     ]
 
 
-def test_final_embedding_overtakes_provisional_and_library_work(monkeypatch) -> None:
-    priorities: list[tuple[str, int]] = []
+def test_library_work_uses_its_dedicated_queue(monkeypatch) -> None:
+    calls: list[tuple[str, str, int | None]] = []
 
-    def send_task(name, *, args, queue, priority, **_kwargs):
+    def send_task(name, *, args, queue, priority=None, **_kwargs):
         assert args == ["img_test"]
-        assert queue == "openclip"
-        priorities.append((name, priority))
+        calls.append((name, queue, priority))
 
     monkeypatch.setattr(dispatch.celery_app, "send_task", send_task)
     leased: set[tuple[str, str]] = set()
@@ -148,7 +147,10 @@ def test_final_embedding_overtakes_provisional_and_library_work(monkeypatch) -> 
     dispatch.EmbeddingTaskPublisher().publish("img_test")
     dispatch.LibraryAssetTaskPublisher().publish("img_test")
 
-    assert priorities == [("image.generate_embedding", 5), ("library.process_asset", 1)]
+    assert calls == [
+        ("image.generate_embedding", "openclip", 5),
+        ("library.process_asset", "library", None),
+    ]
 
 
 def test_normal_publish_uses_cross_run_lease(monkeypatch) -> None:
@@ -175,6 +177,31 @@ def test_normal_publish_uses_cross_run_lease(monkeypatch) -> None:
         ("CompletionTaskPublisher", "img_test"),
     ]
     assert published == ["img_test"]
+
+
+def test_library_asset_publish_uses_cross_run_lease(monkeypatch) -> None:
+    published: list[str] = []
+    acquired: set[tuple[str, str]] = set()
+
+    def acquire(publisher_name: str, entity_id: str) -> bool:
+        key = (publisher_name, entity_id)
+        if key in acquired:
+            return False
+        acquired.add(key)
+        return True
+
+    monkeypatch.setattr(dispatch, "acquire_recovery_lease", acquire)
+    monkeypatch.setattr(
+        dispatch.celery_app,
+        "send_task",
+        lambda _name, *, args, **_kwargs: published.append(args[0]),
+    )
+
+    publisher = dispatch.LibraryAssetTaskPublisher()
+    publisher.publish("ast_test")
+    publisher.publish("ast_test")
+
+    assert published == ["ast_test"]
 
 
 def test_pipeline_publish_releases_lease_when_broker_publish_fails(monkeypatch) -> None:
@@ -291,3 +318,22 @@ def test_callback_completion_releases_publish_lease(monkeypatch) -> None:
     dispatch.release_recovery_lease_for_task("image.deliver_callback", "job_test")
 
     assert released == [("CallbackTaskPublisher", "job_test")]
+
+
+def test_library_completion_releases_publish_leases(monkeypatch) -> None:
+    released: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        dispatch,
+        "release_recovery_lease",
+        lambda publisher_name, entity_id: released.append((publisher_name, entity_id)),
+    )
+
+    dispatch.release_recovery_lease_for_task("library.process_asset", "ast_test")
+    dispatch.release_recovery_lease_for_task(
+        "library.rebuild_group_prototypes", "grp_test"
+    )
+
+    assert released == [
+        ("LibraryAssetTaskPublisher", "ast_test"),
+        ("LibraryGroupPrototypeTaskPublisher", "grp_test"),
+    ]
