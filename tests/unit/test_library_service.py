@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -83,6 +83,42 @@ async def test_delete_asset_rejects_unknown_asset() -> None:
 
     storage.delete.assert_not_awaited()
     repository.delete_asset.assert_not_awaited()
+
+
+async def test_reindex_failed_assets_resets_and_publishes_every_failed_asset() -> None:
+    repository = AsyncMock()
+    repository.get_group.return_value = _group("grp_test", ["施工"])
+    repository.reset_failed_assets.return_value = [
+        ("ast_first", "grp_test"),
+        ("ast_second", "grp_test"),
+    ]
+    task_publisher = Mock()
+    prototype_publisher = Mock()
+
+    response = await LibraryService(
+        repository,
+        task_publisher=task_publisher,
+        prototype_task_publisher=prototype_publisher,
+    ).reindex_failed_assets(group_id="grp_test")
+
+    assert response.queued_count == 2
+    repository.reset_failed_assets.assert_awaited_once_with(group_id="grp_test")
+    repository.mark_group_prototypes_stale.assert_awaited_once_with(["grp_test"])
+    assert [call.args for call in task_publisher.publish.call_args_list] == [
+        ("ast_first",),
+        ("ast_second",),
+    ]
+    prototype_publisher.publish.assert_called_once_with("grp_test")
+
+
+async def test_reindex_failed_assets_rejects_unknown_group() -> None:
+    repository = AsyncMock()
+    repository.get_group.return_value = None
+
+    with pytest.raises(LibraryNotFound, match="素材组不存在"):
+        await LibraryService(repository).reindex_failed_assets(group_id="grp_missing")
+
+    repository.reset_failed_assets.assert_not_awaited()
 
 
 def _match(decision: str, asset_id: str | None = None):

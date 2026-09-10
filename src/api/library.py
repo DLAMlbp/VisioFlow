@@ -10,6 +10,7 @@ from src.schemas.library import (
     LibraryAssetListResponse,
     LibraryAssetResponse,
     LibraryAssetUpdate,
+    LibraryFailedAssetReindexResponse,
     TagReviewDecisionRequest,
     TagReviewResponse,
 )
@@ -112,6 +113,17 @@ async def reindex_library_asset(
 ) -> LibraryAssetResponse:
     try:
         return await service.reindex_asset(asset_id)
+    except (InvalidLibraryRequest, LibraryNotFound) as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/assets/reindex-failed", response_model=LibraryFailedAssetReindexResponse)
+async def reindex_failed_library_assets(
+    service: LibraryServiceDep,
+    group_id: str | None = None,
+) -> LibraryFailedAssetReindexResponse:
+    try:
+        return await service.reindex_failed_assets(group_id=group_id)
     except (InvalidLibraryRequest, LibraryNotFound) as exc:
         raise _http_error(exc) from exc
 

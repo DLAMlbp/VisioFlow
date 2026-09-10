@@ -1788,6 +1788,34 @@ body {
   margin-bottom: 14px;
 }
 
+.retry-failed-assets-button {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid #efc8c5;
+  border-radius: 7px;
+  background: #fff8f7;
+  color: var(--red);
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.retry-failed-assets-button:hover:not(:disabled) {
+  border-color: var(--red);
+  background: #fff1ef;
+}
+
+.retry-failed-assets-button:disabled {
+  border-color: var(--line);
+  background: var(--panel-soft);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
 .library-asset-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));

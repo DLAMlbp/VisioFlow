@@ -434,6 +434,12 @@ export const api = {
       reindexLibraryAsset(assetId: string): Promise<LibraryAsset> {
         return request<LibraryAsset>(`/api/v1/library/assets/${assetId}/reindex`, { method: "POST" });
       },
+      reindexFailedLibraryAssets(groupId?: string | null): Promise<{ queued_count: number }> {
+        const params = groupId ? `?${new URLSearchParams({ group_id: groupId })}` : "";
+        return request<{ queued_count: number }>(`/api/v1/library/assets/reindex-failed${params}`, {
+          method: "POST"
+        });
+      },
       async getTagReviews(): Promise<TagReview[]> {
         const reviews = await request<TagReview[]>("/api/v1/tag-reviews?limit=200");
         const previewKeys = reviews.flatMap((review) => (

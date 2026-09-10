@@ -73,6 +73,10 @@ class LibraryAssetListResponse(BaseModel):
     items: list[LibraryAssetResponse]
 
 
+class LibraryFailedAssetReindexResponse(BaseModel):
+    queued_count: int
+
+
 class TagReviewResponse(BaseModel):
     image_id: str
     matched_asset_id: str | None

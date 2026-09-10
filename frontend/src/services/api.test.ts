@@ -104,6 +104,22 @@ describe("real API client", () => {
     );
   });
 
+  it("requeues failed library assets in the selected group", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ queued_count: 7 }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await api.reindexFailedLibraryAssets("grp_test");
+
+    expect(result.queued_count).toBe(7);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/library/assets/reindex-failed?group_id=grp_test",
+      expect.objectContaining({ method: "POST" })
+    );
+  });
+
   it("shows the backend detail instead of a raw JSON response", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
       JSON.stringify({ detail: "服务端 API_KEY 未配置" }),

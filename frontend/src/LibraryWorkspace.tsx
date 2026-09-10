@@ -39,6 +39,7 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
   const [editingSortOrder, setEditingSortOrder] = useState(0);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [deletingAssetId, setDeletingAssetId] = useState<string | null>(null);
+  const [retryingFailed, setRetryingFailed] = useState(false);
   const [assetPage, setAssetPage] = useState(1);
 
   const selectedGroup = groups.find((group) => group.id === selectedGroupId) ?? null;
@@ -63,6 +64,7 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
     (asset) => asset.status === "active" && activeGroupIds.has(asset.group_id)
   ).length;
   const pendingCount = assets.filter((asset) => asset.status === "pending").length;
+  const failedCount = visibleAssets.filter((asset) => asset.status === "failed").length;
   const canUpload = selectedGroup?.status === "active";
 
   useEffect(() => {
@@ -341,6 +343,24 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
     }
   }
 
+  async function reindexFailedAssets() {
+    if (!failedCount || retryingFailed) return;
+    const scope = selectedGroup ? "当前素材组" : "全部素材";
+    if (!window.confirm(`确认将${scope}中的 ${failedCount} 张失败图片重新加入分析队列？`)) return;
+    setRetryingFailed(true);
+    try {
+      const result = await api.reindexFailedLibraryAssets(selectedGroupId);
+      await loadAssets();
+      onMessage(result.queued_count
+        ? `${result.queued_count} 张失败图片已重新进入分析队列。`
+        : "当前范围没有需要重新分析的失败图片。");
+    } catch (error) {
+      onMessage(error instanceof Error ? error.message : "批量重新分析失败");
+    } finally {
+      setRetryingFailed(false);
+    }
+  }
+
   return (
     <section className="library-workspace" id="mainWorkspace">
       <header className="library-heading">
@@ -432,7 +452,19 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
           </section>
 
           <section className="library-assets-section" ref={assetsSectionRef}>
-            <div className="assets-heading"><div><h3>{selectedGroup ? "当前素材组" : "全部参考图片"}</h3><p>{visibleAssets.length ? `显示第 ${pageStartIndex + 1}-${pageStartIndex + pagedAssets.length} 张，共 ${visibleAssets.length} 张` : "0 张图片"}{selectedGroup ? `，共同标签：${selectedGroup.tags.join("、")}` : ""}</p></div></div>
+            <div className="assets-heading">
+              <div><h3>{selectedGroup ? "当前素材组" : "全部参考图片"}</h3><p>{visibleAssets.length ? `显示第 ${pageStartIndex + 1}-${pageStartIndex + pagedAssets.length} 张，共 ${visibleAssets.length} 张` : "0 张图片"}{selectedGroup ? `，共同标签：${selectedGroup.tags.join("、")}` : ""}</p></div>
+              <button
+                className="retry-failed-assets-button"
+                type="button"
+                disabled={!failedCount || retryingFailed}
+                title={failedCount ? `重新分析当前范围内的 ${failedCount} 张失败图片` : "当前范围没有分析失败的图片"}
+                onClick={() => void reindexFailedAssets()}
+              >
+                {retryingFailed ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <RotateCcw size={16} aria-hidden="true" />}
+                {retryingFailed ? "正在加入队列" : `一键分析失败图片${failedCount ? ` (${failedCount})` : ""}`}
+              </button>
+            </div>
             {visibleAssets.length ? <div className="library-assets-browser">
               <div className="library-asset-grid">{pagedAssets.map((asset) => {
                 const assetTags = groups.find((group) => group.id === asset.group_id)?.tags ?? asset.tags;

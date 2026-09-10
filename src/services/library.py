@@ -24,6 +24,7 @@ from src.schemas.library import (
     LibraryAssetListResponse,
     LibraryAssetResponse,
     LibraryAssetUpdate,
+    LibraryFailedAssetReindexResponse,
     TagReviewDecisionRequest,
     TagReviewResponse,
 )
@@ -197,6 +198,27 @@ class LibraryService:
             self.task_publisher.publish(asset.id)
         loaded = await self.repository.get_asset(asset.id)
         return self._asset_response(loaded or asset)
+
+    async def reindex_failed_assets(
+        self, *, group_id: str | None
+    ) -> LibraryFailedAssetReindexResponse:
+        if group_id is not None and await self.repository.get_group(group_id) is None:
+            raise LibraryNotFound("素材组不存在")
+        reset_assets = await self.repository.reset_failed_assets(group_id=group_id)
+        group_ids = sorted({asset_group_id for _, asset_group_id in reset_assets})
+        await self._mark_prototypes_stale(group_ids)
+        for asset_id, _ in reset_assets:
+            if self.task_publisher:
+                self.task_publisher.publish(asset_id)
+        for asset_group_id in group_ids:
+            self._publish_prototype_rebuild(asset_group_id)
+        emit_metric(
+            logger,
+            "library_failed_assets_reindexed_total",
+            value=len(reset_assets),
+            labels={"scope": "group" if group_id else "all"},
+        )
+        return LibraryFailedAssetReindexResponse(queued_count=len(reset_assets))
 
     async def list_reviews(self, limit: int, offset: int) -> list[TagReviewResponse]:
         matches = await self.repository.list_pending_reviews(limit, offset)

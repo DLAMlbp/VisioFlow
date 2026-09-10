@@ -111,6 +111,27 @@ class LibraryRepository:
         await self.session.refresh(asset)
         return asset
 
+    async def reset_failed_assets(self, *, group_id: str | None) -> list[tuple[str, str]]:
+        filters = [LibraryAsset.status == "failed"]
+        if group_id:
+            filters.append(LibraryAsset.group_id == group_id)
+        result = await self.session.execute(
+            update(LibraryAsset)
+            .where(*filters)
+            .values(
+                status="pending",
+                error_message=None,
+                analysis_json=None,
+                embedding=None,
+                embedding_version=None,
+                is_group_prototype=False,
+            )
+            .returning(LibraryAsset.id, LibraryAsset.group_id)
+        )
+        rows = [(str(asset_id), str(asset_group_id)) for asset_id, asset_group_id in result]
+        await self.session.commit()
+        return rows
+
     async def delete_asset(self, asset: LibraryAsset) -> None:
         await self.session.delete(asset)
         await self.session.commit()
