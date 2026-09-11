@@ -40,29 +40,6 @@ async def test_create_group_rejects_an_existing_tag_combination() -> None:
     repository.create_group.assert_not_awaited()
 
 
-async def test_delete_all_groups_removes_every_empty_group() -> None:
-    groups = [_group("grp_first", ["客厅"]), _group("grp_second", ["厨房"])]
-    repository = AsyncMock()
-    repository.group_asset_counts.return_value = {}
-    repository.list_groups.return_value = groups
-
-    result = await LibraryService(repository).delete_all_groups()
-
-    assert result.deleted_count == 2
-    repository.delete_groups.assert_awaited_once_with(["grp_first", "grp_second"])
-
-
-async def test_delete_all_groups_rejects_groups_with_assets() -> None:
-    repository = AsyncMock()
-    repository.group_asset_counts.return_value = {"grp_first": 3, "grp_second": 2}
-
-    with pytest.raises(InvalidLibraryRequest, match="仍有 5 张关联图片"):
-        await LibraryService(repository).delete_all_groups()
-
-    repository.list_groups.assert_not_awaited()
-    repository.delete_groups.assert_not_awaited()
-
-
 def _group(group_id: str, tags: list[str]) -> LibraryAssetGroup:
     return LibraryAssetGroup(
         id=group_id,

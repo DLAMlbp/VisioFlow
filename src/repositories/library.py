@@ -59,14 +59,6 @@ class LibraryRepository:
         await self.session.delete(group)
         await self.session.commit()
 
-    async def delete_groups(self, group_ids: list[str]) -> None:
-        if not group_ids:
-            return
-        await self.session.execute(
-            delete(LibraryAssetGroup).where(LibraryAssetGroup.id.in_(group_ids))
-        )
-        await self.session.commit()
-
     async def group_asset_counts(self) -> dict[str, int]:
         rows = await self.session.execute(
             select(LibraryAsset.group_id, func.count(LibraryAsset.id)).group_by(

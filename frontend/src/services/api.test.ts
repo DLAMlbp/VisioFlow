@@ -129,22 +129,6 @@ describe("real API client", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/library/groups", expect.any(Object));
   });
 
-  it("deletes all empty library groups in one request", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(
-      JSON.stringify({ deleted_count: 4 }),
-      { status: 200, headers: { "Content-Type": "application/json" } }
-    ));
-    vi.stubGlobal("fetch", fetchMock);
-
-    const result = await api.deleteAllLibraryGroups();
-
-    expect(result.deleted_count).toBe(4);
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/v1/library/groups",
-      expect.objectContaining({ method: "DELETE" })
-    );
-  });
-
   it("loads a 50-item history page with its offset", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       total: 257,

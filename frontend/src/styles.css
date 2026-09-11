@@ -1793,36 +1793,6 @@ body {
   margin-bottom: 14px;
 }
 
-.group-panel-actions {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 6px;
-}
-
-.delete-all-groups-button {
-  width: 32px;
-  height: 32px;
-  display: grid;
-  flex: 0 0 32px;
-  place-items: center;
-  border: 1px solid #efc8c5;
-  border-radius: 6px;
-  background: #fff8f7;
-  color: var(--red);
-}
-
-.delete-all-groups-button:hover:not(:disabled),
-.delete-all-groups-button:focus-visible {
-  border-color: var(--red);
-  background: #fff1ef;
-}
-
-.delete-all-groups-button:disabled {
-  cursor: not-allowed;
-  opacity: .45;
-}
-
 .assets-heading > div:first-child {
   min-width: 0;
 }

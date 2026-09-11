@@ -6,7 +6,6 @@ from src.schemas.library import (
     LibraryAssetBulkDeleteRequest,
     LibraryAssetBulkDeleteResponse,
     LibraryAssetCreate,
-    LibraryAssetGroupBulkDeleteResponse,
     LibraryAssetGroupCreate,
     LibraryAssetGroupResponse,
     LibraryAssetGroupUpdate,
@@ -39,14 +38,6 @@ async def create_group(
 ) -> LibraryAssetGroupResponse:
     try:
         return await service.create_group(payload)
-    except (InvalidLibraryRequest, LibraryNotFound) as exc:
-        raise _http_error(exc) from exc
-
-
-@router.delete("/groups", response_model=LibraryAssetGroupBulkDeleteResponse)
-async def delete_all_groups(service: LibraryServiceDep) -> LibraryAssetGroupBulkDeleteResponse:
-    try:
-        return await service.delete_all_groups()
     except (InvalidLibraryRequest, LibraryNotFound) as exc:
         raise _http_error(exc) from exc
 
