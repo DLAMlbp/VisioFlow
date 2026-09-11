@@ -4,7 +4,7 @@
 
 ## 发布前准备
 
-`.env.production` 至少需要设置强随机值：`API_KEY`、`INTEGRATION_API_KEY`、`AUTH_SESSION_SECRET`、`AI_TAGGING_API_KEY`、`AI_CONFIG_ENCRYPTION_KEY`、`CALLBACK_SIGNING_SECRET`、PostgreSQL/MinIO 密码；并显式配置 `TRUSTED_HOSTS`、`CALLBACK_ALLOWED_HOSTS`、`API_IMAGE`、`API_GATEWAY_IMAGE`、`WEB_IMAGE`。镜像必须使用 Git SHA、版本号或 digest，禁止使用 `latest`。
+`.env.production` 至少需要设置强随机值：`API_KEY`、`INTEGRATION_API_KEY`、`AUTH_SESSION_SECRET`、`AI_TAGGING_API_KEY`、`AI_CONFIG_ENCRYPTION_KEY`、`CALLBACK_SIGNING_SECRET`、PostgreSQL/MinIO 密码；并显式配置 `TRUSTED_HOSTS`、`CALLBACK_ALLOWED_HOSTS`、`API_IMAGE`、`API_GATEWAY_IMAGE`、`CLASSIFICATION_IMAGE`、`RENDER_IMAGE`、`WEB_IMAGE`。镜像必须使用 Git SHA、版本号或 digest，禁止使用 `latest`。
 
 以下强制工作流开关必须全部为 `true`：
 
@@ -52,6 +52,9 @@ docker compose -f docker-compose.prod.yml --env-file .env.production ps
 
 ```dotenv
 API_IMAGE=ghcr.io/<owner>/tuxiangshibie-api:<git-sha>
+API_GATEWAY_IMAGE=ghcr.io/<owner>/tuxiangshibie-api:<git-sha>
+CLASSIFICATION_IMAGE=ghcr.io/<owner>/tuxiangshibie-api:<git-sha>
+RENDER_IMAGE=ghcr.io/<owner>/tuxiangshibie-api:<git-sha>
 WEB_IMAGE=ghcr.io/<owner>/tuxiangshibie-web:<git-sha>
 ```
 
@@ -83,7 +86,7 @@ curl --fail --silent https://<service-host>/health/ready
 
 ## 回滚
 
-把 `.env.production` 中的 `API_IMAGE` 和 `WEB_IMAGE` 恢复为发布前记录的版本，然后执行：
+把 `.env.production` 中的 `API_IMAGE`、`API_GATEWAY_IMAGE`、`CLASSIFICATION_IMAGE`、`RENDER_IMAGE` 和 `WEB_IMAGE` 一起恢复为发布前记录的版本，然后执行：
 
 ```bash
 docker compose -f docker-compose.prod.yml --env-file .env.production pull
