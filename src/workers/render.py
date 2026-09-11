@@ -12,6 +12,7 @@ from src.core.metrics import emit_metric
 from src.db.session import AsyncSessionLocal
 from src.repositories.jobs import ImageJobRepository
 from src.services.ai_model_config import load_ai_model_settings
+from src.services.images.aspect_ratio import is_portrait_3_4
 from src.services.images.cover_score import cover_score_from_processing
 from src.services.images.enhancement_pipeline import (
     decode_pipeline_state,
@@ -221,9 +222,14 @@ async def _render_image(image_id: str) -> None:
             if job.similarity_enabled
             else enhanced_object_key
         )
-        await storage.upload(enhanced_object_key, enhanced_bytes, "image/jpeg")
         with Image.open(BytesIO(enhanced_bytes)) as enhanced_image:
             enhanced_image.load()
+            if item.normalization_json and not is_portrait_3_4(*enhanced_image.size):
+                await repository.fail_item(
+                    item,
+                    "最终交付图不是 3:4 竖图，已阻止错误尺寸交付",
+                )
+                return
             enhanced_thumbnail = encode_jpeg(
                 make_thumbnail(enhanced_image, settings.thumbnail_long_side)
             )
@@ -231,6 +237,7 @@ async def _render_image(image_id: str) -> None:
                 analysis_bytes = encode_jpeg(
                     make_thumbnail(enhanced_image, settings.ai_tagging_image_long_side)
                 )
+        await storage.upload(enhanced_object_key, enhanced_bytes, "image/jpeg")
         if job.similarity_enabled:
             await storage.upload(analysis_object_key, analysis_bytes, "image/jpeg")
         enhanced_metrics = QualityEngine(settings).evaluate(enhanced_thumbnail)

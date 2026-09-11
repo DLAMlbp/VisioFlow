@@ -117,6 +117,7 @@ function App({ user, onLogout, onManageUsers }: AppProps) {
   const [modelConfigSaving, setModelConfigSaving] = useState(false);
   const [modelConfig, setModelConfig] = useState<AIModelConfig | null>(null);
   const [modelApiKey, setModelApiKey] = useState("");
+  const [modelConfigError, setModelConfigError] = useState<string | null>(null);
   const [activeWorkspace, setActiveWorkspace] = useState<"processing" | "library" | "profiles">("processing");
   const [workflowStep, setWorkflowStep] = useState<WorkflowStep>(1);
 
@@ -466,11 +467,13 @@ function App({ user, onLogout, onManageUsers }: AppProps) {
   async function openModelConfig() {
     setModelConfigOpen(true);
     setModelConfigLoading(true);
+    setModelConfig(null);
     setModelApiKey("");
+    setModelConfigError(null);
     try {
       setModelConfig(await api.getAIModelConfig());
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "加载 AI 配置失败");
+      setModelConfigError(error instanceof Error ? error.message : "加载 AI 配置失败");
     } finally {
       setModelConfigLoading(false);
     }
@@ -479,6 +482,7 @@ function App({ user, onLogout, onManageUsers }: AppProps) {
   async function saveModelConfig() {
     if (!modelConfig) return;
     setModelConfigSaving(true);
+    setModelConfigError(null);
     try {
       const updated = await api.updateAIModelConfig({
         enabled: modelConfig.enabled,
@@ -489,7 +493,7 @@ function App({ user, onLogout, onManageUsers }: AppProps) {
       setModelConfigOpen(false);
       setMessage("AI 配置已保存，将用于新任务。");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "保存 AI 配置失败");
+      setModelConfigError(error instanceof Error ? error.message : "保存 AI 配置失败");
     } finally {
       setModelConfigSaving(false);
     }
@@ -711,11 +715,12 @@ function App({ user, onLogout, onManageUsers }: AppProps) {
               </div>
               <button className="icon-button" type="button" aria-label="关闭 AI 配置" onClick={() => setModelConfigOpen(false)} disabled={modelConfigSaving}><X size={17} aria-hidden="true" /></button>
             </div>
-            {modelConfigLoading || !modelConfig ? <div className="model-config-loading"><Loader2 className="spin" size={20} aria-hidden="true" />正在读取配置</div> : <>
-              <label className="config-toggle"><input type="checkbox" checked={modelConfig.enabled} onChange={(event) => setModelConfig({ ...modelConfig, enabled: event.target.checked })} /><span>启用 AI 分类、规则过滤与美化规划</span></label>
-              <label className="config-field">API Key<input type="password" value={modelApiKey} onChange={(event) => setModelApiKey(event.target.value)} placeholder={modelConfig.api_key_configured ? "已配置，留空则保持不变" : "请输入 API Key"} autoComplete="new-password" /></label>
+            {modelConfigLoading ? <div className="model-config-loading"><Loader2 className="spin" size={20} aria-hidden="true" />正在读取配置</div> : !modelConfig ? <div className="model-config-load-error" role="alert"><AlertCircle size={20} aria-hidden="true" /><span>{modelConfigError ?? "加载 AI 配置失败"}</span><button className="ghost-button" type="button" onClick={() => void openModelConfig()}>重新加载</button></div> : <>
+              <label className="config-toggle"><input type="checkbox" checked={modelConfig.enabled} onChange={(event) => { setModelConfig({ ...modelConfig, enabled: event.target.checked }); setModelConfigError(null); }} /><span>启用 AI 分类、规则过滤与美化规划</span></label>
+              <label className="config-field">API Key<input type="password" value={modelApiKey} onChange={(event) => { setModelApiKey(event.target.value); setModelConfigError(null); }} placeholder={modelConfig.api_key_configured ? "已配置，留空则保持不变" : "请输入 API Key"} autoComplete="new-password" /></label>
               <a className="config-key-link" href="https://router.keenlight.ai/home" target="_blank" rel="noreferrer">获取</a>
               <p className="config-note">API Key 仅保存在服务端且不会在页面回显；模型配置会冻结到新任务记录中。</p>
+              {modelConfigError && <div className="model-config-error" role="alert"><AlertCircle size={17} aria-hidden="true" /><span>{modelConfigError}</span></div>}
               <div className="model-config-actions"><button className="ghost-button" type="button" onClick={() => setModelConfigOpen(false)} disabled={modelConfigSaving}>取消</button><button className="primary-button" type="button" onClick={() => void saveModelConfig()} disabled={modelConfigSaving}>{modelConfigSaving && <Loader2 className="spin" size={16} aria-hidden="true" />}{modelConfigSaving ? "保存中" : "保存配置"}</button></div>
             </>}
           </section>

@@ -9,6 +9,7 @@ from src.db.session import AsyncSessionLocal
 from src.repositories.jobs import ImageJobRepository
 from src.schemas.jobs import ImageItemStatus
 from src.services.ai_model_config import load_ai_model_settings
+from src.services.images.aspect_ratio import normalize_to_portrait_3_4
 from src.services.images.beautify import NaturalBeautifyService
 from src.services.images.beautify_planning import neutralize_beautify_profile
 from src.services.images.cover_score import COVER_SCORE_VERSION, calculate_cover_score
@@ -16,6 +17,7 @@ from src.services.images.hard_filter import HardFilterService, RejectCode
 from src.services.images.metadata import (
     ImageMetadataError,
     ImageMetadataService,
+    build_perceptual_hash,
     encode_jpeg,
     make_thumbnail,
 )
@@ -37,6 +39,7 @@ from src.services.managed_profiles import (
     standards_from_snapshots,
 )
 from src.services.storage.factory import get_storage_provider
+from src.services.storage.keys import build_processing_source_object_key
 from src.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -126,23 +129,41 @@ async def _preprocess_image_metadata(image_id: str) -> None:
         )
         with Image.open(BytesIO(orientation_result.image_bytes)) as normalized_image:
             normalized_image.load()
-            normalized_width, normalized_height = normalized_image.size
+            try:
+                aspect_result = normalize_to_portrait_3_4(normalized_image)
+            except ValueError as exc:
+                await repository.reject_item(
+                    item,
+                    [RejectCode.IMAGE_TOO_SMALL],
+                    reason=str(exc),
+                )
+                await _advance_after_preprocess(repository, item)
+                return
+            processing_bytes = encode_jpeg(aspect_result.image, quality=95)
+            normalized_width, normalized_height = aspect_result.output_size
+            processing_phash = build_perceptual_hash(aspect_result.image)
             normalized_thumbnail = encode_jpeg(
-                make_thumbnail(normalized_image, settings.thumbnail_long_side)
+                make_thumbnail(aspect_result.image, settings.thumbnail_long_side)
             )
+        processing_object_key = build_processing_source_object_key(item.job_id, item.id)
+        await storage.upload(processing_object_key, processing_bytes, "image/jpeg")
+        await storage.upload(metadata.thumbnail_object_key, normalized_thumbnail, "image/jpeg")
 
         duplicate, similar = await repository.save_metadata_and_find_duplicates(
             item,
             {
                 "content_type": metadata.content_type,
                 "file_size": metadata.file_size,
-                "processing_object_key": metadata.processing_object_key,
+                "processing_object_key": processing_object_key,
                 "width": normalized_width,
                 "height": normalized_height,
                 "aspect_ratio": round(normalized_width / normalized_height, 4),
+                "normalization_json": aspect_result.as_audit(
+                    uploaded_size=(metadata.width, metadata.height)
+                ),
                 "exif_orientation": metadata.orientation,
                 "sha256": metadata.sha256,
-                "phash": metadata.phash,
+                "phash": processing_phash,
                 "thumbnail_object_key": metadata.thumbnail_object_key,
             },
             max_hamming_distance=settings.technical_duplicate_hamming_distance,
@@ -185,7 +206,7 @@ async def _preprocess_image_metadata(image_id: str) -> None:
                 CompletionTaskPublisher().publish(item.id)
             return
         ai_outcome = await ProcessingVisionService(settings).analyze(
-            orientation_result.image_bytes,
+            processing_bytes,
             standards=standards,
             unmatched_standard_policy=job.unmatched_standard_policy,
             image_context={

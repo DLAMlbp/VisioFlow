@@ -36,6 +36,7 @@ class ImageItem(Base):
     width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     aspect_ratio: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    normalization_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     exif_orientation: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)

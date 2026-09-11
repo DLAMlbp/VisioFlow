@@ -1130,6 +1130,10 @@ body {
 .config-toggle input { accent-color: var(--cyan); }
 .config-note { margin: -5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
 .model-config-loading { min-height: 180px; display: grid; place-content: center; justify-items: center; gap: 10px; color: var(--muted); font-size: 13px; }
+.model-config-error { display: flex; align-items: flex-start; gap: 8px; border: 1px solid #f1c7cd; border-radius: 8px; background: #fff5f6; color: #a72737; padding: 10px 12px; font-size: 12px; line-height: 1.5; }
+.model-config-error svg { flex: 0 0 auto; margin-top: 1px; }
+.model-config-load-error { min-height: 180px; display: grid; place-content: center; justify-items: center; gap: 10px; color: #a72737; font-size: 13px; text-align: center; }
+.model-config-load-error .ghost-button { min-height: 36px; margin-top: 4px; }
 .model-config-actions { display: grid; grid-template-columns: 108px minmax(0, 1fr); gap: 10px; padding-top: 4px; }
 .model-config-actions .ghost-button, .model-config-actions .primary-button { width: 100%; min-height: 40px; padding: 0 14px; white-space: nowrap; }
 
