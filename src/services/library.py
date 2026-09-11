@@ -17,6 +17,7 @@ from src.schemas.library import (
     LibraryAssetBulkDeleteRequest,
     LibraryAssetBulkDeleteResponse,
     LibraryAssetCreate,
+    LibraryAssetGroupBulkDeleteResponse,
     LibraryAssetGroupCreate,
     LibraryAssetGroupResponse,
     LibraryAssetGroupUpdate,
@@ -102,6 +103,16 @@ class LibraryService:
         if await self.repository.has_assets(group.id):
             raise InvalidLibraryRequest("素材组仍有关联图片，不能删除")
         await self.repository.delete_group(group)
+
+    async def delete_all_groups(self) -> LibraryAssetGroupBulkDeleteResponse:
+        counts = await self.repository.group_asset_counts()
+        asset_count = sum(counts.values())
+        if asset_count:
+            raise InvalidLibraryRequest(f"仍有 {asset_count} 张关联图片，请先删除图片")
+        groups = await self.repository.list_groups()
+        group_ids = [group.id for group in groups]
+        await self.repository.delete_groups(group_ids)
+        return LibraryAssetGroupBulkDeleteResponse(deleted_count=len(group_ids))
 
     async def create_asset(self, payload: LibraryAssetCreate) -> LibraryAssetResponse:
         await self._require_active_group(payload.group_id)

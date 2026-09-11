@@ -36,6 +36,7 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
   const [uploading, setUploading] = useState(false);
   const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
   const [creatingGroup, setCreatingGroup] = useState(false);
+  const [deletingAllGroups, setDeletingAllGroups] = useState(false);
   const [newGroupTags, setNewGroupTags] = useState("");
   const [editingTags, setEditingTags] = useState("");
   const [editingSortOrder, setEditingSortOrder] = useState(0);
@@ -340,6 +341,28 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
     }
   }
 
+  async function deleteAllGroups() {
+    if (!groups.length || deletingAllGroups) return;
+    if (assetTotal) {
+      onMessage(`仍有 ${assetTotal} 张关联图片，请先删除全部图片，再删除标签`);
+      return;
+    }
+    if (!window.confirm(`确认删除全部 ${groups.length} 个标签组合？删除后无法恢复。`)) return;
+    setDeletingAllGroups(true);
+    try {
+      const result = await api.deleteAllLibraryGroups();
+      setSelectedGroupId(null);
+      setSelectedAssetId(null);
+      setCreatingGroup(false);
+      await loadLibrary();
+      onMessage(`已删除 ${result.deleted_count} 个标签组合。`);
+    } catch (error) {
+      onMessage(error instanceof Error ? error.message : "删除全部标签失败");
+    } finally {
+      setDeletingAllGroups(false);
+    }
+  }
+
   function toggleAssetSelection(assetId: string) {
     setSelectedAssetIds((current) => {
       const next = new Set(current);
@@ -452,10 +475,15 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
         <aside className="library-groups-panel" aria-label="素材组列表">
           <div className="group-panel-heading">
             <div><strong>标签组合</strong><span>所有标签并列，无层级关系</span></div>
-            <button className="tag-create-button" type="button" onClick={() => { setCreatingGroup(true); setNewGroupTags(""); }}>
-              <Plus size={17} aria-hidden="true" />
-              <span>新建素材组</span>
-            </button>
+            <div className="group-panel-actions">
+              <button className="delete-all-groups-button" type="button" aria-label="一键删除全部标签" title={assetTotal ? `请先删除 ${assetTotal} 张关联图片` : "一键删除全部标签"} disabled={!groups.length || deletingAllGroups} onClick={() => void deleteAllGroups()}>
+                {deletingAllGroups ? <Loader2 className="spin" size={17} aria-hidden="true" /> : <Trash2 size={17} aria-hidden="true" />}
+              </button>
+              <button className="tag-create-button" type="button" onClick={() => { setCreatingGroup(true); setNewGroupTags(""); }}>
+                <Plus size={17} aria-hidden="true" />
+                <span>新建素材组</span>
+              </button>
+            </div>
           </div>
           <button className={`group-all-row ${selectedGroupId === null ? "active" : ""}`} type="button" onClick={() => { setSelectedGroupId(null); setAssetPage(1); setSelectedAssetId(null); }}>
             <Images size={16} aria-hidden="true" /><span>全部素材</span><b>{assetTotal}</b>

@@ -35,6 +35,10 @@ class LibraryAssetGroupResponse(BaseModel):
     asset_count: int = 0
 
 
+class LibraryAssetGroupBulkDeleteResponse(BaseModel):
+    deleted_count: int
+
+
 class LibraryAssetCreate(BaseModel):
     object_key: str = Field(min_length=1, max_length=1024)
     group_id: str = Field(min_length=1, max_length=40)

@@ -461,6 +461,11 @@ export const api = {
       async deleteLibraryGroup(groupId: string): Promise<void> {
         await request<void>(`/api/v1/library/groups/${groupId}`, { method: "DELETE" });
       },
+      deleteAllLibraryGroups(): Promise<{ deleted_count: number }> {
+        return request<{ deleted_count: number }>("/api/v1/library/groups", {
+          method: "DELETE"
+        });
+      },
       async createLibraryAsset(payload: { object_key: string; group_id: string; original_filename?: string }): Promise<LibraryAsset> {
         return request<LibraryAsset>("/api/v1/library/assets", {
           method: "POST",
