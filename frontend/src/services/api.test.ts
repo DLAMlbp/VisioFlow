@@ -210,6 +210,25 @@ describe("real API client", () => {
     );
   });
 
+  it("bulk deletes selected library assets", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ deleted_count: 2, failed_count: 0, failed_asset_ids: [] }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await api.bulkDeleteLibraryAssets({ asset_ids: ["ast_1", "ast_2"] });
+
+    expect(result.deleted_count).toBe(2);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/library/assets/bulk-delete",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ asset_ids: ["ast_1", "ast_2"] })
+      })
+    );
+  });
+
   it("shows the backend detail instead of a raw JSON response", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
       JSON.stringify({ detail: "服务端 API_KEY 未配置" }),

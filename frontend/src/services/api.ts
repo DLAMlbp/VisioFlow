@@ -18,6 +18,7 @@ import type {
   SaveProcessingProfile,
   SaveProcessingStandard,
   LibraryAsset,
+  LibraryAssetBulkDeleteResult,
   LibraryAssetGroup,
   LibraryAssetList,
   LogoRedactionUpdate,
@@ -522,6 +523,16 @@ export const api = {
       },
       async deleteLibraryAsset(assetId: string): Promise<void> {
         await request<void>(`/api/v1/library/assets/${assetId}`, { method: "DELETE" });
+      },
+      bulkDeleteLibraryAssets(payload: {
+        asset_ids?: string[];
+        delete_all?: boolean;
+        group_id?: string;
+      }): Promise<LibraryAssetBulkDeleteResult> {
+        return request<LibraryAssetBulkDeleteResult>(
+          "/api/v1/library/assets/bulk-delete",
+          { method: "POST", body: JSON.stringify(payload) }
+        );
       },
       reindexLibraryAsset(assetId: string): Promise<LibraryAsset> {
         return request<LibraryAsset>(`/api/v1/library/assets/${assetId}/reindex`, { method: "POST" });

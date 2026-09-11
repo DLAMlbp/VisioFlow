@@ -14,6 +14,8 @@ from src.models.library_asset import LibraryAsset
 from src.models.library_asset_group import LibraryAssetGroup
 from src.repositories.library import LibraryRepository
 from src.schemas.library import (
+    LibraryAssetBulkDeleteRequest,
+    LibraryAssetBulkDeleteResponse,
     LibraryAssetCreate,
     LibraryAssetGroupCreate,
     LibraryAssetGroupResponse,
@@ -170,6 +172,71 @@ class LibraryService:
         await self.repository.delete_asset(asset)
         await self._mark_prototypes_stale([group_id])
         self._publish_prototype_rebuild(group_id)
+
+    async def bulk_delete_assets(
+        self, payload: LibraryAssetBulkDeleteRequest
+    ) -> LibraryAssetBulkDeleteResponse:
+        if self.storage_provider is None:
+            raise RuntimeError("素材存储服务未配置")
+        if (
+            payload.delete_all
+            and payload.group_id is not None
+            and await self.repository.get_group(payload.group_id) is None
+        ):
+            raise LibraryNotFound("素材组不存在")
+
+        requested_ids = None if payload.delete_all else payload.asset_ids
+        assets = await self.repository.list_assets_for_deletion(
+            asset_ids=requested_ids,
+            group_id=payload.group_id if payload.delete_all else None,
+        )
+        if requested_ids is not None:
+            found_ids = {asset.id for asset in assets}
+            missing_ids = [asset_id for asset_id in requested_ids if asset_id not in found_ids]
+            if missing_ids:
+                raise LibraryNotFound("部分素材不存在，请刷新后重试")
+
+        object_keys = [
+            object_key
+            for asset in assets
+            for object_key in (asset.original_object_key, asset.thumbnail_object_key)
+            if object_key
+        ]
+        try:
+            failed_keys = await self.storage_provider.delete_many(object_keys)
+        except Exception:
+            logger.warning("Unable to batch-delete library asset objects", exc_info=True)
+            failed_keys = set(object_keys)
+
+        failed_asset_ids = [
+            asset.id
+            for asset in assets
+            if {asset.original_object_key, asset.thumbnail_object_key} & failed_keys
+        ]
+        failed_asset_id_set = set(failed_asset_ids)
+        deleted_assets = [asset for asset in assets if asset.id not in failed_asset_id_set]
+        deleted_ids = [asset.id for asset in deleted_assets]
+        affected_group_ids = sorted({asset.group_id for asset in deleted_assets})
+        await self.repository.delete_assets(deleted_ids)
+        await self._mark_prototypes_stale(affected_group_ids)
+        for group_id in affected_group_ids:
+            self._publish_prototype_rebuild(group_id)
+
+        emit_metric(
+            logger,
+            "library_assets_bulk_deleted_total",
+            value=len(deleted_ids),
+            labels={
+                "scope": (
+                    "group" if payload.group_id else "all" if payload.delete_all else "selected"
+                )
+            },
+        )
+        return LibraryAssetBulkDeleteResponse(
+            deleted_count=len(deleted_ids),
+            failed_count=len(failed_asset_ids),
+            failed_asset_ids=failed_asset_ids,
+        )
 
     async def reindex_asset(self, asset_id: str) -> LibraryAssetResponse:
         asset = await self.repository.get_asset(asset_id)

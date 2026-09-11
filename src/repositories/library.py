@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy import and_, case, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -134,6 +134,25 @@ class LibraryRepository:
 
     async def delete_asset(self, asset: LibraryAsset) -> None:
         await self.session.delete(asset)
+        await self.session.commit()
+
+    async def list_assets_for_deletion(
+        self, *, asset_ids: list[str] | None, group_id: str | None
+    ) -> list[LibraryAsset]:
+        filters = []
+        if asset_ids is not None:
+            filters.append(LibraryAsset.id.in_(asset_ids))
+        if group_id is not None:
+            filters.append(LibraryAsset.group_id == group_id)
+        result = await self.session.execute(
+            select(LibraryAsset).where(*filters).order_by(LibraryAsset.id)
+        )
+        return list(result.scalars())
+
+    async def delete_assets(self, asset_ids: list[str]) -> None:
+        if not asset_ids:
+            return
+        await self.session.execute(delete(LibraryAsset).where(LibraryAsset.id.in_(asset_ids)))
         await self.session.commit()
 
     async def list_assets(

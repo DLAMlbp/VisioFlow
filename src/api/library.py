@@ -3,6 +3,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from src.schemas.library import (
+    LibraryAssetBulkDeleteRequest,
+    LibraryAssetBulkDeleteResponse,
     LibraryAssetCreate,
     LibraryAssetGroupCreate,
     LibraryAssetGroupResponse,
@@ -83,6 +85,16 @@ async def list_library_assets(
         limit=limit,
         offset=offset,
     )
+
+
+@router.post("/assets/bulk-delete", response_model=LibraryAssetBulkDeleteResponse)
+async def bulk_delete_library_assets(
+    payload: LibraryAssetBulkDeleteRequest, service: LibraryServiceDep
+) -> LibraryAssetBulkDeleteResponse:
+    try:
+        return await service.bulk_delete_assets(payload)
+    except (InvalidLibraryRequest, LibraryNotFound) as exc:
+        raise _http_error(exc) from exc
 
 
 @router.patch("/assets/{asset_id}", response_model=LibraryAssetResponse)

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.services.storage.keys import validate_object_key
 
@@ -71,6 +71,33 @@ class LibraryAssetResponse(BaseModel):
 class LibraryAssetListResponse(BaseModel):
     total: int
     items: list[LibraryAssetResponse]
+
+
+class LibraryAssetBulkDeleteRequest(BaseModel):
+    asset_ids: list[str] = Field(default_factory=list, max_length=10000)
+    delete_all: bool = False
+    group_id: str | None = Field(default=None, min_length=1, max_length=40)
+
+    @field_validator("asset_ids")
+    @classmethod
+    def normalize_asset_ids(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(asset_id.strip() for asset_id in value if asset_id.strip()))
+
+    @model_validator(mode="after")
+    def validate_delete_scope(self) -> "LibraryAssetBulkDeleteRequest":
+        if self.delete_all and self.asset_ids:
+            raise ValueError("删除全部时不能同时指定素材")
+        if not self.delete_all and not self.asset_ids:
+            raise ValueError("请选择要删除的素材")
+        if not self.delete_all and self.group_id is not None:
+            raise ValueError("按素材删除时不能指定素材组")
+        return self
+
+
+class LibraryAssetBulkDeleteResponse(BaseModel):
+    deleted_count: int
+    failed_count: int
+    failed_asset_ids: list[str]
 
 
 class LibraryFailedAssetReindexResponse(BaseModel):

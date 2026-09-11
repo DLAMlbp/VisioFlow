@@ -1,5 +1,6 @@
 import {
   Check,
+  CheckSquare,
   ChevronLeft,
   ChevronRight,
   ImagePlus,
@@ -10,6 +11,7 @@ import {
   Power,
   RefreshCw,
   RotateCcw,
+  Square,
   Tag,
   Trash2,
   UploadCloud,
@@ -40,6 +42,9 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [deletingAssetId, setDeletingAssetId] = useState<string | null>(null);
   const [retryingFailed, setRetryingFailed] = useState(false);
+  const [selectingAssets, setSelectingAssets] = useState(false);
+  const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const [assetPage, setAssetPage] = useState(1);
 
   const selectedGroup = groups.find((group) => group.id === selectedGroupId) ?? null;
@@ -79,6 +84,8 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
 
   useEffect(() => {
     setAssetPage(1);
+    setSelectingAssets(false);
+    setSelectedAssetIds(new Set());
   }, [selectedGroupId]);
 
   useEffect(() => {
@@ -333,6 +340,67 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
     }
   }
 
+  function toggleAssetSelection(assetId: string) {
+    setSelectedAssetIds((current) => {
+      const next = new Set(current);
+      if (next.has(assetId)) next.delete(assetId);
+      else next.add(assetId);
+      return next;
+    });
+  }
+
+  function toggleCurrentPageSelection() {
+    const pageIds = pagedAssets.map((asset) => asset.id);
+    const pageIsSelected = pageIds.every((assetId) => selectedAssetIds.has(assetId));
+    setSelectedAssetIds((current) => {
+      const next = new Set(current);
+      pageIds.forEach((assetId) => pageIsSelected ? next.delete(assetId) : next.add(assetId));
+      return next;
+    });
+  }
+
+  function stopSelectingAssets() {
+    setSelectingAssets(false);
+    setSelectedAssetIds(new Set());
+  }
+
+  async function deleteSelectedAssets() {
+    const assetIds = Array.from(selectedAssetIds);
+    if (!assetIds.length || bulkDeleting) return;
+    if (!window.confirm(`确认删除已选中的 ${assetIds.length} 张图片？原图会一并删除，且无法恢复。`)) return;
+    await bulkDeleteAssets({ asset_ids: assetIds });
+  }
+
+  async function deleteAllVisibleAssets() {
+    if (!visibleAssets.length || bulkDeleting) return;
+    const scope = selectedGroup ? `素材组“${selectedGroup.tags.join("、")}”` : "素材库";
+    if (!window.confirm(`确认删除${scope}内的全部 ${visibleAssets.length} 张图片？原图会一并删除，且无法恢复。`)) return;
+    await bulkDeleteAssets({
+      delete_all: true,
+      ...(selectedGroupId ? { group_id: selectedGroupId } : {})
+    });
+  }
+
+  async function bulkDeleteAssets(payload: { asset_ids?: string[]; delete_all?: boolean; group_id?: string }) {
+    setBulkDeleting(true);
+    try {
+      const result = await api.bulkDeleteLibraryAssets(payload);
+      if (selectedAssetId && !result.failed_asset_ids.includes(selectedAssetId)) {
+        setSelectedAssetId(null);
+      }
+      setSelectedAssetIds(new Set(result.failed_asset_ids));
+      setSelectingAssets(result.failed_count > 0);
+      await loadLibrary();
+      onMessage(result.failed_count
+        ? `已删除 ${result.deleted_count} 张图片，${result.failed_count} 张因存储清理失败而保留，请重试。`
+        : `已删除 ${result.deleted_count} 张图片。`);
+    } catch (error) {
+      onMessage(error instanceof Error ? error.message : "批量删除图片失败");
+    } finally {
+      setBulkDeleting(false);
+    }
+  }
+
   async function reindexAsset(assetId: string) {
     try {
       await api.reindexLibraryAsset(assetId);
@@ -454,29 +522,45 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
           <section className="library-assets-section" ref={assetsSectionRef}>
             <div className="assets-heading">
               <div><h3>{selectedGroup ? "当前素材组" : "全部参考图片"}</h3><p>{visibleAssets.length ? `显示第 ${pageStartIndex + 1}-${pageStartIndex + pagedAssets.length} 张，共 ${visibleAssets.length} 张` : "0 张图片"}{selectedGroup ? `，共同标签：${selectedGroup.tags.join("、")}` : ""}</p></div>
-              <button
-                className="retry-failed-assets-button"
-                type="button"
-                disabled={!failedCount || retryingFailed}
-                title={failedCount ? `重新分析当前范围内的 ${failedCount} 张失败图片` : "当前范围没有分析失败的图片"}
-                onClick={() => void reindexFailedAssets()}
-              >
-                {retryingFailed ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <RotateCcw size={16} aria-hidden="true" />}
-                {retryingFailed ? "正在加入队列" : `一键分析失败图片${failedCount ? ` (${failedCount})` : ""}`}
-              </button>
+              <div className="asset-bulk-actions">
+                {selectingAssets ? <>
+                  <span className="asset-selection-count">已选 <b>{selectedAssetIds.size}</b> 张</span>
+                  <button className="asset-selection-button" type="button" onClick={toggleCurrentPageSelection} disabled={bulkDeleting}>
+                    {pagedAssets.length > 0 && pagedAssets.every((asset) => selectedAssetIds.has(asset.id)) ? <CheckSquare size={16} aria-hidden="true" /> : <Square size={16} aria-hidden="true" />}
+                    {pagedAssets.length > 0 && pagedAssets.every((asset) => selectedAssetIds.has(asset.id)) ? "取消本页" : "全选本页"}
+                  </button>
+                  <button className="bulk-delete-button" type="button" disabled={!selectedAssetIds.size || bulkDeleting} onClick={() => void deleteSelectedAssets()}>
+                    {bulkDeleting ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Trash2 size={16} aria-hidden="true" />}
+                    删除已选{selectedAssetIds.size ? ` (${selectedAssetIds.size})` : ""}
+                  </button>
+                  <button className="asset-selection-cancel" type="button" aria-label="退出图片选择" title="退出选择" disabled={bulkDeleting} onClick={stopSelectingAssets}><X size={17} aria-hidden="true" /></button>
+                </> : <>
+                  <button className="retry-failed-assets-button" type="button" disabled={!failedCount || retryingFailed || bulkDeleting} title={failedCount ? `重新分析当前范围内的 ${failedCount} 张失败图片` : "当前范围没有分析失败的图片"} onClick={() => void reindexFailedAssets()}>
+                    {retryingFailed ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <RotateCcw size={16} aria-hidden="true" />}
+                    {retryingFailed ? "正在加入队列" : `一键分析失败图片${failedCount ? ` (${failedCount})` : ""}`}
+                  </button>
+                  <button className="asset-selection-button" type="button" disabled={!visibleAssets.length || bulkDeleting} onClick={() => setSelectingAssets(true)}><CheckSquare size={16} aria-hidden="true" />选择图片</button>
+                  <button className="bulk-delete-button" type="button" disabled={!visibleAssets.length || bulkDeleting} onClick={() => void deleteAllVisibleAssets()}>
+                    {bulkDeleting ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Trash2 size={16} aria-hidden="true" />}
+                    删除全部 ({visibleAssets.length})
+                  </button>
+                </>}
+              </div>
             </div>
             {visibleAssets.length ? <div className="library-assets-browser">
               <div className="library-asset-grid">{pagedAssets.map((asset) => {
                 const assetTags = groups.find((group) => group.id === asset.group_id)?.tags ?? asset.tags;
                 return (
-                  <article className={`library-asset ${selectedAssetId === asset.id ? "selected" : ""}`} key={asset.id}>
-                    <div className="library-asset-preview">{asset.preview_url ? <button className="library-asset-image-button" type="button" aria-label={`展示图片：${asset.original_filename ?? "素材图片"}`} onClick={() => setSelectedAssetId(asset.id)}><img src={asset.preview_url} alt={asset.original_filename ?? "素材图片"} loading="lazy" /></button> : <Images size={26} />}<span className={`asset-status ${asset.status}`}>{assetStatusLabel(asset.status)}</span></div>
+                  <article className={`library-asset ${selectedAssetId === asset.id ? "selected" : ""} ${selectedAssetIds.has(asset.id) ? "bulk-selected" : ""}`} key={asset.id}>
+                    <div className="library-asset-preview">{asset.preview_url ? <button className="library-asset-image-button" type="button" aria-label={selectingAssets ? `${selectedAssetIds.has(asset.id) ? "取消选择" : "选择"}图片：${asset.original_filename ?? "素材图片"}` : `展示图片：${asset.original_filename ?? "素材图片"}`} onClick={() => selectingAssets ? toggleAssetSelection(asset.id) : setSelectedAssetId(asset.id)}><img src={asset.preview_url} alt={asset.original_filename ?? "素材图片"} loading="lazy" /></button> : <Images size={26} />}<span className={`asset-status ${asset.status}`}>{assetStatusLabel(asset.status)}</span>{selectingAssets && <button className={`asset-select-toggle ${selectedAssetIds.has(asset.id) ? "selected" : ""}`} type="button" aria-label={`${selectedAssetIds.has(asset.id) ? "取消选择" : "选择"} ${asset.original_filename ?? asset.id}`} onClick={() => toggleAssetSelection(asset.id)}>{selectedAssetIds.has(asset.id) ? <CheckSquare size={20} aria-hidden="true" /> : <Square size={20} aria-hidden="true" />}</button>}</div>
                     <div className="library-asset-copy"><strong title={asset.original_filename ?? asset.id}>{asset.original_filename ?? asset.id}</strong><div className="asset-tag-chips" aria-label={`全部标签，共 ${assetTags.length} 个`}>{assetTags.map((tag) => <span key={tag} title={tag}>{tag}</span>)}</div>{asset.error_message && <small>{asset.error_message}</small>}</div>
-                    <div className="library-asset-actions">
+                    <div className={`library-asset-actions ${selectingAssets ? "selection-active" : ""}`}>
+                      {selectingAssets ? <button className="asset-card-select-button" type="button" onClick={() => toggleAssetSelection(asset.id)}>{selectedAssetIds.has(asset.id) ? <Check size={15} aria-hidden="true" /> : <Square size={15} aria-hidden="true" />}{selectedAssetIds.has(asset.id) ? "已选择" : "选择图片"}</button> : <>
                       <select aria-label={`修改 ${asset.original_filename ?? asset.id} 所属素材组`} title="移动到其他标签组合" value={asset.group_id} onChange={(event) => void moveAsset(asset, event.target.value)}>{groups.filter((group) => group.status === "active").map((group) => <option key={group.id} value={group.id}>{group.tags.join("、")}</option>)}</select>
                       <button type="button" aria-label="重新分析素材" title="重新分析" onClick={() => void reindexAsset(asset.id)}><RotateCcw size={15} /></button>
                       <button type="button" aria-label={asset.status === "failed" ? "重新启用素材" : asset.status === "disabled" ? "启用素材" : "停用素材"} title={asset.status === "failed" ? "重新启用素材" : asset.status === "disabled" ? "启用素材" : "停用素材"} onClick={() => void updateAssetStatus(asset)} disabled={asset.status === "pending"}><Power size={15} /></button>
                       <button className="danger-icon-button" type="button" aria-label={`删除素材 ${asset.original_filename ?? asset.id}`} title="删除素材" onClick={() => void deleteAsset(asset)} disabled={deletingAssetId === asset.id}>{deletingAssetId === asset.id ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}</button>
+                      </>}
                     </div>
                   </article>
                 );

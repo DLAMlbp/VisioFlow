@@ -433,3 +433,9 @@ export interface LibraryAssetList {
   total: number;
   items: LibraryAsset[];
 }
+
+export interface LibraryAssetBulkDeleteResult {
+  deleted_count: number;
+  failed_count: number;
+  failed_asset_ids: string[];
+}

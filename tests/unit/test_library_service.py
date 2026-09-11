@@ -4,7 +4,7 @@ import pytest
 
 from src.models.library_asset import LibraryAsset
 from src.models.library_asset_group import LibraryAssetGroup
-from src.schemas.library import LibraryAssetGroupCreate
+from src.schemas.library import LibraryAssetBulkDeleteRequest, LibraryAssetGroupCreate
 from src.services.library import InvalidLibraryRequest, LibraryNotFound, LibraryService
 
 
@@ -83,6 +83,129 @@ async def test_delete_asset_rejects_unknown_asset() -> None:
 
     storage.delete.assert_not_awaited()
     repository.delete_asset.assert_not_awaited()
+
+
+async def test_bulk_delete_assets_deletes_selected_assets_and_refreshes_groups_once() -> None:
+    first_group = _group("grp_first", ["客厅"])
+    second_group = _group("grp_second", ["厨房"])
+    assets = [
+        LibraryAsset(
+            id="ast_first",
+            original_object_key="uploads/first.png",
+            thumbnail_object_key="library-thumbnails/first.jpg",
+            group_id=first_group.id,
+        ),
+        LibraryAsset(
+            id="ast_second",
+            original_object_key="uploads/second.png",
+            group_id=second_group.id,
+        ),
+    ]
+    repository = AsyncMock()
+    repository.list_assets_for_deletion.return_value = assets
+    storage = AsyncMock()
+    storage.delete_many.return_value = set()
+    prototype_publisher = Mock()
+
+    result = await LibraryService(
+        repository,
+        prototype_task_publisher=prototype_publisher,
+        storage_provider=storage,
+    ).bulk_delete_assets(
+        LibraryAssetBulkDeleteRequest(asset_ids=["ast_first", "ast_second"])
+    )
+
+    assert result.deleted_count == 2
+    assert result.failed_count == 0
+    storage.delete_many.assert_awaited_once_with(
+        ["uploads/first.png", "library-thumbnails/first.jpg", "uploads/second.png"]
+    )
+    repository.delete_assets.assert_awaited_once_with(["ast_first", "ast_second"])
+    repository.mark_group_prototypes_stale.assert_awaited_once_with(
+        ["grp_first", "grp_second"]
+    )
+    assert [call.args for call in prototype_publisher.publish.call_args_list] == [
+        ("grp_first",),
+        ("grp_second",),
+    ]
+
+
+async def test_bulk_delete_assets_keeps_records_with_storage_failures() -> None:
+    group = _group("grp_test", ["施工"])
+    assets = [
+        LibraryAsset(
+            id="ast_ok",
+            original_object_key="uploads/ok.png",
+            group_id=group.id,
+        ),
+        LibraryAsset(
+            id="ast_failed",
+            original_object_key="uploads/failed.png",
+            thumbnail_object_key="library-thumbnails/failed.jpg",
+            group_id=group.id,
+        ),
+    ]
+    repository = AsyncMock()
+    repository.list_assets_for_deletion.return_value = assets
+    storage = AsyncMock()
+    storage.delete_many.return_value = {"uploads/failed.png"}
+
+    result = await LibraryService(repository, storage_provider=storage).bulk_delete_assets(
+        LibraryAssetBulkDeleteRequest(delete_all=True, group_id=group.id)
+    )
+
+    assert result.deleted_count == 1
+    assert result.failed_asset_ids == ["ast_failed"]
+    repository.get_group.assert_awaited_once_with(group.id)
+    repository.delete_assets.assert_awaited_once_with(["ast_ok"])
+    repository.mark_group_prototypes_stale.assert_awaited_once_with([group.id])
+
+
+async def test_bulk_delete_assets_can_delete_the_entire_library() -> None:
+    repository = AsyncMock()
+    repository.list_assets_for_deletion.return_value = []
+    storage = AsyncMock()
+    storage.delete_many.return_value = set()
+
+    result = await LibraryService(repository, storage_provider=storage).bulk_delete_assets(
+        LibraryAssetBulkDeleteRequest(delete_all=True)
+    )
+
+    assert result.deleted_count == 0
+    repository.get_group.assert_not_awaited()
+    repository.list_assets_for_deletion.assert_awaited_once_with(
+        asset_ids=None,
+        group_id=None,
+    )
+    repository.delete_assets.assert_awaited_once_with([])
+
+
+async def test_bulk_delete_assets_rejects_an_unknown_group_before_storage_deletion() -> None:
+    repository = AsyncMock()
+    repository.get_group.return_value = None
+    storage = AsyncMock()
+
+    with pytest.raises(LibraryNotFound, match="素材组不存在"):
+        await LibraryService(repository, storage_provider=storage).bulk_delete_assets(
+            LibraryAssetBulkDeleteRequest(delete_all=True, group_id="grp_missing")
+        )
+
+    repository.list_assets_for_deletion.assert_not_awaited()
+    storage.delete_many.assert_not_awaited()
+
+
+async def test_bulk_delete_assets_rejects_missing_selected_assets() -> None:
+    repository = AsyncMock()
+    repository.list_assets_for_deletion.return_value = []
+    storage = AsyncMock()
+
+    with pytest.raises(LibraryNotFound, match="部分素材不存在"):
+        await LibraryService(repository, storage_provider=storage).bulk_delete_assets(
+            LibraryAssetBulkDeleteRequest(asset_ids=["ast_missing"])
+        )
+
+    storage.delete_many.assert_not_awaited()
+    repository.delete_assets.assert_not_awaited()
 
 
 async def test_reindex_failed_assets_resets_and_publishes_every_failed_asset() -> None:
