@@ -1,6 +1,6 @@
 id: library_similarity_v2
-version: 14
-description: 选择综合匹配分最高的素材组，达到 70% 即继承完整组标签；不以候选差距或额外语义门槛阻止采用，低于分数线则不打标签。
+version: 15
+description: 选择综合匹配分最高的素材组；综合分达到 60% 或内容特征分严格高于 75% 时继承完整组标签，否则不打标签。
 
 similarity_candidate_limit: 20
 similarity_image_weight: 0.70
@@ -19,8 +19,9 @@ similarity_field_weights:
   ocr_text: 0.12
   attributes: 0.05
   features: 0.05
-similarity_auto_threshold: 0.70
-similarity_review_threshold: 0.70
+similarity_auto_threshold: 0.60
+similarity_feature_auto_threshold: 0.75
+similarity_review_threshold: 0.60
 # Legacy compatibility field; candidate margin is diagnostic only.
 similarity_min_margin: 0.00
 similarity_group_matching_enabled: true

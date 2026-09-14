@@ -211,6 +211,7 @@ class SimilarityProfile(BaseModel):
         }
     )
     similarity_auto_threshold: float = Field(ge=0, le=1)
+    similarity_feature_auto_threshold: float = Field(default=0.75, ge=0, le=1)
     similarity_review_threshold: float = Field(ge=0, le=1)
     similarity_min_margin: float = Field(ge=0, le=1)
     similarity_group_matching_enabled: bool = False

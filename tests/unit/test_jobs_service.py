@@ -670,7 +670,8 @@ async def test_get_results_returns_decision_metrics_and_enhanced_key() -> None:
     assert response.images[0].metrics.sharpness == 80
     assert response.images[0].enhanced_metrics is not None
     assert response.images[0].tagging_result is not None
-    assert response.images[0].tagging_result.auto_threshold == 0.7
+    assert response.images[0].tagging_result.auto_threshold == 0.6
+    assert response.images[0].tagging_result.feature_auto_threshold == 0.75
     assert response.images[0].ai_tags is not None
     assert response.images[0].ai_tags.scene == "未完成装修的室内施工现场"
     assert response.images[0].ai_tags.subjects == ["施工人员"]

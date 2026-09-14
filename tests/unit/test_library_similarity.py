@@ -104,6 +104,31 @@ def test_below_auto_threshold_is_unmatched() -> None:
 
 
 @pytest.mark.parametrize(
+    ("final_score", "feature_score", "expected_decision"),
+    [
+        (0.60, 0.10, "matched"),
+        (0.5999, 0.7501, "matched"),
+        (0.5999, 0.75, "unmatched"),
+        (0.5999, None, "unmatched"),
+    ],
+)
+def test_adoption_uses_final_or_strict_feature_threshold(
+    final_score: float,
+    feature_score: float | None,
+    expected_decision: str,
+) -> None:
+    candidate = replace(
+        _candidate("ast_1", ["施工", "水电"], 0.10, feature_score),
+        final_score=final_score,
+    )
+
+    result = decide_similarity(candidates=[candidate], settings=_policy())
+
+    assert result.decision == expected_decision
+    assert result.tags == (["施工", "水电"] if expected_decision == "matched" else [])
+
+
+@pytest.mark.parametrize(
     ("score", "expected_decision", "expected_tags"),
     [
         (0.70, "matched", ["施工", "水电"]),

@@ -96,6 +96,7 @@ class SimilarityPolicy(Protocol):
     similarity_max_content_weight: float
     similarity_field_weights: dict[str, float]
     similarity_auto_threshold: float
+    similarity_feature_auto_threshold: float
     similarity_min_margin: float
     similarity_group_matching_enabled: bool
     similarity_group_visual_best_weight: float
@@ -563,8 +564,9 @@ def decide_similarity(
 
     deduplicated, collapsed_same_image = _collapse_same_image_candidates(candidates)
     ranked = _rank_group_candidates(deduplicated, settings=settings)
-    # The displayed final score is the sole adoption criterion. Semantic
-    # evidence still contributes to scoring, but is not a separate veto.
+    # Always rank by the displayed final score. The selected group's labels are
+    # adopted when either the final score or its content-feature score passes
+    # the corresponding gate; semantic evidence is not a separate veto.
     ranked.sort(key=lambda item: (-item.final_score, -item.similarity_score, item.asset.id))
     best = ranked[0]
     margin = (
@@ -573,16 +575,28 @@ def decide_similarity(
         else 1.0
     )
     auto_threshold = settings.similarity_auto_threshold
-    if best.final_score >= auto_threshold:
+    feature_auto_threshold = getattr(
+        settings, "similarity_feature_auto_threshold", 0.75
+    )
+    final_score_passed = best.final_score >= auto_threshold
+    feature_score_passed = (
+        best.feature_score is not None
+        and best.feature_score > feature_auto_threshold
+    )
+    if final_score_passed or feature_score_passed:
         decision = "matched"
         message = (
             "已匹配到同组中的相同素材"
             if collapsed_same_image
-            else "综合匹配分已达标，已采用最高分素材组的完整标签"
+            else (
+                "综合匹配分已达标，已采用最高分素材组的完整标签"
+                if final_score_passed
+                else "内容特征分已超过采用线，已采用最高分素材组的完整标签"
+            )
         )
     else:
         decision = "unmatched"
-        message = "最高综合匹配分未达到自动采用线，未继承素材组标签"
+        message = "最高分素材组的综合匹配分和内容特征分均未达到采用条件，未继承素材组标签"
 
     serialized = [
         {
