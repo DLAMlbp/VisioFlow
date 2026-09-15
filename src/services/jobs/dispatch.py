@@ -110,7 +110,7 @@ def _publish_pipeline_task(
     lease_publisher_name: str | None = None,
     lease_seconds: int | None = None,
     **options,
-) -> None:
+) -> bool:
     lease_name = lease_publisher_name or publisher_name
     acquired = (
         acquire_recovery_lease(lease_name, entity_id)
@@ -118,49 +118,70 @@ def _publish_pipeline_task(
         else acquire_recovery_lease(lease_name, entity_id, lease_seconds=lease_seconds)
     )
     if not acquired:
-        return
+        logger.warning(
+            "pipeline_task_publish_skipped publisher=%s task=%s entity_id=%s reason=recovery_lease",
+            publisher_name,
+            task_name,
+            entity_id,
+        )
+        return False
     try:
         celery_app.send_task(task_name, args=[entity_id], queue=queue, **options)
     except Exception:
         release_recovery_lease(lease_name, entity_id)
+        logger.exception(
+            "pipeline_task_publish_failed publisher=%s task=%s queue=%s entity_id=%s",
+            publisher_name,
+            task_name,
+            queue,
+            entity_id,
+        )
         raise
+    logger.info(
+        "pipeline_task_published publisher=%s task=%s queue=%s entity_id=%s",
+        publisher_name,
+        task_name,
+        queue,
+        entity_id,
+    )
+    return True
 
 
 class TaskPublisher(Protocol):
-    def publish(self, entity_id: str) -> None: ...
+    def publish(self, entity_id: str) -> bool: ...
 
 
 class JobDispatchTaskPublisher:
-    def publish(self, job_id: str) -> None:
-        _publish_pipeline_task(
+    def publish(self, job_id: str) -> bool:
+        return _publish_pipeline_task(
             type(self).__name__, job_id, "image.dispatch_job", queue="control"
         )
 
 
 class MetadataTaskPublisher:
-    def publish(self, image_id: str) -> None:
-        _publish_pipeline_task(
+    def publish(self, image_id: str) -> bool:
+        return _publish_pipeline_task(
             type(self).__name__, image_id, "image.preprocess_metadata", queue="preprocess"
         )
 
 
 class CompletionTaskPublisher:
-    def publish(self, image_id: str) -> None:
-        _publish_pipeline_task(
+    def publish(self, image_id: str) -> bool:
+        return _publish_pipeline_task(
             type(self).__name__, image_id, "image.classify_completion", queue="classification"
         )
 
 
 class RoutedProcessingTaskPublisher:
-    def publish(self, image_id: str) -> None:
-        _publish_pipeline_task(
+    def publish(self, image_id: str) -> bool:
+        return _publish_pipeline_task(
             type(self).__name__, image_id, "image.apply_routed_processing", queue="filtering"
         )
 
 
 class AnalysisTaskPublisher:
-    def publish(self, image_id: str) -> None:
-        _publish_pipeline_task(
+    def publish(self, image_id: str) -> bool:
+        return _publish_pipeline_task(
             type(self).__name__,
             image_id,
             "image.analyze_content",
@@ -170,8 +191,8 @@ class AnalysisTaskPublisher:
 
 
 class EmbeddingTaskPublisher:
-    def publish(self, image_id: str) -> None:
-        _publish_pipeline_task(
+    def publish(self, image_id: str) -> bool:
+        return _publish_pipeline_task(
             type(self).__name__,
             image_id,
             "image.generate_embedding",
@@ -181,8 +202,8 @@ class EmbeddingTaskPublisher:
 
 
 class ProvisionalEmbeddingTaskPublisher:
-    def publish(self, image_id: str) -> None:
-        _publish_pipeline_task(
+    def publish(self, image_id: str) -> bool:
+        return _publish_pipeline_task(
             type(self).__name__,
             image_id,
             "image.generate_embedding",
@@ -193,15 +214,15 @@ class ProvisionalEmbeddingTaskPublisher:
 
 
 class MatchTaskPublisher:
-    def publish(self, image_id: str) -> None:
-        _publish_pipeline_task(
+    def publish(self, image_id: str) -> bool:
+        return _publish_pipeline_task(
             type(self).__name__, image_id, "image.match_library", queue="matching"
         )
 
 
 class LibraryAssetTaskPublisher:
-    def publish(self, asset_id: str) -> None:
-        _publish_pipeline_task(
+    def publish(self, asset_id: str) -> bool:
+        return _publish_pipeline_task(
             type(self).__name__,
             asset_id,
             "library.process_asset",
@@ -210,8 +231,8 @@ class LibraryAssetTaskPublisher:
 
 
 class LibraryGroupPrototypeTaskPublisher:
-    def publish(self, group_id: str) -> None:
-        _publish_pipeline_task(
+    def publish(self, group_id: str) -> bool:
+        return _publish_pipeline_task(
             type(self).__name__,
             group_id,
             "library.rebuild_group_prototypes",
@@ -220,13 +241,13 @@ class LibraryGroupPrototypeTaskPublisher:
 
 
 class EnhancementTaskPublisher:
-    def publish(self, image_id: str) -> None:
-        _publish_pipeline_task(type(self).__name__, image_id, "image.enhance", queue="enhance")
+    def publish(self, image_id: str) -> bool:
+        return _publish_pipeline_task(type(self).__name__, image_id, "image.enhance", queue="enhance")
 
 
 class RedactionDetectionTaskPublisher:
-    def publish(self, image_id: str) -> None:
-        _publish_pipeline_task(
+    def publish(self, image_id: str) -> bool:
+        return _publish_pipeline_task(
             type(self).__name__,
             image_id,
             "image.detect_redaction",
@@ -235,8 +256,8 @@ class RedactionDetectionTaskPublisher:
 
 
 class InpaintTaskPublisher:
-    def publish(self, image_id: str) -> None:
-        _publish_pipeline_task(
+    def publish(self, image_id: str) -> bool:
+        return _publish_pipeline_task(
             type(self).__name__,
             image_id,
             "image.inpaint_watermark",
@@ -246,27 +267,27 @@ class InpaintTaskPublisher:
 
 
 class RenderTaskPublisher:
-    def publish(self, image_id: str) -> None:
-        _publish_pipeline_task(
+    def publish(self, image_id: str) -> bool:
+        return _publish_pipeline_task(
             type(self).__name__, image_id, "image.render_image", queue="render"
         )
 
 
 class BeautifyPlanTaskPublisher:
-    def publish(self, image_id: str) -> None:
-        _publish_pipeline_task(
+    def publish(self, image_id: str) -> bool:
+        return _publish_pipeline_task(
             type(self).__name__, image_id, "image.plan_beautify", queue="beautify_plan"
         )
 
 
 class RankingTaskPublisher:
-    def publish(self, job_id: str) -> None:
-        _publish_pipeline_task(type(self).__name__, job_id, "image.rank_job", queue="control")
+    def publish(self, job_id: str) -> bool:
+        return _publish_pipeline_task(type(self).__name__, job_id, "image.rank_job", queue="control")
 
 
 class CallbackTaskPublisher:
-    def publish(self, job_id: str) -> None:
-        _publish_pipeline_task(
+    def publish(self, job_id: str) -> bool:
+        return _publish_pipeline_task(
             type(self).__name__,
             job_id,
             "image.deliver_callback",

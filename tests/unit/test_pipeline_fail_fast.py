@@ -173,6 +173,7 @@ class _CleanupSession:
             (
                 _CleanupResult(scalars=[job]),
                 _CleanupResult(scalar=item),
+                _CleanupResult(scalars=[]),
             )
         )
 

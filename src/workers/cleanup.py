@@ -318,6 +318,13 @@ async def _recover_stalled_images() -> None:
                     duration_ms=duration_ms,
                 )
 
+        await _recover_pending_dispatches(
+            session,
+            repository,
+            now=now,
+            settings=settings,
+        )
+
 
 def _stalled_node(item, job, now, settings):
     normal = settings.pipeline_task_timeout_seconds
@@ -365,6 +372,93 @@ def _stalled_node(item, job, now, settings):
     if item.match_status in {"pending", "queued"}:
         return None
     return expired("pipeline", item.updated_at, normal)
+
+
+async def _recover_pending_dispatches(session, repository, *, now, settings) -> int:
+    """Republish stale database-pending stages whose broker message was lost."""
+    cutoff = now - timedelta(seconds=getattr(settings, "pipeline_stale_seconds", 60))
+    active_jobs = (
+        ImageJob.status.in_(
+            ("queued", "processing", "ranking", "analyzing", "enhancing", "tagging")
+        ),
+        ImageJob.cancel_requested_at.is_(None),
+    )
+    post_filter = ImageItem.status.in_(_POST_FILTER_ACTIVE_STATUSES)
+    candidates = list(
+        (
+            await session.execute(
+                select(ImageItem)
+                .join(ImageJob, ImageJob.id == ImageItem.job_id)
+                .where(
+                    *active_jobs,
+                    ImageItem.updated_at < cutoff,
+                    or_(
+                        and_(
+                            ImageItem.status == "filtered",
+                            ImageItem.beautify_plan_status == "pending",
+                        ),
+                        and_(post_filter, ImageItem.analysis_status == "pending"),
+                        and_(post_filter, ImageItem.embedding_status == "pending"),
+                        and_(post_filter, ImageItem.match_status == "queued"),
+                        and_(
+                            post_filter,
+                            ImageItem.match_status == "pending",
+                            ImageItem.analysis_status.in_(("completed", "failed")),
+                            ImageItem.embedding_status.in_(("completed", "failed")),
+                        ),
+                    ),
+                )
+                .order_by(ImageItem.updated_at, ImageItem.id)
+                .limit(500)
+            )
+        ).scalars()
+    )
+    recovered = 0
+    for item in candidates:
+        stages: list[tuple[str, object]] = []
+        if item.status == "filtered" and item.beautify_plan_status == "pending":
+            stages.append(("beautify_plan", BeautifyPlanTaskPublisher()))
+        if item.analysis_status == "pending":
+            stages.append(("analysis", AnalysisTaskPublisher()))
+        if item.embedding_status == "pending":
+            stages.append(("embedding", EmbeddingTaskPublisher()))
+        matching_ready = item.match_status == "queued" or (
+            item.match_status == "pending" and await repository.claim_match_if_ready(item.id)
+        )
+        if matching_ready:
+            stages.append(("matching", MatchTaskPublisher()))
+
+        for stage, publisher in stages:
+            publisher_name = type(publisher).__name__
+            release_recovery_lease(publisher_name, item.id)
+            try:
+                published = publisher.publish(item.id)
+            except Exception:
+                logger.exception(
+                    "pipeline_pending_recovery_failed job_id=%s image_id=%s stage=%s",
+                    item.job_id,
+                    item.id,
+                    stage,
+                )
+                continue
+            if published:
+                recovered += 1
+                emit_metric(
+                    logger,
+                    "pipeline_pending_recovery_total",
+                    labels={
+                        "job_id": item.job_id,
+                        "image_id": item.id,
+                        "stage": stage,
+                    },
+                )
+                logger.info(
+                    "pipeline_pending_recovered job_id=%s image_id=%s stage=%s",
+                    item.job_id,
+                    item.id,
+                    stage,
+                )
+    return recovered
 
 
 def _enhancement_recovery_publisher(stage: str):

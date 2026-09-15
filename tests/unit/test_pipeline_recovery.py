@@ -1,10 +1,142 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
+from src.models.image_item import ImageItem
 from src.services.jobs import dispatch
 from src.workers import celery_app as celery_app_module
 from src.workers import cleanup
+
+
+class _RecoveryResult:
+    def __init__(self, values):
+        self.values = values
+
+    def scalars(self):
+        return self.values
+
+
+class _PendingRecoverySession:
+    def __init__(self, items):
+        self.items = items
+        self.statement = None
+
+    async def execute(self, statement):
+        self.statement = statement
+        return _RecoveryResult(self.items)
+
+
+class _PendingRecoveryRepository:
+    def __init__(self, *, match_ready: bool = False):
+        self.match_ready = match_ready
+        self.claimed: list[str] = []
+
+    async def claim_match_if_ready(self, image_id: str) -> bool:
+        self.claimed.append(image_id)
+        return self.match_ready
+
+
+@pytest.mark.asyncio
+async def test_pending_recovery_republishes_lost_beautify_message(monkeypatch) -> None:
+    now = datetime.now(UTC)
+    item = ImageItem(
+        id="img_lost_beautify",
+        job_id="job_active",
+        object_key="uploads/lost.jpg",
+        status="filtered",
+        beautify_plan_status="pending",
+        analysis_status="completed",
+        embedding_status="provisional",
+        match_status="pending",
+        updated_at=now - timedelta(seconds=61),
+    )
+    published: list[tuple[str, str]] = []
+    released: list[tuple[str, str]] = []
+
+    class Publisher:
+        def publish(self, image_id: str) -> bool:
+            published.append((type(self).__name__, image_id))
+            return True
+
+    monkeypatch.setattr(cleanup, "BeautifyPlanTaskPublisher", Publisher)
+    monkeypatch.setattr(
+        cleanup,
+        "release_recovery_lease",
+        lambda publisher, image_id: released.append((publisher, image_id)),
+    )
+    monkeypatch.setattr(cleanup, "emit_metric", lambda *_args, **_kwargs: None)
+    session = _PendingRecoverySession([item])
+    repository = _PendingRecoveryRepository(match_ready=False)
+
+    recovered = await cleanup._recover_pending_dispatches(
+        session,
+        repository,
+        now=now,
+        settings=SimpleNamespace(pipeline_stale_seconds=60),
+    )
+
+    assert recovered == 1
+    assert published == [("Publisher", item.id)]
+    assert released == [("Publisher", item.id)]
+    assert repository.claimed == [item.id]
+    sql = str(session.statement)
+    assert "image_jobs.cancel_requested_at IS NULL" in sql
+    assert "image_items.updated_at <" in sql
+    assert "beautify_plan_status" in sql
+
+
+@pytest.mark.asyncio
+async def test_pending_recovery_republishes_each_ready_parallel_stage(monkeypatch) -> None:
+    now = datetime.now(UTC)
+    item = ImageItem(
+        id="img_parallel_pending",
+        job_id="job_active",
+        object_key="uploads/pending.jpg",
+        status="filtered",
+        beautify_plan_status="pending",
+        analysis_status="pending",
+        embedding_status="pending",
+        match_status="pending",
+        updated_at=now - timedelta(seconds=61),
+    )
+    published: list[tuple[str, str]] = []
+
+    def publisher_type(name: str):
+        return type(
+            name,
+            (),
+            {
+                "publish": lambda self, image_id: (
+                    published.append((type(self).__name__, image_id)) or True
+                )
+            },
+        )
+
+    for name in (
+        "BeautifyPlanTaskPublisher",
+        "AnalysisTaskPublisher",
+        "EmbeddingTaskPublisher",
+        "MatchTaskPublisher",
+    ):
+        monkeypatch.setattr(cleanup, name, publisher_type(name))
+    monkeypatch.setattr(cleanup, "release_recovery_lease", lambda *_args: None)
+    monkeypatch.setattr(cleanup, "emit_metric", lambda *_args, **_kwargs: None)
+
+    recovered = await cleanup._recover_pending_dispatches(
+        _PendingRecoverySession([item]),
+        _PendingRecoveryRepository(match_ready=True),
+        now=now,
+        settings=SimpleNamespace(pipeline_stale_seconds=60),
+    )
+
+    assert recovered == 4
+    assert published == [
+        ("BeautifyPlanTaskPublisher", item.id),
+        ("AnalysisTaskPublisher", item.id),
+        ("EmbeddingTaskPublisher", item.id),
+        ("MatchTaskPublisher", item.id),
+    ]
 
 
 def test_recovery_republishes_lost_messages_for_each_pipeline_stage(monkeypatch) -> None:
