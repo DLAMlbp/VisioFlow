@@ -50,13 +50,14 @@ def test_pipeline_tasks_are_single_attempt_with_bounded_time() -> None:
     assert celery_app.conf.task_reject_on_worker_lost is False
 
 
-def test_retry_settings_cannot_be_enabled() -> None:
+def test_transport_retries_are_bounded_and_schema_retries_stay_disabled() -> None:
     settings = Settings(_env_file=None)
-    assert settings.ai_tagging_max_retries == 0
+    assert settings.ai_tagging_max_retries == 2
     assert settings.ai_processing_schema_max_retries == 0
     assert settings.callback_max_attempts == 3
+    assert Settings(_env_file=None, ai_tagging_max_retries=3).ai_tagging_max_retries == 3
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, ai_tagging_max_retries=1)
+        Settings(_env_file=None, ai_tagging_max_retries=4)
 
 
 def test_stalled_ai_node_is_reported_after_configured_timeout() -> None:

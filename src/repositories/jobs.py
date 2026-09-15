@@ -455,12 +455,33 @@ class ImageJobRepository:
         return result.rowcount == 1
 
     async def claim_beautify_plan(self, image_id: str) -> ImageItem | None:
+        items = await self.claim_beautify_plan_batch(image_id, limit=1)
+        return items[0] if items else None
+
+    async def claim_beautify_plan_batch(
+        self, image_id: str, *, limit: int
+    ) -> list[ImageItem]:
+        job_id = await self.session.scalar(
+            select(ImageItem.job_id).where(ImageItem.id == image_id)
+        )
+        if job_id is None:
+            await self.session.rollback()
+            return []
+        candidates = (
+            select(ImageItem.id)
+            .where(
+                ImageItem.job_id == job_id,
+                ImageItem.status == "filtered",
+                ImageItem.beautify_plan_status == "pending",
+            )
+            .order_by(ImageItem.created_at, ImageItem.id)
+            .limit(max(1, limit))
+            .with_for_update(skip_locked=True)
+        )
         result = await self.session.execute(
             update(ImageItem)
             .where(
-                ImageItem.id == image_id,
-                ImageItem.status == "filtered",
-                ImageItem.beautify_plan_status == "pending",
+                ImageItem.id.in_(candidates),
             )
             .values(
                 status="beautify_planning",
@@ -469,11 +490,12 @@ class ImageJobRepository:
             )
             .returning(ImageItem.id)
         )
-        if result.scalar_one_or_none() is None:
+        claimed_ids = list(result.scalars())
+        if not claimed_ids:
             await self.session.rollback()
-            return None
+            return []
         await self.session.commit()
-        return await self.get_item(image_id)
+        return [item for item_id in claimed_ids if (item := await self.get_item(item_id))]
 
     async def save_beautify_plan(
         self,

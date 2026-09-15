@@ -161,6 +161,7 @@ class StandardClassificationVisionService:
         *,
         standards: list[ProcessingStandard],
         before_schema_retry: Callable[[], Awaitable[None]] | None = None,
+        fairness_key: str | None = None,
     ) -> ClassificationOutcome:
         if not self.settings.ai_tagging_enabled:
             return ClassificationOutcome(status="failed", error_message="AI 图片处理未启用")
@@ -185,6 +186,7 @@ class StandardClassificationVisionService:
                     request=lambda repair_context=repair_context: self._request(
                         image_bytes, standards, repair_context
                     ),
+                    fairness_key=fairness_key,
                 )
                 payload = _parse_classification_content(_response_content(response))
                 payload, selected = payload.resolve_candidate(standards)

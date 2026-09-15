@@ -8,6 +8,7 @@ the same mode; legacy workers cannot respect this queue's admission order.
 WAITER_LEASE_MS = 15_000
 AGE_PRIORITY_MS = 15_000
 MAX_WAITERS = 256
+STAGE_GRANT_SEQUENCE = (1, 1, 1, 2, 3, 4)
 
 
 def operation_stage(operation: str) -> int:
@@ -21,8 +22,10 @@ def operation_stage(operation: str) -> int:
 
 
 # KEYS: rate, inflight, cooldown, capacity, order, expires, stages, arrived,
-# cursor, sequence. ARGV shares the legacy first six arguments, followed by
-# stage, waiter lease, aging threshold and queue bound.
+# cursor, sequence, groups, last_group. ARGV shares the legacy first six
+# arguments, followed by stage, group, waiter lease, aging threshold and queue
+# bound. The weighted grant sequence gives classification three turns while
+# keeping every downstream stage live and work-conserving.
 FAIR_ACQUIRE_SCRIPT = """
 local now_ms = tonumber(ARGV[1])
 local window_ms = tonumber(ARGV[2])
@@ -31,9 +34,10 @@ local configured_limit = tonumber(ARGV[4])
 local lease_ms = tonumber(ARGV[5])
 local token = ARGV[6]
 local stage = tonumber(ARGV[7])
-local waiter_lease_ms = tonumber(ARGV[8])
-local age_ms = tonumber(ARGV[9])
-local max_waiters = tonumber(ARGV[10])
+local group = ARGV[8]
+local waiter_lease_ms = tonumber(ARGV[9])
+local age_ms = tonumber(ARGV[10])
+local max_waiters = tonumber(ARGV[11])
 local concurrency_limit = math.min(configured_limit,
     tonumber(redis.call('GET', KEYS[4]) or configured_limit))
 
@@ -42,6 +46,7 @@ local function remove_waiter(id)
   redis.call('ZREM', KEYS[6], id)
   redis.call('HDEL', KEYS[7], id)
   redis.call('HDEL', KEYS[8], id)
+  redis.call('HDEL', KEYS[11], id)
 end
 
 for _, id in ipairs(redis.call('ZRANGEBYSCORE', KEYS[6], '-inf', now_ms)) do
@@ -67,27 +72,41 @@ if not redis.call('ZSCORE', KEYS[5], token) then
   redis.call('ZADD', KEYS[5], sequence, token)
   redis.call('HSET', KEYS[7], token, stage)
   redis.call('HSET', KEYS[8], token, now_ms)
+  redis.call('HSET', KEYS[11], token, group)
 end
 redis.call('ZADD', KEYS[6], now_ms + waiter_lease_ms, token)
-for i = 5, 10 do
+for i = 5, 12 do
   redis.call('PEXPIRE', KEYS[i], waiter_lease_ms * 4)
 end
 
 local ordered = redis.call('ZRANGE', KEYS[5], 0, -1)
 local selected = nil
+local selected_cursor = nil
 local oldest = ordered[1]
 if oldest and now_ms - tonumber(redis.call('HGET', KEYS[8], oldest)) >= age_ms then
   selected = oldest
 else
-  local heads = {}
-  for _, id in ipairs(ordered) do
-    local queued_stage = tonumber(redis.call('HGET', KEYS[7], id))
-    if not heads[queued_stage] then heads[queued_stage] = id end
-  end
+  local grants = {1, 1, 1, 2, 3, 4}
   local previous = tonumber(redis.call('GET', KEYS[9]) or '0')
-  for offset = 1, 4 do
-    local next_stage = (previous + offset - 1) % 4 + 1
-    if heads[next_stage] then selected = heads[next_stage]; break end
+  local last_group = redis.call('GET', KEYS[12])
+  for offset = 1, 6 do
+    local cursor = (previous + offset - 1) % 6 + 1
+    local wanted_stage = grants[cursor]
+    local fallback = nil
+    for _, id in ipairs(ordered) do
+      if tonumber(redis.call('HGET', KEYS[7], id)) == wanted_stage then
+        if not fallback then fallback = id end
+        if redis.call('HGET', KEYS[11], id) ~= last_group then
+          selected = id
+          break
+        end
+      end
+    end
+    if not selected then selected = fallback end
+    if selected then
+      selected_cursor = cursor
+      break
+    end
   end
 end
 
@@ -97,8 +116,14 @@ local rate_blocked = rate_count >= rate_limit and 1 or 0
 local concurrency_blocked = concurrency_count >= concurrency_limit and 1 or 0
 local fairness_blocked = selected ~= token and 1 or 0
 if cooldown + rate_blocked + concurrency_blocked + fairness_blocked == 0 then
+  local selected_group = redis.call('HGET', KEYS[11], token)
   remove_waiter(token)
-  redis.call('SET', KEYS[9], stage, 'PX', waiter_lease_ms * 4)
+  if selected_cursor then
+    redis.call('SET', KEYS[9], selected_cursor, 'PX', waiter_lease_ms * 4)
+  end
+  if selected_group then
+    redis.call('SET', KEYS[12], selected_group, 'PX', waiter_lease_ms * 4)
+  end
   redis.call('ZADD', KEYS[1], now_ms, token)
   redis.call('PEXPIRE', KEYS[1], window_ms + 5000)
   redis.call('ZADD', KEYS[2], now_ms + lease_ms, token)
@@ -117,7 +142,8 @@ redis.call('ZREM', KEYS[1], ARGV[1])
 redis.call('ZREM', KEYS[2], ARGV[1])
 redis.call('HDEL', KEYS[3], ARGV[1])
 redis.call('HDEL', KEYS[4], ARGV[1])
+redis.call('HDEL', KEYS[5], ARGV[1])
 -- Also cover a granted EVAL whose response was lost. Never refund RPM usage.
-redis.call('ZREM', KEYS[5], ARGV[1])
+redis.call('ZREM', KEYS[6], ARGV[1])
 return 1
 """

@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from src.core.config import Settings
+from src.services.images.beautify_planning import BeautifyDecision, BeautifyParameters
 from src.services.images.cover_score import CoverAssessment
 from src.services.images.tagging import (
     TagPayload,
@@ -27,7 +28,7 @@ from src.services.images.tagging import (
 from src.services.images.vision_rate_limit import run_vision_request
 from src.services.profiles import ProcessingStandard, RedactionProfile
 
-PROCESSING_PROMPT_VERSION = "indexed_paired_filter_redaction_cover_v16"
+PROCESSING_PROMPT_VERSION = "indexed_paired_filter_redaction_cover_content_beautify_v19"
 logger = logging.getLogger(__name__)
 
 _DIAGNOSTIC_CONTENT_LIMIT = 2000
@@ -112,6 +113,68 @@ class RedactionAssessment(BaseModel):
     branded_ground_film: BrandedGroundFilmAssessment
 
 
+class ProcessingContentFactGroup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=80)
+    values: list[str] = Field(min_length=1, max_length=12)
+
+
+class ProcessingContentAnalysis(BaseModel):
+    """Matching-only visible facts collected during the required routing call."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(min_length=1, max_length=240)
+    scene: str = Field(min_length=1, max_length=80)
+    space: str = Field(default="", max_length=80)
+    condition: str = Field(default="", max_length=80)
+    content_type: str = Field(default="", max_length=80)
+    subjects: list[str] = Field(default_factory=list, max_length=12)
+    objects: list[str] = Field(default_factory=list, max_length=20)
+    attributes: list[ProcessingContentFactGroup] = Field(default_factory=list, max_length=12)
+    features: list[ProcessingContentFactGroup] = Field(default_factory=list, max_length=12)
+    ocr_text: list[str] = Field(default_factory=list, max_length=20)
+    view: str = Field(default="", max_length=80)
+    confidence: float = Field(ge=0, le=1)
+    risks: list[str] = Field(default_factory=list, max_length=8)
+
+    def to_tag_payload(self) -> TagPayload:
+        payload = self.model_dump(mode="json", exclude={"attributes", "features"})
+        payload["attributes"] = {item.name: item.values for item in self.attributes}
+        payload["features"] = {item.name: item.values for item in self.features}
+        return TagPayload.model_validate(payload)
+
+
+class ProcessingBeautifyParameterReason(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=80)
+    reason: str = Field(min_length=1, max_length=200)
+
+
+class ProcessingBeautifyDecision(BaseModel):
+    """Strict-schema wire model converted to the existing beautify contract."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    needed: bool
+    reason: str = Field(min_length=1, max_length=300)
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    parameters: BeautifyParameters
+    parameter_reasons: list[ProcessingBeautifyParameterReason] = Field(
+        default_factory=list, max_length=16
+    )
+    risk_flags: list[str] = Field(default_factory=list, max_length=20)
+
+    def to_beautify_decision(self) -> BeautifyDecision:
+        payload = self.model_dump(mode="json", exclude={"parameter_reasons"})
+        payload["parameter_reasons"] = {
+            item.name: item.reason for item in self.parameter_reasons
+        }
+        return BeautifyDecision.model_validate(payload)
+
+
 def precise_filter_reason(
     decision: FilterDecision,
     *,
@@ -169,6 +232,8 @@ class ProcessingVisionPayload(BaseModel):
     filter: FilterDecision
     redaction_analysis: RedactionAssessment | None = None
     cover_assessment: CoverAssessment
+    content: ProcessingContentAnalysis | None = None
+    beautify_plan: ProcessingBeautifyDecision | None = None
 
 
 class CandidateProcessingVisionPayload(BaseModel):
@@ -180,6 +245,8 @@ class CandidateProcessingVisionPayload(BaseModel):
     filter: FilterDecision
     redaction_analysis: RedactionAssessment | None = None
     cover_assessment: CoverAssessment
+    content: ProcessingContentAnalysis | None = None
+    beautify_plan: ProcessingBeautifyDecision | None = None
 
 
 @dataclass(frozen=True)
@@ -219,7 +286,9 @@ class ProcessingVisionService:
         image_context: dict[str, int | float] | None = None,
         route_label: str | None = None,
         redaction_profile: RedactionProfile | None = None,
+        beautify_instruction: str | None = None,
         before_schema_retry: Callable[[], Awaitable[None]] | None = None,
+        fairness_key: str | None = None,
     ) -> ProcessingVisionOutcome:
         if not self.settings.ai_tagging_enabled:
             return ProcessingVisionOutcome(
@@ -269,10 +338,12 @@ class ProcessingVisionService:
                         image_context,
                         route_label,
                         redaction_profile,
+                        beautify_instruction,
                         validate_selection,
                         repair_context,
                     ),
                     telemetry=diagnostic_details,
+                    fairness_key=fairness_key,
                 )
                 parse_started = time.perf_counter()
                 try:
@@ -394,6 +465,7 @@ class ProcessingVisionService:
         image_context: dict[str, int | float] | None,
         route_label: str | None = None,
         redaction_profile: RedactionProfile | None = None,
+        beautify_instruction: str | None = None,
         indexed_selection: bool = False,
         repair_context: dict[str, str] | None = None,
     ) -> dict[str, object]:
@@ -409,6 +481,7 @@ class ProcessingVisionService:
             redaction_profile,
             indexed_selection,
             repair_context,
+            beautify_instruction,
         )
         body = {
             "model": self.settings.ai_tagging_model,
@@ -640,6 +713,8 @@ def _parse_processing_content(
         filter=wire_payload.filter,
         redaction_analysis=wire_payload.redaction_analysis,
         cover_assessment=wire_payload.cover_assessment,
+        content=wire_payload.content,
+        beautify_plan=wire_payload.beautify_plan,
     )
 
 
@@ -832,13 +907,31 @@ def global_filter_dimensions_from_completion_json(
 
 
 def content_from_processing_json(payload: object) -> TagPayload | None:
-    """Read legacy combined responses; new filter responses never contain content."""
+    """Read matching-only content emitted by the combined routing request."""
     if not isinstance(payload, dict):
         return None
     try:
-        return TagPayload.model_validate(payload.get("content"))
-    except ValidationError:
+        content = ProcessingContentAnalysis.model_validate(payload.get("content"))
+        return content.to_tag_payload()
+    except (TypeError, ValidationError):
+        try:
+            return TagPayload.model_validate(payload.get("content"))
+        except ValidationError:
+            return None
+
+
+def beautify_plan_from_processing_json(payload: object) -> BeautifyDecision | None:
+    """Read and normalize a beautify plan emitted by the routing request."""
+    if not isinstance(payload, dict):
         return None
+    raw_plan = payload.get("beautify_plan")
+    try:
+        return ProcessingBeautifyDecision.model_validate(raw_plan).to_beautify_decision()
+    except (TypeError, ValidationError):
+        try:
+            return BeautifyDecision.model_validate(raw_plan)
+        except ValidationError:
+            return None
 
 
 @lru_cache(maxsize=128)
@@ -872,6 +965,7 @@ def _user_prompt(
     redaction_profile: RedactionProfile | None = None,
     indexed_selection: bool = False,
     repair_context: dict[str, str] | None = None,
+    beautify_instruction: str | None = None,
 ) -> str:
     del unmatched_standard_policy
     standard_payload_json = _standard_prompt_json(
@@ -951,6 +1045,35 @@ visual_appeal：整洁度、光线、色彩和第一眼观感；representativene
 四项只允许 0 到 5 的整数。3=普通可用，4=明显优秀，5=无可见短板且可直接作为首图；
 无法被常规美化修复的严重裁切、遮挡、透视、杂乱或缺乏代表性必须 hard_fail=true。
 5 分必须极其克制；只要存在一项可见不足，该项就不得返回 5。risk_codes 只返回可见问题，可为空。"""
+    beautify_instruction_text = (
+        f"""同时根据以下美化标准规划当前图片的参数：
+{beautify_instruction.strip()}
+禁止裁切、拉伸、扩图、增删物体或改变构图。无法确认需要调整时 needed=false 并返回中性参数。
+参数范围：亮度/对比度/色彩 0.5-1.5；锐化 0.5-2；白平衡强度 0-1；阴影和高光 0-0.35；
+降噪/局部层次/反光抑制/局部清晰度 0-0.5；局部层次限制 1-3；拉直角度大于 0 且不超过 12。
+parameter_reasons 必须使用 name/reason 列表，不得返回动态键对象。"""
+        if beautify_instruction and beautify_instruction.strip()
+        else "未提供美化标准，beautify_plan 必须返回 null。"
+    )
+    beautify_contract = (
+        """{
+    "needed":true,
+    "reason":"逐图美化依据",
+    "confidence":0.0,
+    "parameters":{
+      "brightness":1.0,"contrast":1.0,"color":1.0,"sharpness":1.0,
+      "auto_white_balance":false,"white_balance_strength":0.0,
+      "shadow_lift":0.0,"highlight_recovery":0.0,"denoise_strength":0.0,
+      "local_tone_strength":0.0,"local_tone_clip_limit":1.5,
+      "glare_reduction_strength":0.0,"local_clarity_strength":0.0,
+      "auto_straighten":false,"max_straighten_degrees":3.0
+    },
+    "parameter_reasons":[{"name":"参数名","reason":"调整依据"}],
+    "risk_flags":[]
+  }"""
+        if beautify_instruction and beautify_instruction.strip()
+        else "null"
+    )
     return f"""请只根据图片可见内容完成一次分析。
 
 {standard_title}：
@@ -963,14 +1086,19 @@ visual_appeal：整洁度、光线、色彩和第一眼观感；representativene
 {redaction_instruction}
 零条命中或多条同时命中都属于分类错误，不得猜测、放行或按优先级覆盖。
 只有命中的标准才执行 filter_rule。
+分类理由只能说明为何命中该分类，不得夹带 filter 的通过或拒绝结论。
+filter.dimensions 只能来自命中项的 filter_rule；classification_rule、cover_assessment、content.risks
+和 beautify_plan 都是彼此独立的输出，绝不能把它们改写、扩展或新增为过滤条件。
 必须把命中标准中的每个审核维度分别写入 filter.dimensions。
 只要 dimensions 中有一项 passed=false，filter.decision 必须为 reject；全部通过才允许为 pass。
 reject 时，filter.reason 必须只概括 passed=false 的维度、对应可见证据及当前标准边界；
 不得用清晰度、曝光等已通过项目掩盖真正的拒绝原因。
 pass 时，filter.reason 应概括最关键的通过证据。
 {cover_instruction}
+{beautify_instruction_text}
 {repair_instruction}
-返回以下 JSON，禁止返回美化参数、内容分析或标签字段：
+content 只记录图片中可见的客观内容，供后续素材匹配使用；禁止生成业务标签、分类标签或候选标签。
+返回以下 JSON，禁止返回标签字段：
 {{
 {selection_contract},
   "filter": {{
@@ -989,6 +1117,22 @@ pass 时，filter.reason 应概括最关键的通过证据。
     "hard_fail":false,
     "risk_codes":[]
   }},
+  "content": {{
+    "summary":"图片可见内容摘要",
+    "scene":"场景类型",
+    "space":"空间类型，没有则为空字符串",
+    "condition":"施工或完工状态，没有则为空字符串",
+    "content_type":"内容类型，没有则为空字符串",
+    "subjects":[],
+    "objects":[],
+    "attributes":[{{"name":"属性名称", "values":["可见属性"]}}],
+    "features":[{{"name":"特征名称", "values":["可见特征"]}}],
+    "ocr_text":[],
+    "view":"拍摄视角，没有则为空字符串",
+    "confidence":0.0,
+    "risks":[]
+  }},
+  "beautify_plan": {beautify_contract},
   "redaction_analysis": {{
     "left_bottom_watermark_detected":false,
     "target_logo_detected":false,
@@ -1013,4 +1157,6 @@ _SYSTEM_PROMPT = """你是图片过滤审核助手，只输出合法 JSON。
 reject 的整体 reason 必须直接对应失败维度，不得把已通过项目写成主要结论。
 必须逐项返回命中过滤标准的审核维度；任一维度不合格时整体必须 reject。
 必须按严格首图标准返回简洁的 cover_assessment，5 分只用于无可见短板的直接可用首图。
-不得返回美化参数、内容分析、标签、分类或候选标签。"""
+content 只能描述可见事实，不得包含业务标签、分类标签或候选标签。
+beautify_plan 只能规划像素级美化参数，不得改变图片内容或构图；未提供美化标准时必须为 null。
+不得返回任何标签字段。"""

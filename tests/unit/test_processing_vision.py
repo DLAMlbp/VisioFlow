@@ -9,6 +9,7 @@ from src.core.config import Settings
 from src.services.images import processing_vision as processing_vision_module
 from src.services.images.beautify_planning import (
     BeautifyDecision,
+    BeautifyPlanInput,
     BeautifyPlanningService,
     beautify_plan_from_json,
     build_stored_plan,
@@ -24,12 +25,23 @@ from src.services.images.processing_vision import (
     _parse_processing_content,
     _strict_processing_response_format,
     _user_prompt,
+    beautify_plan_from_processing_json,
     compatibility_route_label,
     content_from_processing_json,
     precise_filter_reason,
 )
 from src.services.managed_profiles import ManagedProfileService
 from src.services.profiles import BeautifyProfile, ProcessingStandard
+
+
+def _ai_settings(**updates: object) -> Settings:
+    values: dict[str, object] = {
+        "ai_tagging_enabled": True,
+        "ai_tagging_api_key": "test-key",
+        "ai_global_scheduler_enabled": False,
+    }
+    values.update(updates)
+    return Settings(_env_file=None, **values)
 
 
 def _profile() -> BeautifyProfile:
@@ -58,6 +70,26 @@ def _cover_payload() -> dict[str, object]:
     }
 
 
+def _content_payload() -> dict[str, object]:
+    return {
+        "content": {
+            "summary": "室内装修现场",
+            "scene": "住宅室内",
+            "space": "客厅",
+            "condition": "施工中",
+            "content_type": "现场照片",
+            "subjects": [],
+            "objects": ["墙面", "地面"],
+            "attributes": [],
+            "features": [{"name": "施工阶段", "values": ["施工中"]}],
+            "ocr_text": [],
+            "view": "广角",
+            "confidence": 0.92,
+            "risks": [],
+        }
+    }
+
+
 def _cover_assessment() -> CoverAssessment:
     return CoverAssessment.model_validate(_cover_payload()["cover_assessment"])
 
@@ -78,9 +110,17 @@ def _beautify_payload(*, brightness: float = 1.05) -> dict[str, object]:
     }
 
 
+def _processing_beautify_payload(*, brightness: float = 1.05) -> dict[str, object]:
+    payload = _beautify_payload(brightness=brightness)
+    payload["parameter_reasons"] = [
+        {"name": "brightness", "reason": "画面略暗"}
+    ]
+    return {"beautify_plan": payload}
+
+
 @pytest.mark.asyncio
 async def test_filter_response_is_independent(monkeypatch: pytest.MonkeyPatch) -> None:
-    service = ProcessingVisionService(Settings(ai_tagging_enabled=True, ai_tagging_api_key="test-key"))
+    service = ProcessingVisionService(_ai_settings())
     monkeypatch.setattr(service, "_request", lambda *_args: {
         "choices": [{"message": {"content": json.dumps(
             {**_filter_payload(), **_cover_payload()}, ensure_ascii=False
@@ -91,22 +131,23 @@ async def test_filter_response_is_independent(monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.mark.asyncio
-async def test_filter_response_rejects_content_fields(monkeypatch: pytest.MonkeyPatch) -> None:
-    service = ProcessingVisionService(Settings(ai_tagging_enabled=True, ai_tagging_api_key="test-key"))
-    payload = {**_filter_payload(), **_cover_payload(), "content": {"tags": ["模型标签"]}}
+async def test_filter_response_accepts_matching_only_content(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = ProcessingVisionService(_ai_settings())
+    payload = {**_filter_payload(), **_cover_payload(), **_content_payload()}
     monkeypatch.setattr(service, "_request", lambda *_args: {
         "choices": [{"message": {"content": json.dumps(payload, ensure_ascii=False)}}]})
     outcome = await service.analyze(b"image", filter_instruction="保留有效图片")
-    assert outcome.status == "failed"
-    assert "content" in outcome.error_message
+    assert outcome.status == "completed"
+    assert outcome.payload is not None
+    assert outcome.payload.content is not None
+    assert outcome.payload.content.space == "客厅"
+    assert outcome.payload.content.to_tag_payload().features == {"施工阶段": ["施工中"]}
 
 
 @pytest.mark.asyncio
 async def test_filter_response_requires_cover_assessment(monkeypatch: pytest.MonkeyPatch) -> None:
     service = ProcessingVisionService(
-        Settings(
-            ai_tagging_enabled=True,
-            ai_tagging_api_key="test-key",
+        _ai_settings(
             ai_processing_schema_max_retries=0,
         )
     )
@@ -140,6 +181,8 @@ def test_routed_filter_strict_schema_requires_complete_contract() -> None:
         "filter",
         "redaction_analysis",
         "cover_assessment",
+        "content",
+        "beautify_plan",
     }
     for definition in schema["$defs"].values():
         if "properties" in definition:
@@ -191,6 +234,42 @@ def test_indexed_prompt_does_not_expose_business_standard_ids() -> None:
     assert "std_private_finished_uuid" not in prompt
     assert "std_private_fallback_uuid" not in prompt
     assert "selected_standard_id" not in prompt
+
+
+def test_processing_response_reuses_strict_beautify_plan() -> None:
+    payload = {
+        **_filter_payload(),
+        **_cover_payload(),
+        **_processing_beautify_payload(),
+    }
+
+    parsed = _parse_processing_content(json.dumps(payload, ensure_ascii=False))
+    decision = beautify_plan_from_processing_json(parsed.model_dump(mode="json"))
+
+    assert decision is not None
+    assert decision.parameters.brightness == 1.05
+    assert decision.parameter_reasons == {"brightness": "画面略暗"}
+
+
+def test_processing_prompt_includes_beautify_standard() -> None:
+    prompt = _user_prompt(
+        [
+            ProcessingStandard(
+                id="std_test",
+                name="测试分类",
+                version=1,
+                description="测试分类",
+                classification_rule="识别测试分类",
+                filter_rule="审核图片质量",
+            )
+        ],
+        beautify_instruction="自然提亮并保护高光",
+    )
+
+    assert "自然提亮并保护高光" in prompt
+    assert '"beautify_plan": {' in prompt
+    assert '"parameter_reasons":[{"name":"参数名"' in prompt
+    assert "beautify_plan 都是彼此独立的输出" in prompt
 
 
 def test_indexed_batch_responses_map_to_real_ids_without_shared_state() -> None:
@@ -545,9 +624,7 @@ async def test_filter_schema_failure_is_not_retried(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ProcessingVisionService(
-        Settings(
-            ai_tagging_enabled=True,
-            ai_tagging_api_key="test-key",
+        _ai_settings(
             ai_processing_schema_max_retries=0,
         )
     )
@@ -585,9 +662,7 @@ async def test_filter_schema_failure_stores_redacted_diagnostic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ProcessingVisionService(
-        Settings(
-            ai_tagging_enabled=True,
-            ai_tagging_api_key="test-key",
+        _ai_settings(
             ai_processing_schema_max_retries=0,
         )
     )
@@ -620,7 +695,7 @@ def test_strict_schema_unsupported_does_not_issue_fallback_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ProcessingVisionService(
-        Settings(ai_tagging_enabled=True, ai_tagging_api_key="test-key")
+        _ai_settings()
     )
     request_bodies: list[dict[str, object]] = []
 
@@ -663,7 +738,7 @@ def test_strict_schema_unsupported_does_not_issue_fallback_request(
 
 @pytest.mark.asyncio
 async def test_beautify_planning_is_independent(monkeypatch: pytest.MonkeyPatch) -> None:
-    service = BeautifyPlanningService(Settings(ai_tagging_enabled=True, ai_tagging_api_key="test-key"))
+    service = BeautifyPlanningService(_ai_settings())
     monkeypatch.setattr(service, "_request", lambda *_args: {
         "choices": [{"message": {"content": json.dumps(_beautify_payload(), ensure_ascii=False)}}]})
     outcome = await service.analyze(b"image", instruction="自然提亮")
@@ -674,11 +749,81 @@ async def test_beautify_planning_is_independent(monkeypatch: pytest.MonkeyPatch)
 
 @pytest.mark.asyncio
 async def test_invalid_beautify_parameter_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    service = BeautifyPlanningService(Settings(ai_tagging_enabled=True, ai_tagging_api_key="test-key"))
+    service = BeautifyPlanningService(_ai_settings())
     monkeypatch.setattr(service, "_request", lambda *_args: {
         "choices": [{"message": {"content": json.dumps(_beautify_payload(brightness=3))}}]})
     outcome = await service.analyze(b"image", instruction="自然美化")
     assert outcome.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_beautify_planning_batches_images_in_one_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = BeautifyPlanningService(_ai_settings())
+    calls: list[list[BeautifyPlanInput]] = []
+    payloads = [_beautify_payload(brightness=1.05), _beautify_payload(brightness=1.12)]
+
+    def fake_request_many(inputs: list[BeautifyPlanInput]) -> dict[str, object]:
+        calls.append(inputs)
+        return {
+            "choices": [
+                {"message": {"content": json.dumps({"images": payloads}, ensure_ascii=False)}}
+            ]
+        }
+
+    monkeypatch.setattr(service, "_request_many", fake_request_many)
+    inputs = [
+        BeautifyPlanInput(b"first", "自然美化"),
+        BeautifyPlanInput(b"second", "自然美化"),
+    ]
+
+    outcomes = await service.analyze_many(inputs, fairness_key="job_test")
+
+    assert calls == [inputs]
+    assert [outcome.status for outcome in outcomes] == ["completed", "completed"]
+    assert [outcome.payload.parameters.brightness for outcome in outcomes] == [1.05, 1.12]
+
+
+@pytest.mark.asyncio
+async def test_invalid_beautify_batch_falls_back_to_each_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = BeautifyPlanningService(_ai_settings())
+    monkeypatch.setattr(
+        service,
+        "_request_many",
+        lambda _inputs: {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {"images": [_beautify_payload()]}, ensure_ascii=False
+                        )
+                    }
+                }
+            ]
+        },
+    )
+    analyzed: list[bytes] = []
+
+    async def fake_analyze(image_bytes: bytes, **_kwargs) -> object:
+        analyzed.append(image_bytes)
+        return SimpleNamespace(
+            status="completed",
+            payload=BeautifyDecision.model_validate(_beautify_payload()),
+        )
+
+    monkeypatch.setattr(service, "analyze", fake_analyze)
+    inputs = [
+        BeautifyPlanInput(b"first", "自然美化"),
+        BeautifyPlanInput(b"second", "自然美化"),
+    ]
+
+    outcomes = await service.analyze_many(inputs, fairness_key="job_test")
+
+    assert analyzed == [b"first", b"second"]
+    assert len(outcomes) == 2
 
 
 def test_filter_summary_must_match_dimensions() -> None:

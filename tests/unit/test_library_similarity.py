@@ -108,11 +108,11 @@ def test_below_auto_threshold_is_unmatched() -> None:
     [
         (0.60, 0.10, "matched"),
         (0.5999, 0.7501, "matched"),
-        (0.5999, 0.75, "unmatched"),
+        (0.5999, 0.75, "matched"),
         (0.5999, None, "unmatched"),
     ],
 )
-def test_adoption_uses_final_or_strict_feature_threshold(
+def test_adoption_uses_final_or_feature_score_threshold(
     final_score: float,
     feature_score: float | None,
     expected_decision: str,

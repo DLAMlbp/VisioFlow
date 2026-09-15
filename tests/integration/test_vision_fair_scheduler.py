@@ -21,6 +21,7 @@ from src.services.images.vision_fair_queue import (
     CANCEL_WAIT_SCRIPT,
     FAIR_ACQUIRE_SCRIPT,
     MAX_WAITERS,
+    STAGE_GRANT_SEQUENCE,
     WAITER_LEASE_MS,
 )
 
@@ -51,13 +52,13 @@ async def harness():
         await redis.aclose()
 
 
-async def acquire(harness, token, stage, *, now=None):
+async def acquire(harness, token, stage, *, group="job-a", now=None):
     redis, settings, keys = harness
     return await redis.eval(
         FAIR_ACQUIRE_SCRIPT, len(keys), *keys,
         now if now is not None else int(time.time() * 1000), 60_000,
         settings.ai_tagging_rate_limit_per_minute, settings.ai_tagging_global_concurrency,
-        120_000, token, stage, WAITER_LEASE_MS, AGE_PRIORITY_MS, MAX_WAITERS,
+        120_000, token, stage, group, WAITER_LEASE_MS, AGE_PRIORITY_MS, MAX_WAITERS,
     )
 
 
@@ -73,19 +74,31 @@ async def wait_until_queued(redis, key):
     await asyncio.wait_for(check(), timeout=3)
 
 
-async def test_stages_rotate_and_newcomer_cannot_overtake_same_stage(harness):
+async def test_classification_gets_three_weighted_turns_and_stage_fifo(harness):
     redis, _, keys = harness
     await block(harness)
-    for token, stage in [("a1", 1), ("a2", 1), ("b1", 2), ("c1", 3)]:
+    queued = [("a1", 1), ("a2", 1), ("a3", 1), ("b1", 2), ("c1", 3)]
+    for token, stage in queued:
         assert (await acquire(harness, token, stage))[0] == 0
     await redis.zrem(keys[1], "holder")
-    assert (await acquire(harness, "a1", 1))[0] == 1
-    await redis.zrem(keys[1], "a1")
-    assert (await acquire(harness, "a3", 1))[7] == 1
-    for token, stage in [("b1", 2), ("c1", 3), ("a2", 1), ("a3", 1)]:
+    assert STAGE_GRANT_SEQUENCE[:5] == (1, 1, 1, 2, 3)
+    for token, stage in queued:
         assert (await acquire(harness, token, stage))[0] == 1
         await redis.zrem(keys[1], token)
     assert await redis.zcard(keys[4]) == 0
+
+
+async def test_same_stage_rotates_between_jobs_when_both_are_waiting(harness):
+    redis, _, keys = harness
+    await block(harness)
+    await acquire(harness, "a1", 1, group="job-a")
+    await acquire(harness, "a2", 1, group="job-a")
+    await acquire(harness, "b1", 1, group="job-b")
+    await redis.set(keys[11], "job-a")
+    await redis.zrem(keys[1], "holder")
+
+    assert (await acquire(harness, "a1", 1, group="job-a"))[0] == 0
+    assert (await acquire(harness, "b1", 1, group="job-b"))[0] == 1
 
 
 async def test_oldest_aged_attempt_overrides_stage_rotation(harness):
@@ -111,6 +124,7 @@ async def test_dead_waiter_expires_without_blocking_other_stages(harness):
     assert await redis.zscore(keys[4], "dead") is None
     assert await redis.hget(keys[6], "dead") is None
     assert await redis.hget(keys[7], "dead") is None
+    assert await redis.hget(keys[10], "dead") is None
 
 
 async def test_expired_inflight_is_reclaimed(harness):
@@ -181,7 +195,14 @@ async def test_eval_retry_is_idempotent_and_cancel_does_not_refund_rpm(harness):
     assert (await acquire(harness, "same", 1))[0] == 1
     assert await redis.zcard(keys[0]) == 1
     assert await redis.zcard(keys[1]) == 1
-    await redis.eval(CANCEL_WAIT_SCRIPT, 5, *keys[4:8], keys[1], "same")
+    await redis.eval(
+        CANCEL_WAIT_SCRIPT,
+        6,
+        *keys[4:8],
+        keys[10],
+        keys[1],
+        "same",
+    )
     assert await redis.zcard(keys[1]) == 0
     assert await redis.zcard(keys[0]) == 1
     assert (await acquire(harness, "same", 1))[0] == -1

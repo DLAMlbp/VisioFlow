@@ -317,13 +317,15 @@ def score_candidate(
     query_content: dict[str, object] | None,
     settings: SimilarityPolicy,
     candidate_content: dict[str, object] | None | object = _CONTENT_NOT_PROVIDED,
+    core_evidence: tuple[bool, float | None, str, dict[str, object]] | None = None,
+    feature_evidence: FeatureSimilarityEvidence | None = None,
 ) -> ScoredCandidate:
     content = (
         asset.analysis_json
         if candidate_content is _CONTENT_NOT_PROVIDED
         else candidate_content
     )
-    evidence = feature_similarity_evidence(
+    evidence = feature_evidence or feature_similarity_evidence(
         query_content,
         content if isinstance(content, dict) else None,
         field_weights=settings.similarity_field_weights,
@@ -356,11 +358,14 @@ def score_candidate(
             feature_weight=feature_weight,
         )
         score_version = "legacy_v2"
-    core_passed, core_score, core_mode, core_evidence = _group_core_evidence(
-        tags=tags,
-        query=query_content,
-        settings=settings,
-    )
+    if core_evidence is None:
+        core_passed, core_score, core_mode, core_details = _group_core_evidence(
+            tags=tags,
+            query=query_content,
+            settings=settings,
+        )
+    else:
+        core_passed, core_score, core_mode, core_details = core_evidence
     return ScoredCandidate(
         asset=asset,
         tags=tags,
@@ -374,7 +379,7 @@ def score_candidate(
         field_scores=evidence.field_scores,
         core_requirements_passed=core_passed,
         core_evidence_score=core_score,
-        core_evidence=core_evidence,
+        core_evidence=core_details,
         core_evidence_mode=core_mode,
         ranking_score=_semantic_ranking_score(
             breakdown.final_score,
@@ -469,14 +474,34 @@ def score_group_candidates(
         refine_ids.update(candidate.asset.group_id for candidate in candidates[:refine_limit])
 
     refined: list[ScoredCandidate] = []
+    merged_content_cache: list[
+        tuple[list[dict[str, object] | None], dict[str, object] | None]
+    ] = []
+    feature_evidence_cache: dict[int, FeatureSimilarityEvidence] = {}
     for candidate in scored:
         if candidate.asset.group_id not in refine_ids or query_content is None:
             refined.append(candidate)
             continue
         top = ranked_assets[candidate.asset.group_id][:3]
-        group_content = _merge_group_analysis(
-            [asset.analysis_json for asset, _score in top]
+        payloads = [asset.analysis_json for asset, _score in top]
+        group_content = next(
+            (
+                cached_content
+                for cached_payloads, cached_content in merged_content_cache
+                if cached_payloads == payloads
+            ),
+            _CONTENT_NOT_PROVIDED,
         )
+        if group_content is _CONTENT_NOT_PROVIDED:
+            group_content = _merge_group_analysis(payloads)
+            merged_content_cache.append((payloads, group_content))
+        content_key = id(group_content)
+        if content_key not in feature_evidence_cache:
+            feature_evidence_cache[content_key] = feature_similarity_evidence(
+                query_content,
+                group_content,
+                field_weights=settings.similarity_field_weights,
+            )
         enriched = score_candidate(
             asset=candidate.asset,
             tags=candidate.tags,
@@ -484,6 +509,13 @@ def score_group_candidates(
             query_content=query_content,
             settings=settings,
             candidate_content=group_content,
+            feature_evidence=feature_evidence_cache[content_key],
+            core_evidence=(
+                candidate.core_requirements_passed,
+                candidate.core_evidence_score,
+                candidate.core_evidence_mode,
+                candidate.core_evidence,
+            ),
         )
         group_fields = dict(enriched.field_scores)
         group_metadata = dict(candidate.field_scores["_group"])
@@ -503,7 +535,10 @@ def score_group_candidates(
 def _merge_group_analysis(
     payloads: list[dict[str, object] | None],
 ) -> dict[str, object] | None:
-    valid = [payload for payload in payloads if payload]
+    valid: list[dict[str, object]] = []
+    for payload in payloads:
+        if payload and payload not in valid:
+            valid.append(payload)
     if not valid:
         return None
     merged: dict[str, object] = {}
@@ -581,7 +616,7 @@ def decide_similarity(
     final_score_passed = best.final_score >= auto_threshold
     feature_score_passed = (
         best.feature_score is not None
-        and best.feature_score > feature_auto_threshold
+        and best.feature_score >= feature_auto_threshold
     )
     if final_score_passed or feature_score_passed:
         decision = "matched"
@@ -591,7 +626,7 @@ def decide_similarity(
             else (
                 "综合匹配分已达标，已采用最高分素材组的完整标签"
                 if final_score_passed
-                else "内容特征分已超过采用线，已采用最高分素材组的完整标签"
+                else "内容特征分已达到采用线，已采用最高分素材组的完整标签"
             )
         )
     else:

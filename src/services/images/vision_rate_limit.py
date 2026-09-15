@@ -5,7 +5,7 @@ import logging
 import time
 import uuid
 from collections.abc import Callable, MutableMapping
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
@@ -77,8 +77,55 @@ async def run_vision_request[T](
     operation: str,
     request: Callable[[], T],
     telemetry: MutableMapping[str, object] | None = None,
+    fairness_key: str | None = None,
 ) -> T:
-    """Run one provider request under the shared cross-worker capacity guard."""
+    """Run one provider request with shared admission and transport retries."""
+    max_retries = max(0, settings.ai_tagging_max_retries)
+    for attempt_index in range(max_retries + 1):
+        try:
+            result = await _run_vision_request_once(
+                settings,
+                operation=operation,
+                request=request,
+                telemetry=telemetry,
+                fairness_key=fairness_key,
+            )
+            if telemetry is not None:
+                telemetry["transport_attempts"] = attempt_index + 1
+            return result
+        except (HTTPError, URLError, TimeoutError) as exc:
+            retryable = (
+                exc.code == 429 or exc.code >= 500
+                if isinstance(exc, HTTPError)
+                else isinstance(exc, (URLError, TimeoutError))
+            )
+            if not retryable or attempt_index >= max_retries:
+                if telemetry is not None:
+                    telemetry["transport_attempts"] = attempt_index + 1
+                raise
+            delay = _retry_after_seconds(exc) or retry_countdown(settings, attempt_index)
+            emit_metric(
+                logger,
+                "vision_request_retry_total",
+                labels={
+                    "operation": operation,
+                    "attempt": attempt_index + 1,
+                    "status_code": exc.code if isinstance(exc, HTTPError) else None,
+                    "delay_seconds": delay,
+                },
+            )
+            await asyncio.sleep(delay)
+    raise AssertionError("transport retry loop must return or raise")
+
+
+async def _run_vision_request_once[T](
+    settings: Settings,
+    *,
+    operation: str,
+    request: Callable[[], T],
+    telemetry: MutableMapping[str, object] | None,
+    fairness_key: str | None,
+) -> T:
     token: str | None = None
     redis: Redis | None = None
     release_slot = True
@@ -86,7 +133,13 @@ async def run_vision_request[T](
     if settings.ai_global_scheduler_enabled:
         redis = Redis.from_url(settings.redis_url, decode_responses=True)
         try:
-            token = await _acquire(redis, settings, operation=operation, telemetry=telemetry)
+            token = await _acquire(
+                redis,
+                settings,
+                operation=operation,
+                telemetry=telemetry,
+                fairness_key=fairness_key,
+            )
         except RedisError:
             if settings.ai_fair_scheduler_enabled:
                 # The candidate must not defeat its own capacity/fairness guarantees.
@@ -176,7 +229,7 @@ async def acquire_vision_rate_slot(settings: Settings) -> None:
 def _fair_keys(settings: Settings) -> list[str]:
     namespace = f"{_scheduler_namespace(settings)}:fair-v1"
     return [f"{namespace}:{part}" for part in (
-        "order", "expires", "stages", "arrived", "cursor", "sequence",
+        "order", "expires", "stages", "arrived", "cursor", "sequence", "groups", "last-group",
     )]
 
 
@@ -186,6 +239,7 @@ async def _acquire(
     *,
     operation: str = "legacy",
     telemetry: MutableMapping[str, object] | None = None,
+    fairness_key: str | None = None,
 ) -> str:
     token = uuid.uuid4().hex
     lease_ms = (settings.ai_tagging_timeout_seconds + 30) * 1000
@@ -201,8 +255,13 @@ async def _acquire(
                     max(1, settings.ai_tagging_rate_limit_per_minute),
                     max(1, settings.ai_tagging_global_concurrency), lease_ms, token]
             if fair:
-                args.extend([operation_stage(operation), WAITER_LEASE_MS,
-                             AGE_PRIORITY_MS, MAX_WAITERS])
+                args.extend([
+                    operation_stage(operation),
+                    fairness_key or "ungrouped",
+                    WAITER_LEASE_MS,
+                    AGE_PRIORITY_MS,
+                    MAX_WAITERS,
+                ])
             result = await redis.eval(
                 FAIR_ACQUIRE_SCRIPT if fair else _ACQUIRE_SCRIPT, len(keys), *keys, *args,
             )
@@ -221,8 +280,15 @@ async def _acquire(
     except BaseException:
         if fair:
             try:
-                await redis.eval(CANCEL_WAIT_SCRIPT, 5, *_fair_keys(settings)[:4],
-                                 _inflight_key(settings), token)
+                fair_keys = _fair_keys(settings)
+                await redis.eval(
+                    CANCEL_WAIT_SCRIPT,
+                    6,
+                    *fair_keys[:4],
+                    fair_keys[6],
+                    _inflight_key(settings),
+                    token,
+                )
             except RedisError:
                 logger.warning("Unable to remove AI waiting attempt; lease will expire")
         raise
@@ -280,7 +346,9 @@ def retry_countdown(settings: Settings, retry_index: int) -> int:
     )
 
 
-def _retry_after_seconds(error: HTTPError) -> int | None:
+def _retry_after_seconds(error: BaseException) -> int | None:
+    if not isinstance(error, HTTPError):
+        return None
     value = error.headers.get("Retry-After") if error.headers is not None else None
     if value is None:
         return None

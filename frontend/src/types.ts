@@ -189,7 +189,6 @@ export interface SimilarityTaggingResult {
   feature_score?: number | null;
   final_score?: number | null;
   auto_threshold?: number | null;
-  feature_auto_threshold?: number | null;
   message: string;
 }
 

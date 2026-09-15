@@ -66,7 +66,7 @@ services:
 
   worker-classification:
     <<: *worker
-    command: celery -A src.workers.celery_app worker -Q classification,filtering -l info --concurrency=4 --without-mingle --without-gossip
+    command: celery -A src.workers.celery_app worker -Q classification,filtering -l info --concurrency=8 --without-mingle --without-gossip
     environment:
       WORKER_ROLE: classification
 
@@ -90,7 +90,7 @@ services:
 
   worker-enhance:
     <<: *worker
-    command: celery -A src.workers.celery_app worker -Q enhance -l info --concurrency=1 --without-mingle --without-gossip
+    command: celery -A src.workers.celery_app worker -Q enhance -l info --concurrency=2 --without-mingle --without-gossip
     environment:
       WORKER_ROLE: enhance
 
@@ -102,7 +102,7 @@ services:
 
   worker-analysis:
     <<: *worker
-    command: celery -A src.workers.celery_app worker -Q analysis -l info --concurrency=1 --without-mingle --without-gossip
+    command: celery -A src.workers.celery_app worker -Q analysis -l info --concurrency=2 --without-mingle --without-gossip
     environment:
       WORKER_ROLE: analysis
 

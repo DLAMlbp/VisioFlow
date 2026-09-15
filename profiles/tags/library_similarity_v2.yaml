@@ -1,6 +1,6 @@
 id: library_similarity_v2
-version: 15
-description: 选择综合匹配分最高的素材组；综合分达到 60% 或内容特征分严格高于 75% 时继承完整组标签，否则不打标签。
+version: 18
+description: 选择综合匹配分最高的素材组；综合分达到 60% 或内容特征分达到 75% 时继承完整组标签，否则不打标签。
 
 similarity_candidate_limit: 20
 similarity_image_weight: 0.70

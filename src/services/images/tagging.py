@@ -123,8 +123,9 @@ class VisionTagProvider(Protocol):
 
 
 class OpenAIChatVisionTagProvider:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, fairness_key: str | None = None) -> None:
         self.settings = settings
+        self.fairness_key = fairness_key
 
     async def tag(self, image_bytes: bytes) -> TaggingOutcome:
         if not self.settings.ai_tagging_api_key:
@@ -136,6 +137,7 @@ class OpenAIChatVisionTagProvider:
                 self.settings,
                 operation="content_analysis",
                 request=lambda: self._request(image_bytes),
+                fairness_key=self.fairness_key,
             )
             content = response["choices"][0]["message"]["content"]
             payload = TagPayload.model_validate_json(content)
@@ -170,6 +172,7 @@ class OpenAIChatVisionTagProvider:
                 self.settings,
                 operation="content_analysis_batch",
                 request=lambda: self._request_many(images),
+                fairness_key=self.fairness_key,
             )
             content = response["choices"][0]["message"]["content"]
             payload = TagBatchPayload.model_validate_json(content)
@@ -281,11 +284,13 @@ class DisabledTagProvider:
         return [await self.tag(image_bytes) for image_bytes in images]
 
 
-def get_tag_provider(settings: Settings) -> VisionTagProvider:
+def get_tag_provider(
+    settings: Settings, *, fairness_key: str | None = None
+) -> VisionTagProvider:
     if not settings.ai_tagging_enabled:
         return DisabledTagProvider()
     if settings.ai_tagging_provider == "openai":
-        return OpenAIChatVisionTagProvider(settings)
+        return OpenAIChatVisionTagProvider(settings, fairness_key=fairness_key)
     return DisabledTagProvider()
 
 
@@ -305,12 +310,8 @@ async def analyze_with_retries(
     image_bytes: bytes,
     max_retries: int,
 ) -> TaggingOutcome:
-    outcome = await provider.tag(image_bytes)
-    for _ in range(max_retries):
-        if outcome.status == "completed" or not outcome.retryable:
-            return outcome
-        outcome = await provider.tag(image_bytes)
-    return outcome
+    del max_retries
+    return await provider.tag(image_bytes)
 
 
 async def analyze_many_with_retries(
@@ -318,19 +319,8 @@ async def analyze_many_with_retries(
     images: list[bytes],
     max_retries: int,
 ) -> list[TaggingOutcome]:
-    outcomes = await provider.tag_many(images)
-    for _ in range(max_retries):
-        retry_indexes = [
-            index
-            for index, outcome in enumerate(outcomes)
-            if outcome.status != "completed" and outcome.retryable
-        ]
-        if not retry_indexes:
-            break
-        retried = await provider.tag_many([images[index] for index in retry_indexes])
-        for index, outcome in zip(retry_indexes, retried, strict=True):
-            outcomes[index] = outcome
-    return outcomes
+    del max_retries
+    return await provider.tag_many(images)
 
 
 def _resize_for_tagging(image_bytes: bytes, long_side: int) -> bytes:
@@ -351,7 +341,7 @@ def _safe_error_message(error: Exception) -> str:
         if error.code in {401, 403}:
             return "AI 服务鉴权或模型权限不足，请检查服务配置"
         if error.code == 429:
-            return "AI 服务请求频率受限，系统将自动稍后重试"
+            return "AI 服务请求频率受限，自动重试后仍未恢复"
         return f"AI 服务请求失败（HTTP {error.code}）"
     if isinstance(error, URLError):
         return "AI 服务连接失败"

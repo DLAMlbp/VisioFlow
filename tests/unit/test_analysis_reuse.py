@@ -72,8 +72,12 @@ def _item():
         object_key="uploads/source.jpg",
         thumbnail_object_key="thumbnails/preprocessed.jpg",
         analysis_object_key="analysis/enhanced.jpg",
+        processing_object_key=None,
         sha256="same-sha",
         ai_tag=SimpleNamespace(provider="library"),
+        ai_processing_json=None,
+        ai_processing_model=None,
+        ai_processing_prompt_version=None,
     )
 
 
@@ -101,7 +105,9 @@ async def test_analysis_recognizes_preprocessed_image_without_writing_model_tags
         ),
     )
     monkeypatch.setattr(analysis, "get_storage_provider", lambda: _Storage())
-    monkeypatch.setattr(analysis, "get_tag_provider", lambda _settings: object())
+    monkeypatch.setattr(
+        analysis, "get_tag_provider", lambda _settings, **_kwargs: object()
+    )
     monkeypatch.setattr(analysis, "analyze_many_with_retries", _analyze_many)
     published: list[str] = []
     monkeypatch.setattr(
@@ -183,6 +189,85 @@ async def test_analysis_reuses_same_sha_prompt_and_model_without_ai_call(
     assert Repository.saved["tag_json"]["confidence"] == 0.93
     assert Repository.saved["tag_json"]["content_confidence"] == 0.93
     assert Repository.saved["tag_json"]["tags"] == []
+
+
+@pytest.mark.asyncio
+async def test_analysis_reuses_high_confidence_classification_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = _item()
+    item.processing_object_key = "processing/source.jpg"
+    item.ai_processing_model = "gpt-5.6-luna"
+    item.ai_processing_prompt_version = "indexed_paired_filter_redaction_cover_content_v17"
+    item.ai_processing_json = {
+        "content": {
+            "summary": "客厅装修施工现场",
+            "scene": "住宅室内",
+            "space": "客厅",
+            "condition": "施工中",
+            "content_type": "现场照片",
+            "subjects": [],
+            "objects": ["墙面", "地面"],
+            "attributes": [],
+            "features": [{"name": "施工阶段", "values": ["施工中"]}],
+            "ocr_text": [],
+            "view": "广角",
+            "confidence": 0.91,
+            "risks": [],
+        }
+    }
+
+    class Repository(_Repository):
+        async def claim_analysis_batch(self, _image_id: str, *, limit: int):
+            assert limit == 4
+            return [item]
+
+        async def find_reusable_content_analysis(self, **_values):
+            raise AssertionError("classification content must be checked first")
+
+    class Storage:
+        async def download(self, _object_key: str):
+            raise AssertionError("classification content must avoid storage download")
+
+    async def fail_analysis(*_args, **_kwargs):
+        raise AssertionError("classification content must avoid AI analysis")
+
+    Repository.saved = None
+    monkeypatch.setattr(analysis, "AsyncSessionLocal", lambda: _SessionContext())
+    monkeypatch.setattr(analysis, "ImageJobRepository", Repository)
+    monkeypatch.setattr(
+        analysis,
+        "get_settings",
+        lambda: SimpleNamespace(
+            early_semantic_branch_enabled=True,
+            classification_content_reuse_min_confidence=0.8,
+        ),
+    )
+    monkeypatch.setattr(
+        analysis,
+        "load_ai_model_settings",
+        lambda _settings: SimpleNamespace(
+            ai_tagging_concurrency=4,
+            ai_tagging_max_retries=2,
+            ai_tagging_provider="openai",
+            ai_tagging_model="gpt-5.6-luna",
+            ai_tagging_store_raw_response=False,
+        ),
+    )
+    monkeypatch.setattr(analysis, "get_storage_provider", lambda: Storage())
+    monkeypatch.setattr(analysis, "analyze_many_with_retries", fail_analysis)
+    monkeypatch.setattr(analysis.MatchTaskPublisher, "publish", lambda *_args: None)
+
+    await analysis._analyze_image_content(item.id)
+
+    assert Repository.saved is not None
+    assert Repository.saved["source_object_key"] == "processing/source.jpg"
+    assert Repository.saved["model_name"] == "gpt-5.6-luna"
+    assert Repository.saved["prompt_version"] == item.ai_processing_prompt_version
+    assert Repository.saved["duration_ms"] == 0
+    assert Repository.saved["tag_json"]["summary"] == "客厅装修施工现场"
+    assert Repository.saved["tag_json"]["tags"] == []
+    assert Repository.saved["tag_json"]["content_confidence"] == 0.91
 
 
 @pytest.mark.asyncio
@@ -278,7 +363,9 @@ async def test_analysis_batch_continues_after_one_image_download_fails(
         ),
     )
     monkeypatch.setattr(analysis, "get_storage_provider", lambda: Storage())
-    monkeypatch.setattr(analysis, "get_tag_provider", lambda _settings: object())
+    monkeypatch.setattr(
+        analysis, "get_tag_provider", lambda _settings, **_kwargs: object()
+    )
     monkeypatch.setattr(analysis, "analyze_many_with_retries", analyze_healthy)
     published: list[str] = []
     monkeypatch.setattr(

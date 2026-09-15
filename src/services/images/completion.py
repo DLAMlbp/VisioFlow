@@ -149,6 +149,7 @@ class CompletionVisionService:
         image_bytes: bytes,
         *,
         instruction: str,
+        fairness_key: str | None = None,
     ) -> CompletionOutcome:
         if not self.settings.ai_tagging_enabled:
             return CompletionOutcome(status="failed", error_message="AI 图片处理未启用")
@@ -162,6 +163,7 @@ class CompletionVisionService:
                 self.settings,
                 operation="completion_classification",
                 request=lambda: self._request(image_bytes, instruction),
+                fairness_key=fairness_key,
             )
             content = response["choices"][0]["message"]["content"]
             payload = _parse_completion_content(content)

@@ -75,13 +75,15 @@ def test_production_enhancement_workers_have_isolated_resource_budgets() -> None
     assert "--concurrency=1" in services["worker-inpaint"]["command"]
     assert "--max-tasks-per-child=5" in services["worker-inpaint"]["command"]
     assert services["worker-enhance"]["mem_limit"] == "1280m"
-    assert "--concurrency=1" in services["worker-enhance"]["command"]
+    assert "--concurrency=2" in services["worker-enhance"]["command"]
     assert "--max-tasks-per-child=5" in services["worker-enhance"]["command"]
     assert "--max-tasks-per-child=5" in services["worker-redaction"]["command"]
     assert services["worker-render"]["mem_limit"] == "3072m"
     assert "--concurrency=1" in services["worker-render"]["command"]
     assert "--max-tasks-per-child=3" in services["worker-render"]["command"]
     assert services["worker-classification"]["stop_grace_period"] == "360s"
+    assert "--concurrency=4" in services["worker-beautify-plan"]["command"]
+    assert "--concurrency=2" in services["worker-analysis"]["command"]
     assert services["worker-render"]["stop_grace_period"] == "360s"
 
 

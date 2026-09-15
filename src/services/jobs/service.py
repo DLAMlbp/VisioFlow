@@ -459,11 +459,6 @@ class ImageJobService:
                                 if similarity_profile
                                 else None
                             ),
-                            feature_auto_threshold=(
-                                similarity_profile.similarity_feature_auto_threshold
-                                if similarity_profile
-                                else None
-                            ),
                             message=item.similarity_match.message,
                         )
                         if item.similarity_match is not None
@@ -490,11 +485,6 @@ class ImageJobService:
                             field_scores=item.similarity_match.field_scores or {},
                             auto_threshold=(
                                 similarity_profile.similarity_auto_threshold
-                                if similarity_profile
-                                else None
-                            ),
-                            feature_auto_threshold=(
-                                similarity_profile.similarity_feature_auto_threshold
                                 if similarity_profile
                                 else None
                             ),

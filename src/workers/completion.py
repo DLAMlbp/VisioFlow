@@ -75,7 +75,7 @@ async def _classify_completion(image_id: str) -> None:
             "逐图判断真实室内装修空间属于完工或非完工",
         )
         outcome = await CompletionVisionService(settings).analyze(
-            image_bytes, instruction=instruction
+            image_bytes, instruction=instruction, fairness_key=item.job_id
         )
         emit_metric(
             logger,
@@ -181,6 +181,7 @@ async def _classify_filter_standard(repository, item, job, settings, image_bytes
         unmatched_standard_policy="reject",
         image_context=_image_context(item),
         redaction_profile=redaction_profile,
+        fairness_key=item.job_id,
     )
     emit_metric(
         logger,
@@ -263,6 +264,7 @@ async def _classify_filter_standard(repository, item, job, settings, image_bytes
     outcome = await StandardClassificationVisionService(settings).analyze(
         image_bytes,
         standards=standards,
+        fairness_key=item.job_id,
     )
     emit_metric(
         logger,
@@ -363,6 +365,11 @@ async def _classify_and_filter_standard(
         unmatched_standard_policy="reject",
         image_context=_image_context(item),
         redaction_profile=redaction_profile,
+        beautify_instruction=_snapshot_instruction(
+            getattr(job, "beautify_profile_snapshot", None),
+            "自然美化，保持内容真实",
+        ),
+        fairness_key=item.job_id,
     )
     selection = outcome.payload.standard_selection if outcome.payload is not None else None
     emit_metric(

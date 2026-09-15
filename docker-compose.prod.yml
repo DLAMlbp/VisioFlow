@@ -137,7 +137,7 @@ services:
 
   worker-enhance:
     <<: *worker
-    command: celery -A src.workers.celery_app worker -Q enhance -l info --concurrency=1 --max-tasks-per-child=5 --without-mingle --without-gossip
+    command: celery -A src.workers.celery_app worker -Q enhance -l info --concurrency=2 --max-tasks-per-child=5 --without-mingle --without-gossip
     environment:
       WORKER_ROLE: enhance
     mem_limit: 1280m
@@ -155,7 +155,7 @@ services:
 
   worker-analysis:
     <<: *worker
-    command: celery -A src.workers.celery_app worker -Q analysis -l info --concurrency=4 --without-mingle --without-gossip
+    command: celery -A src.workers.celery_app worker -Q analysis -l info --concurrency=2 --without-mingle --without-gossip
     stop_grace_period: 360s
     environment:
       WORKER_ROLE: analysis

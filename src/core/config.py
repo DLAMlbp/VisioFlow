@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     ai_tagging_model: Literal["gpt-5.6-luna"] = "gpt-5.6-luna"
     ai_tagging_api_key: str = ""
     ai_tagging_timeout_seconds: int = 90
-    ai_tagging_max_retries: int = Field(default=0, ge=0, le=0)
+    ai_tagging_max_retries: int = Field(default=2, ge=0, le=3)
     ai_processing_schema_max_retries: int = Field(default=0, ge=0, le=0)
     ai_processing_max_completion_tokens: int = Field(default=3000, ge=800, le=8000)
     ai_processing_strict_json_schema_enabled: bool = True
@@ -109,6 +109,8 @@ class Settings(BaseSettings):
     ai_beautify_timeout_seconds: int = Field(default=90, ge=30, le=90)
     ai_global_scheduler_enabled: bool = True
     ai_fair_scheduler_enabled: bool = False
+    classification_content_reuse_min_confidence: float = Field(default=0.8, ge=0, le=1)
+    ai_beautify_batch_size: int = Field(default=4, ge=1, le=4)
     ai_tagging_store_raw_response: bool = False
     ai_config_encryption_key: str = ""
     completion_review_confidence: float = Field(default=0.8, ge=0, le=1)

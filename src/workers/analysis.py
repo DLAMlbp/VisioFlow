@@ -4,9 +4,11 @@ import asyncio
 import logging
 
 from src.core.config import get_settings
+from src.core.metrics import emit_metric
 from src.db.session import AsyncSessionLocal
 from src.repositories.jobs import ImageJobRepository
 from src.services.ai_model_config import load_ai_model_settings
+from src.services.images.processing_vision import content_from_processing_json
 from src.services.images.tagging import (
     PROMPT_VERSION,
     TaggingOutcome,
@@ -46,12 +48,48 @@ async def _analyze_image_content(image_id: str) -> None:
         image_bytes_batch: list[bytes] = []
         outcomes: dict[str, TaggingOutcome] = {}
         source_keys: dict[str, str] = {}
+        providers: dict[str, str] = {}
+        model_names: dict[str, str] = {}
+        prompt_versions: dict[str, str] = {}
         for item in items:
             source_key = item.thumbnail_object_key or item.object_key
             if not source_key:
                 outcomes[item.id] = TaggingOutcome(
                     status="failed",
                     error_message="缺少稳定的预处理内容分析文件",
+                )
+                continue
+            routed_content = content_from_processing_json(
+                getattr(item, "ai_processing_json", None)
+            )
+            if (
+                routed_content is not None
+                and routed_content.confidence
+                >= workflow_settings.classification_content_reuse_min_confidence
+            ):
+                outcomes[item.id] = TaggingOutcome(
+                    status="completed",
+                    payload=matching_content_payload(routed_content),
+                    duration_ms=0,
+                )
+                source_keys[item.id] = (
+                    getattr(item, "processing_object_key", None) or source_key
+                )
+                providers[item.id] = settings.ai_tagging_provider
+                model_names[item.id] = (
+                    getattr(item, "ai_processing_model", None) or settings.ai_tagging_model
+                )
+                prompt_versions[item.id] = (
+                    getattr(item, "ai_processing_prompt_version", None) or PROMPT_VERSION
+                )
+                emit_metric(
+                    logger,
+                    "content_analysis_reuse_total",
+                    labels={
+                        "job_id": item.job_id,
+                        "image_id": item.id,
+                        "source": "classification",
+                    },
                 )
                 continue
             reusable = (
@@ -81,11 +119,17 @@ async def _analyze_image_content(image_id: str) -> None:
                     pass
             if reusable is not None and item.id in outcomes:
                 source_keys[item.id] = source_key
+                providers[item.id] = settings.ai_tagging_provider
+                model_names[item.id] = settings.ai_tagging_model
+                prompt_versions[item.id] = PROMPT_VERSION
                 continue
             try:
                 image_bytes_batch.append(await storage.download(source_key))
                 analyzable_items.append(item)
                 source_keys[item.id] = source_key
+                providers[item.id] = settings.ai_tagging_provider
+                model_names[item.id] = settings.ai_tagging_model
+                prompt_versions[item.id] = PROMPT_VERSION
             except Exception:
                 logger.exception("Unable to load image for content analysis")
                 outcomes[item.id] = TaggingOutcome(
@@ -95,7 +139,7 @@ async def _analyze_image_content(image_id: str) -> None:
         if analyzable_items:
             try:
                 analyzed = await analyze_many_with_retries(
-                    get_tag_provider(settings),
+                    get_tag_provider(settings, fairness_key=items[0].job_id),
                     image_bytes_batch,
                     settings.ai_tagging_max_retries,
                 )
@@ -134,9 +178,9 @@ async def _analyze_image_content(image_id: str) -> None:
                     or item.thumbnail_object_key
                     or item.object_key
                 ),
-                provider=settings.ai_tagging_provider,
-                model_name=settings.ai_tagging_model,
-                prompt_version=PROMPT_VERSION,
+                provider=providers.get(item.id, settings.ai_tagging_provider),
+                model_name=model_names.get(item.id, settings.ai_tagging_model),
+                prompt_version=prompt_versions.get(item.id, PROMPT_VERSION),
                 status="completed" if succeeded else "failed",
                 duration_ms=outcome.duration_ms,
                 tag_json=serialized_content,

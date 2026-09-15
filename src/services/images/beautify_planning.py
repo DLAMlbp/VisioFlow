@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -75,6 +76,19 @@ class BeautifyPlanOutcome:
     retryable: bool = False
 
 
+@dataclass(frozen=True)
+class BeautifyPlanInput:
+    image_bytes: bytes
+    instruction: str
+    image_context: dict[str, int | float] | None = None
+
+
+class BeautifyPlanBatchPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    images: list[BeautifyDecision] = Field(min_length=1, max_length=4)
+
+
 class BeautifyPlanningService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -85,6 +99,7 @@ class BeautifyPlanningService:
         *,
         instruction: str,
         image_context: dict[str, int | float] | None = None,
+        fairness_key: str | None = None,
     ) -> BeautifyPlanOutcome:
         if not self.settings.ai_tagging_enabled:
             return BeautifyPlanOutcome(status="failed", error_message="AI 图片处理未启用")
@@ -100,6 +115,7 @@ class BeautifyPlanningService:
                 self.settings,
                 operation="beautify_planning",
                 request=lambda: self._request(image_bytes, instruction, image_context),
+                fairness_key=fairness_key,
             )
             content = response["choices"][0]["message"]["content"]
             payload = _parse_beautify_content(content)
@@ -127,6 +143,83 @@ class BeautifyPlanningService:
                 duration_ms=round((time.perf_counter() - started) * 1000),
                 retryable=_is_retryable_error(exc),
             )
+
+    async def analyze_many(
+        self,
+        inputs: list[BeautifyPlanInput],
+        *,
+        fairness_key: str | None = None,
+    ) -> list[BeautifyPlanOutcome]:
+        if not inputs:
+            return []
+        if len(inputs) == 1:
+            item = inputs[0]
+            return [
+                await self.analyze(
+                    item.image_bytes,
+                    instruction=item.instruction,
+                    image_context=item.image_context,
+                    fairness_key=fairness_key,
+                )
+            ]
+        if not self.settings.ai_tagging_enabled:
+            return [
+                BeautifyPlanOutcome(status="failed", error_message="AI 图片处理未启用")
+                for _ in inputs
+            ]
+        if not self.settings.ai_tagging_api_key:
+            return [
+                BeautifyPlanOutcome(status="failed", error_message="未配置 AI_TAGGING_API_KEY")
+                for _ in inputs
+            ]
+
+        started = time.perf_counter()
+        response: dict[str, object] | None = None
+        try:
+            response = await run_vision_request(
+                self.settings,
+                operation="beautify_planning",
+                request=lambda: self._request_many(inputs),
+                fairness_key=fairness_key,
+            )
+            content = response["choices"][0]["message"]["content"]
+            payload = _parse_beautify_batch_content(content)
+            if len(payload.images) != len(inputs):
+                raise ValueError("AI 美化规划数量与输入图片数量不一致")
+            duration_ms = round((time.perf_counter() - started) * 1000)
+            return [
+                BeautifyPlanOutcome(
+                    status="completed",
+                    payload=decision,
+                    raw_response=response,
+                    duration_ms=duration_ms,
+                )
+                for decision in payload.images
+            ]
+        except (KeyError, TypeError, ValueError, ValidationError) as exc:
+            logger.warning("beautify_plan_batch_schema_invalid error=%s", exc)
+            return list(
+                await asyncio.gather(
+                    *(
+                        self.analyze(
+                            item.image_bytes,
+                            instruction=item.instruction,
+                            image_context=item.image_context,
+                            fairness_key=fairness_key,
+                        )
+                        for item in inputs
+                    )
+                )
+            )
+        except (HTTPError, URLError, TimeoutError) as exc:
+            outcome = BeautifyPlanOutcome(
+                status="failed",
+                raw_response=response,
+                error_message=_safe_error_message(exc).replace("AI 标签", "AI 美化规划"),
+                duration_ms=round((time.perf_counter() - started) * 1000),
+                retryable=_is_retryable_error(exc),
+            )
+            return [outcome for _ in inputs]
 
     def _request(
         self,
@@ -165,6 +258,58 @@ class BeautifyPlanningService:
                         },
                     ],
                 },
+            ],
+        }
+        request = Request(
+            _chat_completions_url(self.settings.ai_tagging_base_url),
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.settings.ai_tagging_api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urlopen(
+            request, timeout=self.settings.ai_beautify_timeout_seconds
+        ) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def _request_many(self, inputs: list[BeautifyPlanInput]) -> dict[str, object]:
+        content: list[dict[str, object]] = [
+            {"type": "text", "text": _beautify_batch_prompt(inputs)}
+        ]
+        for index, item in enumerate(inputs, start=1):
+            image_data = base64.b64encode(
+                _resize_for_tagging(
+                    item.image_bytes, self.settings.ai_tagging_image_long_side
+                )
+            ).decode()
+            content.extend(
+                [
+                    {"type": "text", "text": f"图片 {index}"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_data}",
+                            "detail": "low",
+                        },
+                    },
+                ]
+            )
+        body = {
+            "model": self.settings.ai_tagging_model,
+            "temperature": 0,
+            "response_format": {"type": "json_object"},
+            "max_completion_tokens": min(7200, 1800 * len(inputs)),
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是图片美化参数规划助手，只输出合法 JSON。"
+                        "逐图独立判断，保持真实内容、构图和比例，不得返回标签或内容分析。"
+                    ),
+                },
+                {"role": "user", "content": content},
             ],
         }
         request = Request(
@@ -242,6 +387,38 @@ def _parse_beautify_content(content: object) -> BeautifyDecision:
             lines = lines[:-1]
         text = "\n".join(lines).strip()
     return BeautifyDecision.model_validate_json(text)
+
+
+def _parse_beautify_batch_content(content: object) -> BeautifyPlanBatchPayload:
+    if not isinstance(content, str):
+        raise TypeError("AI 批量美化规划响应必须是文本")
+    text = content.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    return BeautifyPlanBatchPayload.model_validate_json(text)
+
+
+def _beautify_batch_prompt(inputs: list[BeautifyPlanInput]) -> str:
+    items = [
+        {
+            "image_index": index,
+            "instruction": item.instruction.strip() or "自然美化，保持内容真实",
+            "image_context": item.image_context or {},
+        }
+        for index, item in enumerate(inputs, start=1)
+    ]
+    contract = _beautify_prompt("批量输入中逐图提供", None).split(
+        "只返回以下 JSON", maxsplit=1
+    )[1]
+    return f"""请按输入顺序独立规划 {len(inputs)} 张图片的美化参数。
+
+逐图标准与本地指标：{json.dumps(items, ensure_ascii=False)}
+禁止让一张图片的判断影响另一张；无法确认需要调整时 needed=false 并返回中性参数。
+每个 images 元素必须遵守以下单图协议：{contract}
+最终只返回 {{"images":[单图结果1, 单图结果2]}}，元素数量和顺序必须与输入图片完全一致。"""
 
 
 def _beautify_prompt(

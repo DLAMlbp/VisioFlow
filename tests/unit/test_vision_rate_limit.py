@@ -32,12 +32,13 @@ class FakeRedis:
 
 
 def _settings(**updates) -> Settings:
-    return Settings(
-        _env_file=None,
-        ai_global_scheduler_enabled=True,
-        ai_tagging_api_key="test-key",
-        **updates,
-    )
+    values = {
+        "ai_global_scheduler_enabled": True,
+        "ai_tagging_api_key": "test-key",
+        "ai_tagging_max_retries": 0,
+    }
+    values.update(updates)
+    return Settings(_env_file=None, **values)
 
 
 def test_fair_scheduler_is_opt_in() -> None:
@@ -132,3 +133,82 @@ def test_retry_countdown_uses_bounded_exponential_backoff() -> None:
         60,
         60,
     ]
+
+
+@pytest.mark.asyncio
+async def test_retryable_http_error_honors_retry_after_and_recovers(monkeypatch) -> None:
+    redis = FakeRedis()
+    monkeypatch.setattr(
+        vision_rate_limit.Redis,
+        "from_url",
+        lambda *_args, **_kwargs: redis,
+    )
+    delays: list[int] = []
+
+    async def fake_sleep(delay: int) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(vision_rate_limit.asyncio, "sleep", fake_sleep)
+    calls = 0
+
+    def request():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise HTTPError(
+                "https://example.test/v1/chat/completions",
+                429,
+                "rate limited",
+                {"Retry-After": "3"},
+                None,
+            )
+        return "recovered"
+
+    telemetry: dict[str, object] = {}
+    result = await vision_rate_limit.run_vision_request(
+        _settings(ai_tagging_max_retries=2),
+        operation="routed_filter",
+        request=request,
+        telemetry=telemetry,
+    )
+
+    assert result == "recovered"
+    assert calls == 2
+    assert delays == [3]
+    assert telemetry["transport_attempts"] == 2
+
+
+@pytest.mark.asyncio
+async def test_http_400_is_not_retried_even_though_http_error_is_url_error(
+    monkeypatch,
+) -> None:
+    redis = FakeRedis()
+    monkeypatch.setattr(
+        vision_rate_limit.Redis,
+        "from_url",
+        lambda *_args, **_kwargs: redis,
+    )
+    calls = 0
+
+    def request():
+        nonlocal calls
+        calls += 1
+        raise HTTPError(
+            "https://example.test/v1/chat/completions",
+            400,
+            "invalid request",
+            {},
+            None,
+        )
+
+    telemetry: dict[str, object] = {}
+    with pytest.raises(HTTPError):
+        await vision_rate_limit.run_vision_request(
+            _settings(ai_tagging_max_retries=2),
+            operation="routed_filter",
+            request=request,
+            telemetry=telemetry,
+        )
+
+    assert calls == 1
+    assert telemetry["transport_attempts"] == 1

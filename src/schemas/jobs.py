@@ -195,7 +195,6 @@ class ImageSimilarityResultResponse(BaseModel):
     candidate_margin: float | None = Field(default=None, ge=-1, le=1)
     field_scores: dict[str, dict[str, object]] = Field(default_factory=dict)
     auto_threshold: float | None = Field(default=None, ge=0, le=1)
-    feature_auto_threshold: float | None = Field(default=None, ge=0, le=1)
     message: str
 
 
