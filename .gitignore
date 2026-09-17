@@ -13,7 +13,7 @@ models/**/*.npz
 
 frontend/node_modules/
 frontend/.env.local
-frontend/dist/
+
 frontend/*.tsbuildinfo
 artifacts/
 tmp/
