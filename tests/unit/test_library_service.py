@@ -40,6 +40,73 @@ async def test_create_group_rejects_an_existing_tag_combination() -> None:
     repository.create_group.assert_not_awaited()
 
 
+async def test_delete_group_removes_all_stored_images_and_database_records() -> None:
+    group = _group("grp_test", ["客厅", "完工"])
+    assets = [
+        LibraryAsset(
+            id="ast_first",
+            original_object_key="uploads/first.png",
+            thumbnail_object_key="library-thumbnails/first.jpg",
+            group_id=group.id,
+        ),
+        LibraryAsset(
+            id="ast_second",
+            original_object_key="uploads/second.png",
+            group_id=group.id,
+        ),
+    ]
+    repository = AsyncMock()
+    repository.get_group.return_value = group
+    repository.list_assets_for_deletion.return_value = assets
+    storage = AsyncMock()
+    storage.delete_many.return_value = set()
+
+    await LibraryService(repository, storage_provider=storage).delete_group(group.id)
+
+    repository.list_assets_for_deletion.assert_awaited_once_with(
+        asset_ids=None,
+        group_id=group.id,
+    )
+    storage.delete_many.assert_awaited_once_with(
+        ["uploads/first.png", "library-thumbnails/first.jpg", "uploads/second.png"]
+    )
+    repository.delete_group.assert_awaited_once_with(
+        group,
+        ["ast_first", "ast_second"],
+    )
+
+
+async def test_delete_group_keeps_database_records_when_storage_deletion_fails() -> None:
+    group = _group("grp_test", ["施工"])
+    asset = LibraryAsset(
+        id="ast_failed",
+        original_object_key="uploads/failed.png",
+        thumbnail_object_key="library-thumbnails/failed.jpg",
+        group_id=group.id,
+    )
+    repository = AsyncMock()
+    repository.get_group.return_value = group
+    repository.list_assets_for_deletion.return_value = [asset]
+    storage = AsyncMock()
+    storage.delete_many.return_value = {asset.thumbnail_object_key}
+
+    with pytest.raises(InvalidLibraryRequest, match="1 张图片文件删除失败"):
+        await LibraryService(repository, storage_provider=storage).delete_group(group.id)
+
+    repository.delete_group.assert_not_awaited()
+
+
+async def test_delete_empty_group_does_not_require_storage() -> None:
+    group = _group("grp_empty", ["空组"])
+    repository = AsyncMock()
+    repository.get_group.return_value = group
+    repository.list_assets_for_deletion.return_value = []
+
+    await LibraryService(repository).delete_group(group.id)
+
+    repository.delete_group.assert_awaited_once_with(group, [])
+
+
 def _group(group_id: str, tags: list[str]) -> LibraryAssetGroup:
     return LibraryAssetGroup(
         id=group_id,

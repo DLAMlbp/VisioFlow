@@ -47,17 +47,19 @@ class LibraryRepository:
         await self.session.refresh(group)
         return group
 
-    async def has_assets(self, group_id: str) -> bool:
-        count = await self.session.scalar(
-            select(func.count()).select_from(LibraryAsset).where(
-                LibraryAsset.group_id == group_id
-            )
-        )
-        return bool(count)
-
-    async def delete_group(self, group: LibraryAssetGroup) -> None:
-        await self.session.delete(group)
-        await self.session.commit()
+    async def delete_group(
+        self, group: LibraryAssetGroup, asset_ids: list[str]
+    ) -> None:
+        try:
+            if asset_ids:
+                await self.session.execute(
+                    delete(LibraryAsset).where(LibraryAsset.id.in_(asset_ids))
+                )
+            await self.session.delete(group)
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            raise
 
     async def group_asset_counts(self) -> dict[str, int]:
         rows = await self.session.execute(

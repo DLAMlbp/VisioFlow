@@ -1,10 +1,19 @@
 name: image-intelligence
 
+x-app-code: &app-code
+  - ./src:/app/src:ro
+  - ./profiles:/app/profiles:ro
+  - ./assets:/app/assets:ro
+  - ./alembic:/app/alembic:ro
+  - ./alembic.ini:/app/alembic.ini:ro
+  - ./scripts:/app/scripts:ro
+
 x-worker: &worker
   image: image-intelligence-api:${IMAGE_VERSION:-development}
   build: .
   env_file:
     - .env
+  volumes: *app-code
   restart: unless-stopped
   depends_on:
     postgres:
@@ -20,6 +29,8 @@ services:
   web:
     image: image-intelligence-web:${IMAGE_VERSION:-development}
     build: ./frontend
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
     restart: unless-stopped
     ports:
       - "5174:80"
@@ -33,6 +44,7 @@ services:
     command: uvicorn src.main:app --host 0.0.0.0 --port 8000
     env_file:
       - .env
+    volumes: *app-code
     restart: unless-stopped
     ports:
       - "18000:8000"
@@ -135,10 +147,21 @@ services:
     command: alembic upgrade head
     env_file:
       - .env
+    volumes: *app-code
     depends_on:
       postgres:
         condition: service_healthy
     restart: "no"
+
+  web-builder:
+    image: node:22.22.2-alpine
+    working_dir: /workspace/frontend
+    command: sh -c "npm ci && npm run build"
+    volumes:
+      - ./frontend:/workspace/frontend
+      - frontend-node-modules:/workspace/frontend/node_modules
+    profiles:
+      - tools
 
   postgres:
     image: harbor.dangjia.com/base/pgvector:0.8.1-pg16-trixie
@@ -198,6 +221,7 @@ services:
       "
 
 volumes:
+  frontend-node-modules:
   postgres-data:
   minio-data:
   redis-data:

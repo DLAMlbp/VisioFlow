@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from ipaddress import ip_address
 from secrets import compare_digest
 from typing import Annotated, Literal
 
@@ -18,7 +19,7 @@ from src.services.auth import csrf_token_for_session, hash_session_token, utc_no
 
 @dataclass(frozen=True)
 class Principal:
-    auth_type: Literal["session", "api_key"]
+    auth_type: Literal["session", "api_key", "web_proxy"]
     role: Literal["admin", "operator"]
     user: UserAccount | None = None
     session_token: str | None = None
@@ -31,7 +32,11 @@ async def require_api_key(
     db: Annotated[AsyncSession, Depends(get_db_session)],
     x_api_key: Annotated[str | None, Header()] = None,
     x_csrf_token: Annotated[str | None, Header()] = None,
+    x_visioflow_web_access: Annotated[str | None, Header()] = None,
 ) -> Principal:
+    if x_visioflow_web_access == "1" and _is_trusted_web_proxy(request):
+        return Principal(auth_type="web_proxy", role="admin")
+
     if x_api_key is not None:
         if settings.api_key and compare_digest(x_api_key, settings.api_key):
             return Principal(auth_type="api_key", role="admin")
@@ -66,6 +71,16 @@ async def require_api_key(
         session_token=raw_token,
         session_expires_at=session.expires_at,
     )
+
+
+def _is_trusted_web_proxy(request: Request) -> bool:
+    if request.client is None:
+        return False
+    try:
+        peer = ip_address(request.client.host)
+    except ValueError:
+        return False
+    return peer.is_loopback or peer.is_private
 
 
 async def require_admin(

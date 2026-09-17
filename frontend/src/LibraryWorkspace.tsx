@@ -39,6 +39,7 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
   const [newGroupTags, setNewGroupTags] = useState("");
   const [editingTags, setEditingTags] = useState("");
   const [editingSortOrder, setEditingSortOrder] = useState(0);
+  const [deletingGroupId, setDeletingGroupId] = useState<string | null>(null);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [deletingAssetId, setDeletingAssetId] = useState<string | null>(null);
   const [retryingFailed, setRetryingFailed] = useState(false);
@@ -193,18 +194,22 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
 
   async function deleteSelectedGroup() {
     if (!selectedGroup) return;
-    if (selectedGroup.asset_count) {
-      onMessage(`该素材组包含 ${selectedGroup.asset_count} 张图片，请先移动或删除这些图片`);
-      return;
-    }
-    if (!window.confirm(`确认删除标签组合“${selectedGroup.tags.join("、")}”？`)) return;
+    const assetCount = selectedGroup.asset_count;
+    const consequence = assetCount
+      ? `并永久删除组内全部 ${assetCount} 张图片（包括原图和缩略图）`
+      : "";
+    if (!window.confirm(`确认删除标签组合“${selectedGroup.tags.join("、")}”${consequence}？此操作无法恢复。`)) return;
+    const groupId = selectedGroup.id;
+    setDeletingGroupId(groupId);
     try {
-      await api.deleteLibraryGroup(selectedGroup.id);
+      await api.deleteLibraryGroup(groupId);
       setSelectedGroupId(null);
       await loadLibrary();
-      onMessage("素材组已删除");
+      onMessage(assetCount ? `标签组合及组内 ${assetCount} 张图片已删除` : "标签组合已删除");
     } catch (error) {
       onMessage(error instanceof Error ? error.message : "删除素材组失败");
+    } finally {
+      setDeletingGroupId(null);
     }
   }
 
@@ -452,10 +457,22 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
         <aside className="library-groups-panel" aria-label="素材组列表">
           <div className="group-panel-heading">
             <div><strong>标签组合</strong><span>所有标签并列，无层级关系</span></div>
-            <button className="tag-create-button" type="button" onClick={() => { setCreatingGroup(true); setNewGroupTags(""); }}>
-              <Plus size={17} aria-hidden="true" />
-              <span>新建素材组</span>
-            </button>
+            <div className="group-panel-actions">
+              <button
+                className="group-delete-button"
+                type="button"
+                aria-label="删除选中的标签组合"
+                title={!selectedGroup ? "请先选择标签组合" : selectedGroup.asset_count ? `删除标签组合及组内 ${selectedGroup.asset_count} 张图片` : "删除选中的标签组合"}
+                disabled={!selectedGroup || deletingGroupId !== null}
+                onClick={() => void deleteSelectedGroup()}
+              >
+                {deletingGroupId ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Trash2 size={16} aria-hidden="true" />}
+              </button>
+              <button className="tag-create-button" type="button" onClick={() => { setCreatingGroup(true); setNewGroupTags(""); }}>
+                <Plus size={17} aria-hidden="true" />
+                <span>新建素材组</span>
+              </button>
+            </div>
           </div>
           <button className={`group-all-row ${selectedGroupId === null ? "active" : ""}`} type="button" onClick={() => { setSelectedGroupId(null); setAssetPage(1); setSelectedAssetId(null); }}>
             <Images size={16} aria-hidden="true" /><span>全部素材</span><b>{assetTotal}</b>
@@ -492,7 +509,7 @@ export function LibraryWorkspace({ onMessage }: { onMessage: (message: string) =
               <textarea id="editGroupTags" value={editingTags} onChange={(event) => setEditingTags(event.target.value)} />
               <label htmlFor="editGroupSort">排序值</label>
               <input id="editGroupSort" className="tag-sort-input" type="number" min={0} max={100000} value={editingSortOrder} onChange={(event) => setEditingSortOrder(Math.max(0, Number(event.target.value) || 0))} />
-              <div className="group-edit-actions"><button type="button" onClick={() => void saveSelectedGroup()}><Pencil size={15} />保存标签</button><button type="button" onClick={() => void toggleSelectedGroup()}><Power size={15} />{selectedGroup.status === "active" ? "停用整组" : "启用整组"}</button><button className="danger-icon-button" type="button" aria-label="删除素材组" title={selectedGroup.asset_count ? `该组包含 ${selectedGroup.asset_count} 张图片` : "删除素材组"} onClick={() => void deleteSelectedGroup()}><Trash2 size={15} /></button></div>
+              <div className="group-edit-actions"><button type="button" onClick={() => void saveSelectedGroup()}><Pencil size={15} />保存标签</button><button type="button" onClick={() => void toggleSelectedGroup()}><Power size={15} />{selectedGroup.status === "active" ? "停用整组" : "启用整组"}</button></div>
             </section>
           )}
         </aside>

@@ -56,6 +56,7 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $upstream_forwarded_proto;
+        proxy_set_header X-VisioFlow-Web-Access 1;
         proxy_read_timeout 300s;
     }
 

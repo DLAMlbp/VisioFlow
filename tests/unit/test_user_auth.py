@@ -50,9 +50,20 @@ class _SessionDb:
         self.committed = True
 
 
-def _request(method: str = "GET", *, token: str | None = None) -> Request:
+def _request(
+    method: str = "GET",
+    *,
+    token: str | None = None,
+    client_host: str = "127.0.0.1",
+) -> Request:
     headers = [] if token is None else [(b"cookie", f"visioflow_session={token}".encode())]
-    return Request({"type": "http", "method": method, "path": "/api/test", "headers": headers})
+    return Request({
+        "type": "http",
+        "method": method,
+        "path": "/api/test",
+        "headers": headers,
+        "client": (client_host, 12345),
+    })
 
 
 def _settings() -> Settings:
@@ -158,6 +169,32 @@ async def test_api_key_remains_available_for_service_clients() -> None:
 
     assert principal.auth_type == "api_key"
     assert principal.role == "admin"
+
+
+@pytest.mark.asyncio
+async def test_local_web_proxy_can_open_the_workspace_without_a_login() -> None:
+    principal = await require_api_key(
+        _request(client_host="127.0.0.1"),
+        _settings(),
+        _SessionDb(),
+        x_visioflow_web_access="1",
+    )
+
+    assert principal.auth_type == "web_proxy"
+    assert principal.role == "admin"
+
+
+@pytest.mark.asyncio
+async def test_public_client_cannot_spoof_the_web_proxy_header() -> None:
+    with pytest.raises(HTTPException) as unauthorized:
+        await require_api_key(
+            _request(client_host="8.8.8.8"),
+            _settings(),
+            _SessionDb(),
+            x_visioflow_web_access="1",
+        )
+
+    assert unauthorized.value.status_code == 401
 
 
 @pytest.mark.asyncio

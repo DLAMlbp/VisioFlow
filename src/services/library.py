@@ -99,9 +99,48 @@ class LibraryService:
         group = await self.repository.get_group(group_id)
         if group is None:
             raise LibraryNotFound("素材组不存在")
-        if await self.repository.has_assets(group.id):
-            raise InvalidLibraryRequest("素材组仍有关联图片，不能删除")
-        await self.repository.delete_group(group)
+        assets = await self.repository.list_assets_for_deletion(
+            asset_ids=None,
+            group_id=group.id,
+        )
+        if assets:
+            if self.storage_provider is None:
+                raise RuntimeError("素材存储服务未配置")
+            object_keys = [
+                object_key
+                for asset in assets
+                for object_key in (asset.original_object_key, asset.thumbnail_object_key)
+                if object_key
+            ]
+            try:
+                failed_keys = await self.storage_provider.delete_many(object_keys)
+            except Exception:
+                logger.warning(
+                    "Unable to delete objects for library group %s",
+                    group.id,
+                    exc_info=True,
+                )
+                failed_keys = set(object_keys)
+            if failed_keys:
+                failed_asset_count = sum(
+                    1
+                    for asset in assets
+                    if {asset.original_object_key, asset.thumbnail_object_key} & failed_keys
+                )
+                raise InvalidLibraryRequest(
+                    f"{failed_asset_count} 张图片文件删除失败，标签组合未删除，请重试"
+                )
+
+        await self.repository.delete_group(
+            group,
+            [asset.id for asset in assets],
+        )
+        emit_metric(
+            logger,
+            "library_group_deleted_total",
+            value=1,
+        )
+        emit_metric(logger, "library_group_assets_deleted_total", value=len(assets))
 
     async def create_asset(self, payload: LibraryAssetCreate) -> LibraryAssetResponse:
         await self._require_active_group(payload.group_id)

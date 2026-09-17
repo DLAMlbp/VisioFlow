@@ -14,7 +14,8 @@ export default defineConfig(({ mode }) => {
       proxy: {
         "/api": {
           target: env.LOCAL_API_PROXY_TARGET ?? "http://127.0.0.1:18000",
-          changeOrigin: true
+          changeOrigin: true,
+          headers: { "X-VisioFlow-Web-Access": "1" }
         }
       }
     },
