@@ -51,7 +51,7 @@ def test_source_compose_mounts_every_application_service_read_only() -> None:
 
 
 def test_source_deploy_never_builds_or_pulls_images() -> None:
-    script = (ROOT / "scripts" / "deploy-source-checkout.sh").read_text(
+    script = (ROOT / "scripts" / "deploy-source.sh").read_text(
         encoding="utf-8"
     )
 
@@ -71,7 +71,7 @@ def test_source_deploy_never_builds_or_pulls_images() -> None:
 
 
 def test_source_deploy_guards_runtime_inputs_and_requires_committed_frontend() -> None:
-    script = (ROOT / "scripts" / "deploy-source-checkout.sh").read_text(
+    script = (ROOT / "scripts" / "deploy-source.sh").read_text(
         encoding="utf-8"
     )
 
