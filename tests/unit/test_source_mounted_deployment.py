@@ -68,7 +68,7 @@ def test_source_deploy_never_builds_or_pulls_images() -> None:
     )
 
 
-def test_source_deploy_guards_runtime_inputs_and_builds_frontend() -> None:
+def test_source_deploy_guards_runtime_inputs_and_requires_committed_frontend() -> None:
     script = (ROOT / "scripts" / "deploy-source-checkout.sh").read_text(
         encoding="utf-8"
     )
@@ -84,7 +84,17 @@ def test_source_deploy_guards_runtime_inputs_and_builds_frontend() -> None:
         assert runtime_input in script
     assert 'render_runtime_lock "$current_runtime_lock"' in script
     assert 'cmp --silent "$runtime_lock" "$current_runtime_lock"' in script
-    assert "npm ci" in script
-    assert "npm test" in script
-    assert "npm run build" in script
+    assert "require_command npm" not in script
+    assert "npm ci" not in script
+    assert "npm test" not in script
+    assert "npm run build" not in script
+    assert 'temporary_release/frontend/dist/index.html' in script
     assert "git archive --format=tar HEAD" in script
+
+
+def test_frontend_distribution_is_committed_for_build_free_deployments() -> None:
+    distribution = ROOT / "frontend" / "dist"
+
+    assert (distribution / "index.html").is_file()
+    assert list((distribution / "assets").glob("*.js"))
+    assert list((distribution / "assets").glob("*.css"))

@@ -5,22 +5,20 @@ usage() {
   cat <<'EOF'
 Usage:
   bash scripts/deploy-source-checkout.sh --initialize-runtime-lock
-  bash scripts/deploy-source-checkout.sh [--no-pull] [--skip-frontend-tests]
+  bash scripts/deploy-source-checkout.sh [--no-pull]
 
 The normal deployment performs a fast-forward Git pull, creates an immutable
-release directory, builds frontend/dist on the host, runs migrations, and
-force-recreates application containers. It never builds or pulls images.
+release directory from the committed source and frontend/dist, runs migrations,
+and force-recreates application containers. It never builds or pulls images.
 EOF
 }
 
 mode="deploy"
 pull_source=1
-run_frontend_tests=1
 for argument in "$@"; do
   case "$argument" in
     --initialize-runtime-lock) mode="initialize-runtime-lock" ;;
     --no-pull) pull_source=0 ;;
-    --skip-frontend-tests) run_frontend_tests=0 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "ERROR: unknown argument: $argument" >&2; usage >&2; exit 2 ;;
   esac
@@ -99,9 +97,7 @@ if [[ "$mode" == "initialize-runtime-lock" ]]; then
   exit 0
 fi
 
-for command_name in npm curl; do
-  require_command "$command_name"
-done
+require_command curl
 
 if [[ ! -f "$runtime_lock" ]]; then
   echo "ERROR: runtime compatibility lock is missing: $runtime_lock" >&2
@@ -144,14 +140,12 @@ if [[ ! -d "$release_dir" ]]; then
   mkdir -p "$temporary_release"
   git archive --format=tar HEAD | tar -xf - -C "$temporary_release"
 
-  echo "== Build frontend on host =="
-  (
-    cd "$temporary_release/frontend"
-    npm ci
-    if (( run_frontend_tests )); then npm test; fi
-    npm run build
-    rm -rf node_modules
-  )
+  if [[ ! -f "$temporary_release/frontend/dist/index.html" ]]; then
+    rm -rf "$temporary_release"
+    echo "ERROR: committed frontend/dist is missing." >&2
+    echo "Build the frontend on the development machine and commit frontend/dist." >&2
+    exit 3
+  fi
   mv "$temporary_release" "$release_dir"
 else
   echo "== Reuse release: $release_id =="
