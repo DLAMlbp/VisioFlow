@@ -16,6 +16,7 @@ import {
   History,
   Images,
   Loader2,
+  LogOut,
   RefreshCw,
   ScanSearch,
   ShieldCheck,
@@ -24,6 +25,7 @@ import {
   Tag,
   Trash2,
   UploadCloud,
+  Users,
   X
 } from "lucide-react";
 import { ChangeEvent, DragEvent, PointerEvent as ReactPointerEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
@@ -34,6 +36,7 @@ import brandLogo from "./assets/image-processing-logo.svg";
 import type {
   AIImageTags,
   AIModelConfig,
+  AuthUser,
   Decision,
   ImageMetrics,
   JobHistoryItem,
@@ -74,7 +77,13 @@ const WORKFLOW_STEPS: Array<{ id: WorkflowStep; title: string; description: stri
   { id: 6, title: "交付归档", description: "下载与留档" }
 ];
 
-function App() {
+interface AppProps {
+  user: AuthUser;
+  onLogout: () => void;
+  onManageUsers: () => void;
+}
+
+function App({ user, onLogout, onManageUsers }: AppProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const itemsRef = useRef<UploadItem[]>([]);
   const operationVersionRef = useRef(0);
@@ -668,6 +677,8 @@ function App() {
         </nav>
         <div className="topbar-actions">
           <span className="mode-pill">正式模式</span>
+          <span className="current-user"><strong>{user.display_name}</strong><small>{user.role === "admin" ? "管理员" : "操作员"}</small></span>
+          {user.role === "admin" && <button className="model-config-button" type="button" onClick={onManageUsers}><Users size={17} aria-hidden="true" /><span>账号管理</span></button>}
           <button className="model-config-button" type="button" aria-label="配置 AI" title="配置 AI" onClick={() => void openModelConfig()}>
             <SlidersHorizontal size={17} aria-hidden="true" />
             <span>AI 配置</span>
@@ -677,6 +688,9 @@ function App() {
           </button>
           <button className="tool-button" type="button" aria-label="重置工作区" title="重置工作区" onClick={resetWorkspace}>
             <RefreshCw size={18} aria-hidden="true" />
+          </button>
+          <button className="tool-button" type="button" aria-label="退出登录" title="退出登录" onClick={onLogout}>
+            <LogOut size={18} aria-hidden="true" />
           </button>
         </div>
       </header>

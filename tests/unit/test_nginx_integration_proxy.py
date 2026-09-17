@@ -26,7 +26,6 @@ def test_browser_api_proxy_does_not_inject_the_service_api_key() -> None:
     browser_location = config.split("location /api/ {", 1)[1].split("}", 1)[0]
 
     assert "proxy_set_header X-API-Key" not in browser_location
-    assert "proxy_set_header X-VisioFlow-Web-Access 1;" in browser_location
     assert "${API_KEY}" not in config
 
 

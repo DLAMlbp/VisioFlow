@@ -5111,3 +5111,447 @@ body {
   margin-top: 12px;
 }
 
+.current-user {
+  min-height: 40px;
+  display: inline-flex;
+  flex-direction: column;
+  justify-content: center;
+  border-left: 1px solid var(--line);
+  padding: 0 4px 0 12px;
+}
+
+.current-user strong,
+.current-user small {
+  line-height: 1.2;
+}
+
+.current-user strong {
+  max-width: 140px;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.current-user small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.auth-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 18% 18%, rgba(8, 127, 140, 0.16), transparent 34%),
+    radial-gradient(circle at 82% 76%, rgba(100, 87, 166, 0.12), transparent 32%),
+    linear-gradient(135deg, #f8fafc, #eef5f5);
+}
+
+.auth-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+
+.login-card {
+  width: min(440px, 100%);
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 28px 80px rgba(15, 23, 42, 0.14);
+  padding: 32px;
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--line);
+}
+
+.login-brand img {
+  width: 42px;
+  height: 42px;
+}
+
+.login-brand span,
+.login-brand strong,
+.login-brand small {
+  display: block;
+}
+
+.login-brand strong {
+  font-size: 20px;
+}
+
+.login-brand small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.login-heading {
+  display: flex;
+  gap: 13px;
+  margin: 28px 0 24px;
+}
+
+.login-heading > span {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 11px;
+  background: var(--cyan-soft);
+  color: var(--cyan);
+}
+
+.login-heading h1,
+.login-heading p {
+  margin: 0;
+}
+
+.login-heading h1 {
+  font-size: 24px;
+}
+
+.login-heading p {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.login-form {
+  display: grid;
+  gap: 18px;
+}
+
+.auth-mode-switch {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 22px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.auth-mode-switch button {
+  border: 0;
+  background: transparent;
+  color: var(--cyan);
+  padding: 4px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.auth-mode-switch button:hover {
+  text-decoration: underline;
+}
+
+.auth-mode-switch button:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
+.login-form label,
+.account-create-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.login-form input,
+.account-create-form input,
+.account-create-form select,
+.password-reset-panel input {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: var(--ink);
+  padding: 0 12px;
+}
+
+.auth-error {
+  margin: 0 0 18px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fff1f2;
+  color: #9f1239;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.account-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: grid;
+  place-items: center;
+  overflow-y: auto;
+  background: rgba(15, 23, 42, 0.58);
+  padding: 24px;
+}
+
+.account-dialog {
+  width: min(1080px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 30px 90px rgba(15, 23, 42, 0.3);
+  padding: 24px;
+}
+
+.account-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 20px;
+}
+
+.account-dialog > header span {
+  color: var(--cyan);
+  font: 600 11px "IBM Plex Mono", monospace;
+}
+
+.account-dialog > header h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 5px 0 0;
+  font-size: 24px;
+}
+
+.account-create-form {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr 1fr 0.72fr 0.72fr;
+  align-items: end;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 16px;
+}
+
+.account-create-form > div {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.account-create-form > div span,
+.account-create-form > div strong,
+.account-create-form > div small {
+  display: block;
+}
+
+.account-create-form > div small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.account-create-form .primary-button,
+.password-reset-panel .primary-button {
+  min-height: 44px;
+}
+
+.account-list-heading {
+  display: flex;
+  justify-content: space-between;
+  margin: 24px 0 10px;
+}
+
+.account-list-heading span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.account-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 120px;
+  color: var(--muted);
+}
+
+.account-list {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.account-list article {
+  display: grid;
+  grid-template-columns: 36px minmax(150px, 1fr) 112px minmax(270px, auto);
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  padding: 12px;
+}
+
+.account-list article:last-child {
+  border-bottom: 0;
+}
+
+.account-list article.disabled {
+  background: #f8fafc;
+  opacity: 0.65;
+}
+
+.account-avatar {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--cyan-soft);
+  color: var(--cyan);
+}
+
+.account-identity strong,
+.account-identity span {
+  display: block;
+}
+
+.account-identity span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.account-role {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-radius: 999px;
+  background: #eef2f7;
+  color: var(--ink-soft);
+  padding: 6px 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.account-role.admin {
+  background: #ede9fe;
+  color: #5b21b6;
+}
+
+.account-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.account-actions button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: white;
+  color: var(--ink-soft);
+  padding: 0 9px;
+  font-size: 11px;
+}
+
+.account-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.password-reset-panel {
+  display: grid;
+  grid-template-columns: minmax(200px, 1fr) minmax(220px, 1fr) 140px 80px;
+  align-items: end;
+  gap: 10px;
+  margin-top: 14px;
+  border: 1px solid #c4b5fd;
+  border-radius: 10px;
+  background: #f5f3ff;
+  padding: 14px;
+}
+
+.password-reset-panel strong,
+.password-reset-panel small {
+  display: block;
+}
+
+.password-reset-panel small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+@media (max-width: 900px) {
+  .account-create-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .account-list article {
+    grid-template-columns: 36px 1fr auto;
+  }
+
+  .account-actions {
+    grid-column: 2 / -1;
+    justify-content: flex-start;
+  }
+
+  .password-reset-panel {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .login-card {
+    padding: 24px 20px;
+  }
+
+  .account-dialog-backdrop {
+    padding: 0;
+  }
+
+  .account-dialog {
+    min-height: 100vh;
+    max-height: none;
+    border-radius: 0;
+    padding: 18px;
+  }
+
+  .account-create-form {
+    grid-template-columns: 1fr;
+  }
+
+  .account-list article {
+    grid-template-columns: 36px 1fr;
+  }
+
+  .account-role {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .account-actions {
+    grid-column: 1 / -1;
+    flex-wrap: wrap;
+  }
+}
+

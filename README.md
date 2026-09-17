@@ -158,7 +158,16 @@ docker compose --env-file .env.production \
   api worker-control worker-callback
 ```
 
-Web 入口不再显示登录页，访问后会由同机 Vite/Nginx 代理直接进入工作台，因此首次部署不需要创建管理员或注册账号。浏览器和 Web 容器都不会获得 `API_KEY`；代理只向 API 添加非密钥标记，API 仅接受来自回环或私有地址直连代理的该标记。生产环境必须将 Web 入口限制在内网、VPN 或其他可信网络，不能无访问控制地暴露到公网。
+首次启动且数据库迁移完成后，使用服务端 `API_KEY` 创建第一个管理员。该接口仅在系统尚无管理员时允许执行，密码至少 10 位：
+
+```bash
+curl --fail --request POST http://127.0.0.1:8088/api/v1/auth/bootstrap \
+  --header "X-API-Key: 替换为服务端API_KEY" \
+  --header "Content-Type: application/json" \
+  --data '{"username":"admin","display_name":"系统管理员","password":"替换为高强度初始密码","role":"admin"}'
+```
+
+用户也可以在登录页使用用户名或邮箱自助注册，注册成功后会以“操作员”角色直接登录，不能自行取得管理员权限。注册按来源 IP 限制为默认每分钟 5 次，可通过 `AUTH_REGISTRATION_RATE_LIMIT_PER_MINUTE` 调整。管理员仍可在“账号管理”中创建、停用和调整其他账号。
 
 `/health/ready` 必须返回 `ready`，其中数据库迁移、Redis、对象存储和关键配置均应为 `ok`。随后用少量测试图片完成一次端到端任务，不要直接放入生产全量流量。
 
@@ -324,7 +333,7 @@ npm run dev -- --port 5174 --strictPort
 
 服务器部署时通过环境变量调整 Worker 数量和 `INFERENCE_DEVICE=auto`。CPU 服务器保持单个 `openclip` Worker 且并发为 1；GPU 服务器可让 OpenCLIP 自动使用 CUDA。视觉 AI 默认全局限制为 24 次/分钟、4 并发，遇到 429、超时和 5xx 会自动退避。`COMBINED_CLASSIFY_FILTER_ENABLED` 和 `EARLY_SEMANTIC_BRANCH_ENABLED` 默认开启，紧急回滚时可分别恢复旧的两次AI调用和增强后语义链路。
 
-Web 工作台通过同机 Vite/Nginx 可信代理直接访问，不提供登录、注册或账号管理页面。浏览器和 Web 容器不得保存或接收 `API_KEY`，Web 服务必须只向内网、VPN 或其他可信网络开放。直接调用业务 API 的受信任服务端仍需发送 `X-API-Key`；第三方集成接口继续单独使用 `INTEGRATION_API_KEY`。`/health` 提供存活检查；`/health/ready` 同时检查数据库连接、Alembic 版本、Redis、对象存储和关键配置，两者均不需要鉴权。
+Web 工作台使用 HttpOnly 会话 Cookie 登录，修改类请求还需携带会话对应的 CSRF Token。浏览器和 Web 容器不得保存或接收 `API_KEY`。直接调用业务 API 的受信任服务端仍需发送 `X-API-Key`；第三方集成接口继续单独使用 `INTEGRATION_API_KEY`。`/health` 提供存活检查；`/health/ready` 同时检查数据库连接、Alembic 版本、Redis、对象存储和关键配置，两者均不需要鉴权。
 
 `COMPLETION_ROUTING_ENABLED`、`BATCH_FILTER_BARRIER_ENABLED`、`POST_FILTER_BEAUTIFY_PLAN_ENABLED`、`LIBRARY_IMAGE_ONLY_MATCHING_ENABLED`、`LIBRARY_ONLY_TAGS_ENABLED` 是强制工作流开关，正式运行必须全部为 `true`。`LIBRARY_IMAGE_ONLY_MATCHING_ENABLED` 是历史环境变量名，现在控制混合匹配主链路。任一开关关闭后，新任务会被拒绝，正在等待对应阶段的任务会暂停，系统不会回退旧流水线。素材匹配只做二元自动判定：综合分达到采用线时继承素材组标签，否则不打标签，不提供 Shadow 或人工改判路径。
 
