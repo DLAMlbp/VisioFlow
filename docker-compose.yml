@@ -172,7 +172,7 @@ services:
     restart: "no"
 
   postgres:
-    image: harbor.dangjia.com/base/pgvector:0.8.1-pg16-trixie
+    image: harbor.dangjia.com/base/pgvector:0.8.1-pg16
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-user}
