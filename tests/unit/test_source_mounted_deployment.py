@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_source_compose_mounts_every_application_service_read_only() -> None:
     compose = yaml.safe_load(
-        (ROOT / "docker-compose.source.yml").read_text(encoding="utf-8")
+        (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     )
     services = compose["services"]
     backend_services = {
@@ -34,20 +34,17 @@ def test_source_compose_mounts_every_application_service_read_only() -> None:
     assert backend_services <= services.keys()
     for service_name in backend_services:
         mounts = services[service_name]["volumes"]
-        targets = {mount["target"] for mount in mounts}
-        assert {
+        for target in (
             "/app/src",
             "/app/profiles",
             "/app/assets",
             "/app/scripts",
             "/app/alembic",
-        } <= targets
-        assert all(mount["read_only"] is True for mount in mounts)
+        ):
+            assert any(f":{target}:ro" in mount for mount in mounts)
+        assert all(mount.endswith(":ro") for mount in mounts)
 
-    assert set(services) == backend_services | {"web"}
-    assert all(
-        mount["read_only"] is True for mount in services["web"]["volumes"]
-    )
+    assert all(mount.endswith(":ro") for mount in services["web"]["volumes"])
 
 
 def test_source_deploy_never_builds_or_pulls_images() -> None:
@@ -65,6 +62,8 @@ def test_source_deploy_never_builds_or_pulls_images() -> None:
     assert "pg_isready" in script
     assert "git branch --show-current" not in script
     assert "git symbolic-ref --quiet --short HEAD" in script
+    assert 'env_file="$repo_root/.env.production"' in script
+    assert 'compose_files=(-f "$repo_root/docker-compose.yml")' in script
     assert script.index('echo "== Run database migrations =="') < script.index(
         'echo "== Recreate backend processes with mounted source =="'
     )

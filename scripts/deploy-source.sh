@@ -46,7 +46,7 @@ env_file="$repo_root/.env.production"
 state_dir="${SOURCE_STATE_DIR:-$repo_root/.source-deploy}"
 release_dir_root="$state_dir/releases"
 runtime_lock="$state_dir/runtime-files.sha256"
-compose_files=(-f "$repo_root/docker-compose.prod.yml" -f "$repo_root/docker-compose.source.yml")
+compose_files=(-f "$repo_root/docker-compose.yml")
 
 if [[ "$state_dir" != /* ]]; then
   echo "ERROR: SOURCE_STATE_DIR must be an absolute path: $state_dir" >&2
@@ -152,6 +152,7 @@ else
 fi
 
 export SOURCE_RELEASE_ROOT="$release_dir"
+export APP_ENV_FILE="$env_file"
 dc=(docker compose --env-file "$env_file" "${compose_files[@]}")
 
 echo "== Validate Compose and local runtime images =="

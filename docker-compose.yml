@@ -1,18 +1,18 @@
 name: image-intelligence
 
 x-app-code: &app-code
-  - ./src:/app/src:ro
-  - ./profiles:/app/profiles:ro
-  - ./assets:/app/assets:ro
-  - ./alembic:/app/alembic:ro
-  - ./alembic.ini:/app/alembic.ini:ro
-  - ./scripts:/app/scripts:ro
+  - ${SOURCE_RELEASE_ROOT:-.}/src:/app/src:ro
+  - ${SOURCE_RELEASE_ROOT:-.}/profiles:/app/profiles:ro
+  - ${SOURCE_RELEASE_ROOT:-.}/assets:/app/assets:ro
+  - ${SOURCE_RELEASE_ROOT:-.}/alembic:/app/alembic:ro
+  - ${SOURCE_RELEASE_ROOT:-.}/alembic.ini:/app/alembic.ini:ro
+  - ${SOURCE_RELEASE_ROOT:-.}/scripts:/app/scripts:ro
 
 x-worker: &worker
-  image: image-intelligence-api:${IMAGE_VERSION:-development}
+  image: ${API_RUNTIME_IMAGE:-image-intelligence-api:development}
   build: .
   env_file:
-    - .env
+    - ${APP_ENV_FILE:-.env}
   volumes: *app-code
   restart: unless-stopped
   depends_on:
@@ -27,27 +27,28 @@ x-worker: &worker
 
 services:
   web:
-    image: image-intelligence-web:${IMAGE_VERSION:-development}
+    image: ${WEB_RUNTIME_IMAGE:-image-intelligence-web:development}
     build: ./frontend
     volumes:
-      - ./frontend/dist:/usr/share/nginx/html:ro
+      - ${SOURCE_RELEASE_ROOT:-.}/frontend/dist:/usr/share/nginx/html:ro
+      - ${SOURCE_RELEASE_ROOT:-.}/frontend/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
     restart: unless-stopped
     ports:
-      - "5174:80"
+      - "${WEB_PORT:-5174}:80"
     depends_on:
       api:
         condition: service_healthy
 
   api:
-    image: image-intelligence-api:${IMAGE_VERSION:-development}
+    image: ${API_GATEWAY_RUNTIME_IMAGE:-${API_RUNTIME_IMAGE:-image-intelligence-api:development}}
     build: .
     command: uvicorn src.main:app --host 0.0.0.0 --port 8000
     env_file:
-      - .env
+      - ${APP_ENV_FILE:-.env}
     volumes: *app-code
     restart: unless-stopped
     ports:
-      - "18000:8000"
+      - "${API_PORT:-18000}:8000"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -66,9 +67,17 @@ services:
 
   worker-control:
     <<: *worker
+    image: ${API_GATEWAY_RUNTIME_IMAGE:-${API_RUNTIME_IMAGE:-image-intelligence-api:development}}
     command: celery -A src.workers.celery_app worker -Q control -l info --concurrency=1 --without-mingle --without-gossip
     environment:
       WORKER_ROLE: control
+
+  worker-callback:
+    <<: *worker
+    image: ${API_GATEWAY_RUNTIME_IMAGE:-${API_RUNTIME_IMAGE:-image-intelligence-api:development}}
+    command: celery -A src.workers.celery_app worker -Q callback -l info --concurrency=2 --without-mingle --without-gossip
+    environment:
+      WORKER_ROLE: callback
 
   worker-preprocess:
     <<: *worker
@@ -78,6 +87,7 @@ services:
 
   worker-classification:
     <<: *worker
+    image: ${CLASSIFICATION_RUNTIME_IMAGE:-${API_RUNTIME_IMAGE:-image-intelligence-api:development}}
     command: celery -A src.workers.celery_app worker -Q classification,filtering -l info --concurrency=8 --without-mingle --without-gossip
     environment:
       WORKER_ROLE: classification
@@ -108,6 +118,7 @@ services:
 
   worker-render:
     <<: *worker
+    image: ${RENDER_RUNTIME_IMAGE:-${API_RUNTIME_IMAGE:-image-intelligence-api:development}}
     command: celery -A src.workers.celery_app worker -Q render -l info --concurrency=1 --max-tasks-per-child=5 --without-mingle --without-gossip
     environment:
       WORKER_ROLE: render
@@ -124,6 +135,12 @@ services:
     environment:
       WORKER_ROLE: openclip
 
+  worker-library:
+    <<: *worker
+    command: celery -A src.workers.celery_app worker -Q library -l info --pool=solo --concurrency=1 --without-mingle --without-gossip
+    environment:
+      WORKER_ROLE: library
+
   worker-matching:
     <<: *worker
     command: celery -A src.workers.celery_app worker -Q matching -l info --concurrency=2 --without-mingle --without-gossip
@@ -138,42 +155,33 @@ services:
 
   celery-beat:
     <<: *worker
+    image: ${API_GATEWAY_RUNTIME_IMAGE:-${API_RUNTIME_IMAGE:-image-intelligence-api:development}}
     command: celery -A src.workers.celery_app beat -l info --schedule=/tmp/celerybeat-schedule
     environment:
       WORKER_ROLE: beat
 
   migrate:
-    image: image-intelligence-api:${IMAGE_VERSION:-development}
+    image: ${API_GATEWAY_RUNTIME_IMAGE:-${API_RUNTIME_IMAGE:-image-intelligence-api:development}}
     command: alembic upgrade head
     env_file:
-      - .env
+      - ${APP_ENV_FILE:-.env}
     volumes: *app-code
     depends_on:
       postgres:
         condition: service_healthy
     restart: "no"
 
-  web-builder:
-    image: node:22.22.2-alpine
-    working_dir: /workspace/frontend
-    command: sh -c "npm ci && npm run build"
-    volumes:
-      - ./frontend:/workspace/frontend
-      - frontend-node-modules:/workspace/frontend/node_modules
-    profiles:
-      - tools
-
   postgres:
     image: harbor.dangjia.com/base/pgvector:0.8.1-pg16-trixie
     restart: unless-stopped
     environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: image_ai
+      POSTGRES_USER: ${POSTGRES_USER:-user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-image_ai}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U user -d image_ai"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -195,11 +203,11 @@ services:
     command: server /data --console-address ":9001"
     restart: unless-stopped
     environment:
-      MINIO_ROOT_USER: minio
-      MINIO_ROOT_PASSWORD: minio123
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minio}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minio123}
       MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_API_CORS_ALLOW_ORIGIN:-http://127.0.0.1:4174,http://localhost:4174,http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:5174,http://localhost:5174,http://127.0.0.1:5175,http://localhost:5175}
     ports:
-      - "19000:9000"
+      - "${MINIO_PORT:-19000}:9000"
     volumes:
       - minio-data:/data
     healthcheck:
@@ -214,14 +222,13 @@ services:
       - minio
     entrypoint: >
       /bin/sh -c "
-      mc alias set local http://minio:9000 minio minio123;
+      mc alias set local http://minio:9000 ${S3_ACCESS_KEY:-minio} ${S3_SECRET_KEY:-minio123};
       mc mb -p local/image-ai || true;
       mc anonymous set none local/image-ai;
       exit 0;
       "
 
 volumes:
-  frontend-node-modules:
   postgres-data:
   minio-data:
   redis-data:
