@@ -110,7 +110,7 @@ if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
 fi
 
 if (( pull_source )); then
-  branch="${SOURCE_BRANCH:-$(git branch --show-current)}"
+  branch="${SOURCE_BRANCH:-$(git symbolic-ref --quiet --short HEAD || true)}"
   if [[ -z "$branch" ]]; then
     echo "ERROR: detached HEAD requires SOURCE_BRANCH or --no-pull." >&2
     exit 2

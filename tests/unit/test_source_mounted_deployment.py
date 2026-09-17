@@ -63,6 +63,8 @@ def test_source_deploy_never_builds_or_pulls_images() -> None:
     assert "--force-recreate" in script
     assert "--exit-code-from migrate" in script
     assert "pg_isready" in script
+    assert "git branch --show-current" not in script
+    assert "git symbolic-ref --quiet --short HEAD" in script
     assert script.index('echo "== Run database migrations =="') < script.index(
         'echo "== Recreate backend processes with mounted source =="'
     )
